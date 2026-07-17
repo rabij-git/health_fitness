@@ -1,50 +1,85 @@
-# FitnessApp — Developer Setup & Emulator Guide
+# FitnessApp
 
-## Running the App on Android Emulator
+A cross-platform fitness and gamification app for coaches, trainers, and admins. Built with React Native / Expo and Supabase.
+
+---
+
+## Getting Started
 
 ### Prerequisites
-- Android emulator AVD named `Pixel_6_API_34` (via Android Studio or command-line tools)
-- Node.js v20 (via nvm)
-- Expo CLI (`npx expo`)
+- [Node.js v20+](https://nodejs.org/) (recommended via [nvm](https://github.com/nvm-sh/nvm))
+- [Expo Go](https://expo.dev/go) installed on your phone, **or** an Android/iOS emulator/simulator
 
-### Step 1 — Start the Emulator
-Open a terminal and run:
+### 1. Clone the repo
 ```bash
-/opt/homebrew/share/android-commandlinetools/emulator/emulator -avd Pixel_6_API_34 -no-audio -no-snapshot
+git clone https://github.com/rabij-git/health_fitness.git
+cd health_fitness/FitnessApp
 ```
-Wait for the emulator to fully boot to the home screen before proceeding.
 
-### Step 2 — Start Metro Bundler (tunnel mode)
-Open a **second terminal**, navigate to the project folder, and run:
+### 2. Install dependencies
 ```bash
-cd /Users/yardenarabi/PycharmProjects/PythonProject/FitnessApp
+npm install
+```
+
+### 3. Database
+No setup required. The app connects to a shared Supabase instance — the credentials are already in `src/lib/supabase.ts`. Just install and run.
+
+### 4. Start the app
+
+**On your phone (easiest):**
+```bash
 npx expo start --tunnel --clear
 ```
+Scan the QR code with the Expo Go app on your phone.
 
-> **Why `--tunnel`?** Direct LAN/port-forwarding (`adb reverse`) is unreliable in this setup. Tunnel mode uses ngrok to route traffic, bypassing local network issues entirely.
+**On Android emulator:**
+1. Start your emulator first
+2. Run:
+```bash
+npx expo start --tunnel --clear
+```
+3. Press `a` in the Metro terminal to open on Android.
 
-Once Metro starts, press `a` to open the app on the Android emulator.
+**On iOS Simulator (requires Xcode):**
+```bash
+npx expo start --tunnel --clear
+```
+Press `i` in the Metro terminal to open on iOS.
 
-### Troubleshooting
+> **Note:** Use `--tunnel` mode — it routes traffic via ngrok and avoids local network issues with emulators.
 
-**`zsh: command not found: expo` or `npx` issues**
+---
+
+## Troubleshooting
+
+**`command not found: npx` or Node not found**
 Load nvm first:
 ```bash
 export NVM_DIR="$HOME/.nvm" && source "$NVM_DIR/nvm.sh" && nvm use 20
 npx expo start --tunnel --clear
 ```
 
-**`adb: command not found`**
-Use the full path:
+**Emulator shows "Something went wrong"**
+Metro bundler isn't reachable. Make sure you used `--tunnel` and try reloading:
+- Shake the device → tap "Reload", or
+- Press `r` in the Metro terminal
+
+**iOS Simulator: Xcode required**
+Install Xcode from the Mac App Store, open it once to accept the license, then run:
 ```bash
-/opt/homebrew/share/android-commandlinetools/platform-tools/adb <command>
+sudo xcode-select -s /Applications/Xcode.app/Contents/Developer
 ```
 
-**Emulator shows "Something went wrong" / `UpdateFailedToLoad`**
-This means Expo Go can't reach the Metro bundler. Solutions:
-1. Make sure Metro is running (`npx expo start --tunnel --clear`)
-2. In the emulator, shake device → tap "Reload"
-3. Re-run `adb reverse tcp:8084 tcp:8084` if not using tunnel mode
+---
 
-**`permission denied` on `cd` via `!` commands in Claude Code**
-Run Metro directly in a regular terminal tab — do not use the `!` prefix for multi-step commands involving `cd`.
+## Tech Stack
+- **Framework:** React Native / Expo SDK 56
+- **Backend:** Supabase (PostgreSQL + Auth)
+- **Language:** TypeScript
+
+---
+
+## User Roles
+- **Admin** — manages third-party data syncs (Apple Health, Garmin, MyFitnessPal)
+- **Coach** — creates programs, assigns workouts to trainees, manages gym
+- **Trainee** — follows assigned workouts, logs progress, earns XP and medals
