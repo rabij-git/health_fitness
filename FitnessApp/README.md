@@ -83,3 +83,5 @@ sudo xcode-select -s /Applications/Xcode.app/Contents/Developer
 - **Admin** — manages third-party data syncs (Apple Health, Garmin, MyFitnessPal)
 - **Coach** — creates programs, assigns workouts to trainees, manages gym
 - **Trainee** — follows assigned workouts, logs progress, earns XP and medals
+
+testing
