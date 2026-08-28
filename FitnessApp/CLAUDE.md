@@ -25,6 +25,14 @@ npx expo start --tunnel --clear
 - **Expo CLI requires an interactive terminal (TTY)** — run directly in a terminal tab, not via `!` in Claude Code.
 - If `npx` not found, load nvm first: `export NVM_DIR="$HOME/.nvm" && source "$NVM_DIR/nvm.sh" && nvm use 20`
 
+**Troubleshooting — `npx expo start --tunnel` fails to start at all:**
+ngrok's backend now requires an authenticated account + a modern (v3+) agent even for anonymous tunnels, which the version Expo bundles (`@expo/ngrok`, agent v2.3.41) can't satisfy, and Expo's own CLI forces a globally-shared authtoken + custom `exp.direct` hostname that collides across every Expo dev on the internet. Fixed durably via `node_modules` patches reapplied by `postinstall` (`scripts/patch-ngrok.js`, wired into `package.json`) — **do not hand-edit `node_modules` again, edit `scripts/patch-ngrok.js` instead** and the patches will reapply on the next `npm install`:
+1. Swaps the bundled ngrok binary for a modern v3 one kept in `tools/ngrok-v3-darwin-arm64`.
+2. Patches `@expo/ngrok/index.js`'s `connectRetry` to strip `authtoken`/`configPath`/`port` before calling `startTunnel()` (v3's strict schema rejects those extra fields) and to regenerate the tunnel's auto-name on each retry (a race where the agent's tunnel-creation API is hit before its cloud session finishes handshaking can leave a "ghost" name registered, which then fails a same-named retry with `error_code 102 "already exists"` — not covered by ngrok's own retriable-error list).
+3. Patches `AsyncNgrok.js` (in `node_modules/expo/...`) to stop forcing Expo's shared authtoken/`exp.direct` hostname, so it falls back to the user's own already-authenticated `~/.ngrok2/ngrok.yml` account and a plain random `*.ngrok-free.dev` URL instead.
+- The user's personal ngrok account must be authenticated once (`ngrok authtoken YOUR_TOKEN`, v2-syntax CLI even though the config format is v3) — already done for this machine.
+- Verify success by checking for `Tunnel connected.` / `Tunnel ready.` in the CLI output (or query `curl http://127.0.0.1:4040/api/tunnels` for the live `public_url` while it's running).
+
 **Troubleshooting — emulator stuck bundling / "Failed to download remote update":**
 The emulator's virtual network can get corrupted after the Mac sleeps while it's running (symptoms: bundling hangs, or Expo Go throws `java.io.IOException: Failed to download remote update`; `adb shell ping 8.8.8.8` returns garbage/negative round-trip times when this happens). Fix is a cold restart, not a reload:
 ```bash
