@@ -12,8 +12,28 @@ import {
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { colors } from '../../theme/colors';
-import { Workout } from '../../data/mockData';
-import { getWorkoutWithExercises, getProfile, saveWorkoutSession } from '../../lib/db';
+import { Workout, mockMedals, computeLevelFromXp } from '../../data/mockData';
+import {
+  getWorkoutWithExercises,
+  getProfile,
+  saveWorkoutSession,
+  updateProfile,
+  getTraineeHistory,
+  evaluateAndAwardMedals,
+  sendMessage,
+} from '../../lib/db';
+
+function computeNewStreak(currentStreak: number, priorHistory: { completed_at: string }[]): number {
+  if (priorHistory.length === 0) return 1;
+  const toDayStr = (d: Date) => d.toISOString().split('T')[0];
+  const sorted = [...priorHistory].sort((a, b) => new Date(b.completed_at).getTime() - new Date(a.completed_at).getTime());
+  const lastDayStr = toDayStr(new Date(sorted[0].completed_at));
+  const today = new Date();
+  const yesterday = new Date(today.getTime() - 86400000);
+  if (lastDayStr === toDayStr(today)) return currentStreak || 1;
+  if (lastDayStr === toDayStr(yesterday)) return (currentStreak || 0) + 1;
+  return 1;
+}
 
 // Effort scale
 const EFFORT_LABELS: Record<number, { short: string; desc: string; color: string }> = {
@@ -68,10 +88,10 @@ export default function WorkoutScreen({ userId }: Props) {
 
   const [exercises, setExercises] = useState<ExerciseLog[]>([]);
   const [submitted, setSubmitted] = useState(false);
-  const [awardedXp, setAwardedXp] = useState(0);
   const [showMedal, setShowMedal] = useState(false);
   const [modalXp, setModalXp] = useState(0);
   const [modalIsComplete, setModalIsComplete] = useState(false);
+  const [newlyEarnedMedalIds, setNewlyEarnedMedalIds] = useState<string[]>([]);
 
   const toggleExercise = useCallback((id: string) => {
     setExercises(prev => prev.map(ex => ex.id === id ? { ...ex, completed: !ex.completed } : ex));
@@ -119,6 +139,19 @@ export default function WorkoutScreen({ userId }: Props) {
     loadWorkout();
   }, [userId]);
 
+  const { completedCount, totalSets, loggedSets, progress, isFullyComplete } = useMemo(() => {
+    const completed = exercises.filter(e => e.completed).length;
+    const total = exercises.reduce((sum, e) => sum + e.sets.length, 0);
+    const logged = exercises.reduce((sum, e) => sum + e.sets.filter(s => s.effort !== null).length, 0);
+    return {
+      completedCount: completed,
+      totalSets: total,
+      loggedSets: logged,
+      progress: total > 0 ? logged / total : 0,
+      isFullyComplete: completed === exercises.length && exercises.length > 0,
+    };
+  }, [exercises]);
+
   if (loadingWorkout) {
     return (
       <SafeAreaView style={styles.container}>
@@ -142,47 +175,66 @@ export default function WorkoutScreen({ userId }: Props) {
     );
   }
 
-  const { completedCount, totalSets, loggedSets, progress, isFullyComplete } = useMemo(() => {
-    const completed = exercises.filter(e => e.completed).length;
-    const total = exercises.reduce((sum, e) => sum + e.sets.length, 0);
-    const logged = exercises.reduce((sum, e) => sum + e.sets.filter(s => s.effort !== null).length, 0);
-    return {
-      completedCount: completed,
-      totalSets: total,
-      loggedSets: logged,
-      progress: total > 0 ? logged / total : 0,
-      isFullyComplete: completed === exercises.length && exercises.length > 0,
-    };
-  }, [exercises]);
-
   const activeWorkout = dbWorkout;
 
   const handleSubmit = async () => {
-    const totalXp = isFullyComplete ? 250 : Math.round(250 * progress);
-    const newXp = totalXp - awardedXp;
-    setModalXp(newXp > 0 ? newXp : 0);
+    if (submitted) return;
+    const totalXp = Math.round(250 * progress);
+    setModalXp(totalXp);
     setModalIsComplete(isFullyComplete);
-    setAwardedXp(totalXp);
     setSubmitted(true);
     setShowMedal(true);
-    if (dbWorkoutId) {
-      try {
-        await saveWorkoutSession({
-          trainee_id: userId,
-          workout_id: dbWorkoutId,
-          completion_pct: Math.round(progress * 100),
-          xp_awarded: totalXp,
-        });
-      } catch (e) {
-        console.warn('Session save error', e);
-      }
-    }
-  };
+    if (!dbWorkoutId) return;
 
-  const handleReset = () => {
-    if (activeWorkout) setExercises(buildInitialExercises(activeWorkout));
-    setSubmitted(false);
-    setAwardedXp(0);
+    // Each step is isolated so a failure in one (e.g. the coach notification)
+    // can never silently block the ones after it — most importantly xp/streak.
+    let priorHistory: Awaited<ReturnType<typeof getTraineeHistory>> = [];
+    let profile: Awaited<ReturnType<typeof getProfile>> = null;
+    try {
+      [priorHistory, profile] = await Promise.all([getTraineeHistory(userId), getProfile(userId)]);
+    } catch (e) {
+      console.warn('Workout completion: failed to load prior history/profile', e);
+    }
+
+    try {
+      await saveWorkoutSession({
+        trainee_id: userId,
+        workout_id: dbWorkoutId,
+        completion_pct: Math.round(progress * 100),
+        xp_awarded: totalXp,
+      });
+    } catch (e) {
+      console.warn('Workout completion: failed to save session', e);
+    }
+
+    let newStreak = profile?.streak ?? 0;
+    try {
+      const newXp = (profile?.xp ?? 0) + totalXp;
+      const newLevel = computeLevelFromXp(newXp);
+      newStreak = computeNewStreak(profile?.streak ?? 0, priorHistory);
+      await updateProfile(userId, { xp: newXp, level: newLevel, streak: newStreak });
+    } catch (e) {
+      console.warn('Workout completion: failed to update xp/level/streak', e);
+    }
+
+    try {
+      const newlyEarned = await evaluateAndAwardMedals(userId, priorHistory.length + 1, newStreak);
+      setNewlyEarnedMedalIds(newlyEarned);
+    } catch (e) {
+      console.warn('Workout completion: failed to evaluate medals', e);
+    }
+
+    try {
+      if (profile?.coach_id) {
+        await sendMessage(
+          userId,
+          profile.coach_id,
+          `🏋️ ${profile.name} completed "${activeWorkout?.name}" — ${Math.round(progress * 100)}% done, +${totalXp} XP`
+        );
+      }
+    } catch (e) {
+      console.warn('Workout completion: failed to notify coach', e);
+    }
   };
 
   if (!activeWorkout) {
@@ -345,7 +397,7 @@ export default function WorkoutScreen({ userId }: Props) {
           ))}
         </View>
 
-        {/* Status banner — shown after first submission */}
+        {/* Status banner — shown once finished */}
         {submitted && (
           <View style={[styles.completedBanner, isFullyComplete && styles.completedBannerFull]}>
             <Ionicons
@@ -355,35 +407,24 @@ export default function WorkoutScreen({ userId }: Props) {
             />
             <View style={{ flex: 1 }}>
               <Text style={[styles.completedTitle, !isFullyComplete && { color: colors.xpBar }]}>
-                {isFullyComplete ? 'Workout Complete!' : 'Session Saved'}
+                {isFullyComplete ? 'Workout Complete!' : 'Workout Finished'}
               </Text>
               <Text style={styles.completedSub}>
-                {isFullyComplete
-                  ? `+${awardedXp} XP Earned`
-                  : `${Math.round(progress * 100)}% logged — keep going!`}
+                +{modalXp} XP Earned ({Math.round(progress * 100)}% logged)
               </Text>
             </View>
           </View>
         )}
 
-        {/* Action button — show before submission (any state) or after submission only when fully complete */}
-        {(!submitted || isFullyComplete) && (
+        {/* Action button — hidden once finished; each day gets a new workout, so there's no resuming */}
+        {!submitted && (
           <TouchableOpacity
-            style={[styles.completeButton, !isFullyComplete && styles.completeButtonPartial]}
+            style={styles.completeButton}
             onPress={handleSubmit}
             activeOpacity={0.85}
           >
             <Ionicons name="trophy" size={22} color={colors.text} />
-            <Text style={styles.completeButtonText}>
-              {isFullyComplete ? 'Complete Workout!' : `Finish Early (${Math.round(progress * 100)}%)`}
-            </Text>
-          </TouchableOpacity>
-        )}
-
-        {submitted && (
-          <TouchableOpacity style={styles.resetButton} onPress={handleReset}>
-            <Ionicons name="refresh" size={18} color={colors.textSecondary} />
-            <Text style={styles.resetText}>Reset Workout</Text>
+            <Text style={styles.completeButtonText}>Finish</Text>
           </TouchableOpacity>
         )}
       </ScrollView>
@@ -395,21 +436,27 @@ export default function WorkoutScreen({ userId }: Props) {
             <View style={styles.medalIconWrapper}>
               <Ionicons name="trophy" size={56} color={colors.gold} />
             </View>
-            <Text style={styles.medalTitle}>{modalIsComplete ? 'Workout Complete!' : 'Session Saved!'}</Text>
-            <Text style={styles.medalSub}>{modalIsComplete ? 'You crushed it today!' : 'Keep going to earn the full reward'}</Text>
+            <Text style={styles.medalTitle}>{modalIsComplete ? 'Workout Complete!' : 'Workout Finished!'}</Text>
+            <Text style={styles.medalSub}>{modalIsComplete ? 'You crushed it today!' : 'Nice work — see you next time'}</Text>
             <View style={styles.xpAward}>
               <Ionicons name="star" size={18} color={colors.xpBar} />
-              <Text style={styles.xpAwardText}>+{modalXp} XP {modalIsComplete ? 'Awarded' : 'Earned so far'}</Text>
+              <Text style={styles.xpAwardText}>+{modalXp} XP Awarded</Text>
             </View>
-            <View style={styles.medalUnlocked}>
-              <View style={styles.medalUnlockedIcon}>
-                <Ionicons name="fitness" size={24} color={colors.gold} />
-              </View>
-              <View>
-                <Text style={styles.medalUnlockedLabel}>Medal Unlocked!</Text>
-                <Text style={styles.medalUnlockedName}>First Workout</Text>
-              </View>
-            </View>
+            {newlyEarnedMedalIds.length > 0 && (() => {
+              const medal = mockMedals.find(m => m.id === newlyEarnedMedalIds[0]);
+              if (!medal) return null;
+              return (
+                <View style={styles.medalUnlocked}>
+                  <View style={styles.medalUnlockedIcon}>
+                    <Ionicons name={medal.icon as any} size={24} color={colors.gold} />
+                  </View>
+                  <View>
+                    <Text style={styles.medalUnlockedLabel}>Medal Unlocked!</Text>
+                    <Text style={styles.medalUnlockedName}>{medal.name}</Text>
+                  </View>
+                </View>
+              );
+            })()}
             <TouchableOpacity style={styles.medalButton} onPress={() => setShowMedal(false)}>
               <Text style={styles.medalButtonText}>Awesome!</Text>
             </TouchableOpacity>
@@ -560,7 +607,7 @@ const styles = StyleSheet.create({
   effortKeyNum: { fontSize: 13, fontWeight: '800', color: '#fff' },
   effortKeyDesc: { fontSize: 13, color: colors.text, fontWeight: '500' },
 
-  // Complete / reset
+  // Complete
   completeButton: {
     backgroundColor: colors.primary,
     borderRadius: 16, paddingVertical: 18,
@@ -569,7 +616,6 @@ const styles = StyleSheet.create({
     shadowColor: colors.primary,
     shadowOffset: { width: 0, height: 6 }, shadowOpacity: 0.35, shadowRadius: 14,
   },
-  completeButtonPartial: { backgroundColor: colors.accent, shadowColor: colors.accent },
   completeButtonText: { fontSize: 18, fontWeight: '700', color: colors.text },
   completedBanner: {
     flexDirection: 'row', alignItems: 'center', gap: 14,
@@ -580,11 +626,6 @@ const styles = StyleSheet.create({
   completedBannerFull: { borderColor: colors.success, backgroundColor: colors.success + '22' },
   completedTitle: { fontSize: 18, fontWeight: '800', color: colors.success },
   completedSub: { fontSize: 13, color: colors.xpBar, marginTop: 2, fontWeight: '600' },
-  resetButton: {
-    flexDirection: 'row', alignItems: 'center', justifyContent: 'center',
-    gap: 8, marginTop: 14, paddingVertical: 12,
-  },
-  resetText: { fontSize: 14, color: colors.textSecondary },
 
   // Medal modal
   medalOverlay: {

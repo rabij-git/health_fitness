@@ -163,7 +163,6 @@ export default function LoginScreen({ onLogin }: Props) {
                   style={[styles.input, { flex: 1, marginBottom: 0 }]}
                   value={password}
                   onChangeText={v => { setPassword(v); clearError(); }}
-                  placeholder="••••••••"
                   placeholderTextColor={colors.textSecondary}
                   secureTextEntry={!showPass}
                   autoCapitalize="none"

@@ -179,6 +179,7 @@ export const getXpProgress = (xp: number) => {
   const currentXp = xp - level * 500;
   return currentXp / 500;
 };
+export const computeLevelFromXp = (xp: number) => Math.floor(xp / 500) + 1;
 
 // Mock Workout
 export const mockWorkout: Workout = {

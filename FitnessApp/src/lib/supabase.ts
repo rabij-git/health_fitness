@@ -74,6 +74,16 @@ export interface DBExercise {
   sort_order: number;
 }
 
+export interface DBProgramExercise {
+  exercise_id: string;
+  program_id: string;
+  name: string;
+  sets: number;
+  reps: string;
+  weight?: string;
+  sort_order: number;
+}
+
 export interface DBWeightLog {
   id: string;
   trainee_id: string;
@@ -106,5 +116,42 @@ export interface DBMessage {
   to_id: string;
   message: string;
   read: boolean;
+  created_at: string;
+}
+
+export interface DBNutritionPlan {
+  id: string;
+  trainee_id: string;
+  coach_id: string;
+  file_name: string;
+  file_url: string;
+  storage_path: string;
+  created_at: string;
+}
+
+export interface DBLibraryExercise {
+  id: string;
+  name: string;
+  category: string;
+  default_sets: number;
+  default_reps: string;
+  default_weight?: string;
+  created_by?: string;
+  created_at: string;
+}
+
+export interface DBUserMedal {
+  id: string;
+  user_id: string;
+  medal_id: string;
+  earned_at: string;
+}
+
+export interface DBCoachRequest {
+  id: string;
+  coach_id: string;
+  trainee_id: string;
+  initiated_by: 'coach' | 'trainee';
+  status: 'pending' | 'accepted' | 'declined';
   created_at: string;
 }

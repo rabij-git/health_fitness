@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useCallback } from 'react';
 import {
   View,
   Text,
@@ -6,10 +6,11 @@ import {
   ScrollView,
   SafeAreaView,
 } from 'react-native';
+import { useFocusEffect } from '@react-navigation/native';
 import { Ionicons } from '@expo/vector-icons';
 import { colors } from '../../theme/colors';
 import { mockMedals, getXpForNextLevel, getCurrentLevelXp } from '../../data/mockData';
-import { getProfile } from '../../lib/db';
+import { getProfile, getUserMedals } from '../../lib/db';
 import { DBUser } from '../../lib/supabase';
 
 const MedalCard = React.memo(function MedalCard({ medal }: { medal: typeof mockMedals[0] }) {
@@ -72,10 +73,13 @@ const MedalCard = React.memo(function MedalCard({ medal }: { medal: typeof mockM
 
 export default function GamificationScreen({ userId }: { userId?: string }) {
   const [profile, setProfile] = useState<DBUser | null>(null);
+  const [earnedMedalIds, setEarnedMedalIds] = useState<Set<string>>(new Set());
 
-  useEffect(() => {
-    if (userId) getProfile(userId).then(setProfile);
-  }, [userId]);
+  useFocusEffect(useCallback(() => {
+    if (!userId) return;
+    getProfile(userId).then(setProfile);
+    getUserMedals(userId).then(rows => setEarnedMedalIds(new Set(rows.map(r => r.medal_id))));
+  }, [userId]));
 
   const user = profile
     ? { name: profile.name, avatar: profile.avatar, level: profile.level, xp: profile.xp, streak: profile.streak }
@@ -85,7 +89,7 @@ export default function GamificationScreen({ userId }: { userId?: string }) {
   const currentLevelXp = getCurrentLevelXp(user.xp);
   const xpProgress = currentLevelXp / xpForNext;
 
-  const medals = mockMedals;
+  const medals = mockMedals.map(m => ({ ...m, earned: earnedMedalIds.has(m.id) }));
   const earnedMedals = medals.filter((m) => m.earned).length;
   const isNewUser = user.xp === 0 && user.streak === 0;
 

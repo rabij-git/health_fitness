@@ -12,10 +12,11 @@ import {
   Platform,
   ActivityIndicator,
 } from 'react-native';
+import { useFocusEffect } from '@react-navigation/native';
 import { Ionicons } from '@expo/vector-icons';
 import { colors } from '../../theme/colors';
 import { getXpForNextLevel, getCurrentLevelXp } from '../../data/mockData';
-import { getProfile, logBodyWeight, getWeightLogs, getMessages, sendMessage, getWorkoutWithExercises, getTraineeHistory } from '../../lib/db';
+import { getProfile, logBodyWeight, getWeightLogs, getMessages, sendMessage, markMessagesRead, getWorkoutWithExercises, getTraineeHistory } from '../../lib/db';
 import { DBUser, DBWeightLog, DBMessage, DBWorkout, DBExercise } from '../../lib/supabase';
 
 const DAY_LABELS = ['M', 'T', 'W', 'T', 'F', 'S', 'S'];
@@ -39,13 +40,9 @@ export default function TrainerDashboard({ onLogout, userId }: Props) {
   const [weightSaved, setWeightSaved] = useState(false);
   const [showMsgModal, setShowMsgModal] = useState(false);
   const [msgInput, setMsgInput] = useState('');
-  const [showQuickLog, setShowQuickLog] = useState(false);
-  const [qlExercise, setQlExercise] = useState('');
-  const [qlWeight, setQlWeight] = useState('');
-  const [qlSaved, setQlSaved] = useState(false);
   const [dismissedNotifs, setDismissedNotifs] = useState<string[]>([]);
 
-  useEffect(() => {
+  const loadHome = useCallback(() => {
     Promise.all([
       getProfile(userId),
       getWeightLogs(userId),
@@ -60,6 +57,11 @@ export default function TrainerDashboard({ onLogout, userId }: Props) {
       setLoadingProfile(false);
     });
   }, [userId]);
+
+  // Refetch every time the Home tab regains focus (not just on first mount) —
+  // otherwise finishing a workout on the Workout tab (which updates xp/level/streak)
+  // never shows up here since bottom-tab screens stay mounted between tab switches.
+  useFocusEffect(useCallback(() => { loadHome(); }, [loadHome]));
 
   useEffect(() => {
     if (!coachId) return;
@@ -78,6 +80,10 @@ export default function TrainerDashboard({ onLogout, userId }: Props) {
   const xpPercent = currentLevelXp / xpForNext;
   const lastWeight = weightLogs[0];
   const unreadNotifs: any[] = [];
+  const hasUnreadMessages = useMemo(
+    () => dbMessages.some(m => m.from_id === coachId && !m.read),
+    [dbMessages, coachId]
+  );
 
   // Weekly performance derived from session history (last 7 days)
   const { weeklyPerf, weeklyDone, weeklyXp, weeklyAvgCompletion } = useMemo(() => {
@@ -104,9 +110,10 @@ export default function TrainerDashboard({ onLogout, userId }: Props) {
   }, [sessionHistory]);
 
   const handleSaveWeight = useCallback(async () => {
-    if (!weight) return;
+    const parsed = parseFloat(weight);
+    if (!weight || isNaN(parsed) || parsed <= 0 || parsed > 250) return;
     try {
-      await logBodyWeight(userId, parseFloat(weight));
+      await logBodyWeight(userId, parsed);
       const updated = await getWeightLogs(userId);
       setWeightLogs(updated);
       setWeightSaved(true);
@@ -116,6 +123,24 @@ export default function TrainerDashboard({ onLogout, userId }: Props) {
       console.warn('Weight log error', e);
     }
   }, [userId, weight]);
+
+  const handleWeightChange = useCallback((v: string) => {
+    let cleaned = v.replace(/[^0-9.]/g, '');
+    const firstDot = cleaned.indexOf('.');
+    if (firstDot !== -1) {
+      cleaned = cleaned.slice(0, firstDot + 1) + cleaned.slice(firstDot + 1).replace(/\./g, '');
+    }
+    if (parseFloat(cleaned) > 250) cleaned = '250';
+    setWeight(cleaned);
+  }, []);
+
+  const openMsgModal = useCallback(() => {
+    setShowMsgModal(true);
+    if (coachId && hasUnreadMessages) {
+      markMessagesRead(userId, coachId);
+      setDbMessages(prev => prev.map(m => m.from_id === coachId ? { ...m, read: true } : m));
+    }
+  }, [coachId, userId, hasUnreadMessages]);
 
   const handleSend = useCallback(async () => {
     if (!msgInput.trim() || !coachId) return;
@@ -130,17 +155,6 @@ export default function TrainerDashboard({ onLogout, userId }: Props) {
     }
   }, [userId, coachId, msgInput]);
 
-  const handleQuickLog = useCallback(() => {
-    if (!qlExercise || !qlWeight) return;
-    setQlSaved(true);
-    setTimeout(() => {
-      setQlSaved(false);
-      setShowQuickLog(false);
-      setQlExercise('');
-      setQlWeight('');
-    }, 1500);
-  }, [qlExercise, qlWeight]);
-
   return (
     <SafeAreaView style={styles.container}>
       <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.scrollContent}>
@@ -153,9 +167,9 @@ export default function TrainerDashboard({ onLogout, userId }: Props) {
           </View>
           <View style={styles.headerRight}>
             {coachId && (
-              <TouchableOpacity style={styles.msgBtn} onPress={() => setShowMsgModal(true)}>
+              <TouchableOpacity style={styles.msgBtn} onPress={openMsgModal}>
                 <Ionicons name="chatbubble-ellipses" size={20} color={colors.xpBar} />
-                <View style={styles.msgDot} />
+                {hasUnreadMessages && <View style={styles.msgDot} />}
               </TouchableOpacity>
             )}
             <TouchableOpacity onPress={onLogout} style={styles.avatarCircle}>
@@ -327,7 +341,7 @@ export default function TrainerDashboard({ onLogout, userId }: Props) {
             <TextInput
               style={styles.weightInput}
               value={weight}
-              onChangeText={setWeight}
+              onChangeText={handleWeightChange}
               placeholder="0.0"
               placeholderTextColor={colors.textSecondary}
               keyboardType="decimal-pad"
@@ -336,6 +350,7 @@ export default function TrainerDashboard({ onLogout, userId }: Props) {
             <TouchableOpacity
               style={[styles.saveButton, weightSaved && styles.saveButtonSuccess]}
               onPress={handleSaveWeight}
+              disabled={!weight || parseFloat(weight) <= 0 || parseFloat(weight) > 250}
               activeOpacity={0.8}
             >
               <Ionicons name={weightSaved ? 'checkmark' : 'save'} size={18} color={colors.text} />
@@ -369,52 +384,6 @@ export default function TrainerDashboard({ onLogout, userId }: Props) {
           </View>
         </View>
       </ScrollView>
-
-      {/* Quick Log Weight FAB */}
-      <TouchableOpacity style={styles.fab} onPress={() => setShowQuickLog(true)} activeOpacity={0.85}>
-        <Ionicons name="barbell" size={20} color={colors.text} />
-        <Text style={styles.fabText}>Log Weight</Text>
-      </TouchableOpacity>
-
-      {/* Quick Log Modal */}
-      <Modal visible={showQuickLog} transparent animationType="slide">
-        <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={{ flex: 1 }}>
-          <TouchableOpacity style={styles.overlay} activeOpacity={1} onPress={() => setShowQuickLog(false)}>
-            <TouchableOpacity activeOpacity={1} style={styles.sheet}>
-              <Text style={styles.sheetTitle}>Log Exercise Weight</Text>
-              <Text style={styles.sheetSub}>Record what you lifted today</Text>
-              <Text style={styles.inputLabel}>Exercise</Text>
-              <TextInput
-                style={styles.sheetInput}
-                value={qlExercise}
-                onChangeText={setQlExercise}
-                placeholder="e.g. Barbell Bench Press"
-                placeholderTextColor={colors.textSecondary}
-              />
-              <Text style={styles.inputLabel}>Weight Used</Text>
-              <View style={styles.weightRow}>
-                <TextInput
-                  style={[styles.sheetInput, { flex: 1 }]}
-                  value={qlWeight}
-                  onChangeText={setQlWeight}
-                  placeholder="80"
-                  placeholderTextColor={colors.textSecondary}
-                  keyboardType="decimal-pad"
-                />
-                <Text style={styles.kgLabel}>kg</Text>
-              </View>
-              <TouchableOpacity
-                style={[styles.logBtn, qlSaved && styles.logBtnSuccess]}
-                onPress={handleQuickLog}
-                activeOpacity={0.85}
-              >
-                <Ionicons name={qlSaved ? 'checkmark-circle' : 'save'} size={20} color={colors.text} />
-                <Text style={styles.logBtnText}>{qlSaved ? 'Saved!' : 'Save Entry'}</Text>
-              </TouchableOpacity>
-            </TouchableOpacity>
-          </TouchableOpacity>
-        </KeyboardAvoidingView>
-      </Modal>
 
       {/* Message Coach Modal */}
       <Modal visible={showMsgModal} transparent animationType="slide">
@@ -730,26 +699,6 @@ const styles = StyleSheet.create({
   quickStatValue: { fontSize: 20, fontWeight: '800', color: colors.text },
   quickStatLabel: { fontSize: 11, color: colors.textSecondary, fontWeight: '500' },
 
-  // FAB
-  fab: {
-    position: 'absolute',
-    bottom: 90,
-    right: 20,
-    backgroundColor: '#FF8C00',
-    borderRadius: 28,
-    paddingHorizontal: 20,
-    paddingVertical: 14,
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-    elevation: 6,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 3 },
-    shadowOpacity: 0.3,
-    shadowRadius: 6,
-  },
-  fabText: { color: colors.text, fontSize: 14, fontWeight: '700' },
-
   // Modals
   overlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.7)', justifyContent: 'flex-end' },
   sheet: {
@@ -759,31 +708,6 @@ const styles = StyleSheet.create({
     padding: 24,
   },
   sheetTitle: { fontSize: 18, fontWeight: '800', color: colors.text, marginBottom: 4 },
-  sheetSub: { fontSize: 13, color: colors.textSecondary, marginBottom: 20 },
-  inputLabel: { fontSize: 12, fontWeight: '700', color: colors.textSecondary, letterSpacing: 1, marginBottom: 8 },
-  sheetInput: {
-    backgroundColor: colors.secondary,
-    borderRadius: 12,
-    padding: 14,
-    fontSize: 15,
-    color: colors.text,
-    borderWidth: 1,
-    borderColor: colors.border,
-    marginBottom: 16,
-  },
-  weightRow: { flexDirection: 'row', alignItems: 'center', gap: 10, marginBottom: 16 },
-  kgLabel: { fontSize: 16, fontWeight: '600', color: colors.textSecondary },
-  logBtn: {
-    backgroundColor: colors.primary,
-    borderRadius: 14,
-    padding: 16,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 8,
-  },
-  logBtnSuccess: { backgroundColor: colors.success },
-  logBtnText: { color: colors.text, fontSize: 16, fontWeight: '700' },
 
   // Chat
   chatHeader: { flexDirection: 'row', alignItems: 'center', gap: 12, marginBottom: 16 },
