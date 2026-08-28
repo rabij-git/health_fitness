@@ -5,11 +5,10 @@ import {
   StyleSheet,
   ScrollView,
   TouchableOpacity,
-  SafeAreaView,
   Modal,
-  TextInput,
   ActivityIndicator,
 } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { colors } from '../../theme/colors';
 import { Workout, mockMedals, computeLevelFromXp } from '../../data/mockData';
@@ -21,6 +20,7 @@ import {
   getTraineeHistory,
   evaluateAndAwardMedals,
   sendMessage,
+  logExerciseWeight,
 } from '../../lib/db';
 
 function computeNewStreak(currentStreak: number, priorHistory: { completed_at: string }[]): number {
@@ -97,7 +97,7 @@ export default function WorkoutScreen({ userId }: Props) {
     setExercises(prev => prev.map(ex => ex.id === id ? { ...ex, completed: !ex.completed } : ex));
   }, []);
 
-  const updateSet = useCallback((exId: string, setIndex: number, field: 'reps' | 'weight' | 'effort', value: string | number) => {
+  const updateSet = useCallback((exId: string, setIndex: number, field: 'reps' | 'weight' | 'effort', value: string | number | null) => {
     setExercises(prev => prev.map(ex => {
       if (ex.id !== exId) return ex;
       const newSets = ex.sets.map((s, i) => i === setIndex ? { ...s, [field]: value } : s);
@@ -178,9 +178,8 @@ export default function WorkoutScreen({ userId }: Props) {
   const activeWorkout = dbWorkout;
 
   const handleSubmit = async () => {
-    if (submitted) return;
-    const totalXp = Math.round(250 * progress);
-    setModalXp(totalXp);
+    if (submitted || loggedSets === 0) return;
+    const workoutXp = Math.round(250 * progress);
     setModalIsComplete(isFullyComplete);
     setSubmitted(true);
     setShowMedal(true);
@@ -201,27 +200,46 @@ export default function WorkoutScreen({ userId }: Props) {
         trainee_id: userId,
         workout_id: dbWorkoutId,
         completion_pct: Math.round(progress * 100),
-        xp_awarded: totalXp,
+        xp_awarded: workoutXp,
       });
     } catch (e) {
       console.warn('Workout completion: failed to save session', e);
     }
 
-    let newStreak = profile?.streak ?? 0;
+    // Record what was actually done today against each attempted exercise, so
+    // the Log tab reflects real completed workouts instead of staying empty.
     try {
-      const newXp = (profile?.xp ?? 0) + totalXp;
-      const newLevel = computeLevelFromXp(newXp);
-      newStreak = computeNewStreak(profile?.streak ?? 0, priorHistory);
-      await updateProfile(userId, { xp: newXp, level: newLevel, streak: newStreak });
+      const attempted = exercises.filter(ex => ex.sets.some(s => s.effort !== null));
+      for (const ex of attempted) {
+        await logExerciseWeight(userId, ex.name, ex.coachWeight ?? 'BW', ex.coachReps, ex.coachSets);
+      }
     } catch (e) {
-      console.warn('Workout completion: failed to update xp/level/streak', e);
+      console.warn('Workout completion: failed to write exercise log entries', e);
     }
 
+    // Evaluate medals before the XP write so a newly-earned medal's reward
+    // can be folded into the same update as the workout XP — medal cards
+    // advertise "+N XP", so earning one should actually grant that XP.
+    let newStreak = profile?.streak ?? 0;
+    let newlyEarned: string[] = [];
     try {
-      const newlyEarned = await evaluateAndAwardMedals(userId, priorHistory.length + 1, newStreak);
+      newStreak = computeNewStreak(profile?.streak ?? 0, priorHistory);
+      newlyEarned = await evaluateAndAwardMedals(userId, priorHistory.length + 1, newStreak);
       setNewlyEarnedMedalIds(newlyEarned);
     } catch (e) {
       console.warn('Workout completion: failed to evaluate medals', e);
+    }
+
+    const medalBonusXp = newlyEarned.reduce((sum, id) => sum + (mockMedals.find(m => m.id === id)?.xpReward ?? 0), 0);
+    const totalXp = workoutXp + medalBonusXp;
+    setModalXp(totalXp);
+
+    try {
+      const newXp = (profile?.xp ?? 0) + totalXp;
+      const newLevel = computeLevelFromXp(newXp);
+      await updateProfile(userId, { xp: newXp, level: newLevel, streak: newStreak });
+    } catch (e) {
+      console.warn('Workout completion: failed to update xp/level/streak', e);
     }
 
     try {
@@ -314,23 +332,11 @@ export default function WorkoutScreen({ userId }: Props) {
                   </View>
                 </View>
 
-                {/* Reps input */}
+                {/* Reps display (read-only) — trainees follow the coach-assigned reps, they don't set them */}
                 <View style={styles.colReps}>
-                  <TextInput
-                    style={styles.setInput}
-                    value={set.reps}
-                    onChangeText={(v) => {
-                      const digits = v.replace(/[^0-9]/g, '');
-                      if (digits === '') { updateSet(exercise.id, setIndex, 'reps', ''); return; }
-                      const num = parseInt(digits, 10);
-                      const max = parseInt(exercise.coachReps, 10) + 8;
-                      const clamped = Math.max(0, Math.min(num, max));
-                      updateSet(exercise.id, setIndex, 'reps', String(clamped));
-                    }}
-                    keyboardType="number-pad"
-                    placeholderTextColor={colors.textSecondary}
-                    placeholder={exercise.coachReps}
-                  />
+                  <View style={styles.setInputDisplay}>
+                    <Text style={styles.setInputDisplayText}>{set.reps}</Text>
+                  </View>
                 </View>
 
                 {/* Weight display (read-only) */}
@@ -353,7 +359,7 @@ export default function WorkoutScreen({ userId }: Props) {
                           { borderColor: cfg.color },
                           selected && { backgroundColor: cfg.color },
                         ]}
-                        onPress={() => updateSet(exercise.id, setIndex, 'effort', level)}
+                        onPress={() => updateSet(exercise.id, setIndex, 'effort', selected ? null : level)}
                         activeOpacity={0.7}
                       >
                         <Text style={[styles.effortBtnText, selected && styles.effortBtnTextSelected]}>
@@ -418,14 +424,20 @@ export default function WorkoutScreen({ userId }: Props) {
 
         {/* Action button — hidden once finished; each day gets a new workout, so there's no resuming */}
         {!submitted && (
-          <TouchableOpacity
-            style={styles.completeButton}
-            onPress={handleSubmit}
-            activeOpacity={0.85}
-          >
-            <Ionicons name="trophy" size={22} color={colors.text} />
-            <Text style={styles.completeButtonText}>Finish</Text>
-          </TouchableOpacity>
+          <>
+            <TouchableOpacity
+              style={[styles.completeButton, loggedSets === 0 && styles.completeButtonDisabled]}
+              onPress={handleSubmit}
+              activeOpacity={0.85}
+              disabled={loggedSets === 0}
+            >
+              <Ionicons name="trophy" size={22} color={colors.text} />
+              <Text style={styles.completeButtonText}>Finish</Text>
+            </TouchableOpacity>
+            {loggedSets === 0 && (
+              <Text style={styles.completeHint}>Log at least one set's effort before finishing</Text>
+            )}
+          </>
         )}
       </ScrollView>
 
@@ -617,6 +629,8 @@ const styles = StyleSheet.create({
     shadowOffset: { width: 0, height: 6 }, shadowOpacity: 0.35, shadowRadius: 14,
   },
   completeButtonText: { fontSize: 18, fontWeight: '700', color: colors.text },
+  completeButtonDisabled: { opacity: 0.4, shadowOpacity: 0 },
+  completeHint: { fontSize: 12, color: colors.textSecondary, textAlign: 'center', marginTop: 10 },
   completedBanner: {
     flexDirection: 'row', alignItems: 'center', gap: 14,
     backgroundColor: colors.success + '22',
