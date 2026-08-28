@@ -296,7 +296,7 @@ export default function ProfileScreen({ onLogout, userId }: Props) {
 
         {/* Coach Card */}
         <View style={styles.coachCard}>
-          <Text style={styles.coachCardTitle}>Your Trainer</Text>
+          <Text style={styles.coachCardTitle}>Your Coach</Text>
 
           {incomingRequest && (
             <View style={styles.requestBanner}>
@@ -339,7 +339,6 @@ export default function ProfileScreen({ onLogout, userId }: Props) {
               </View>
               <View>
                 <Text style={styles.coachName}>{coachProfile.name}</Text>
-                <Text style={styles.coachSub}>Your coach</Text>
               </View>
             </View>
           ) : outgoingRequest ? (

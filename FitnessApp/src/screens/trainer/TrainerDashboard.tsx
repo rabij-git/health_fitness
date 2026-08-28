@@ -173,7 +173,7 @@ export default function TrainerDashboard({ onLogout, userId }: Props) {
               </TouchableOpacity>
             )}
             <TouchableOpacity onPress={onLogout} style={styles.avatarCircle}>
-              <Text style={styles.avatarText}>{user.avatar}</Text>
+              <Ionicons name="log-out-outline" size={20} color={colors.text} />
             </TouchableOpacity>
           </View>
         </View>
@@ -487,7 +487,6 @@ const styles = StyleSheet.create({
     borderWidth: 2,
     borderColor: colors.xpBar,
   },
-  avatarText: { color: colors.text, fontSize: 15, fontWeight: '700' },
 
   // Notification banner
   notifBanner: {
