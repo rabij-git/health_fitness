@@ -33,7 +33,7 @@ npx expo start --tunnel --clear
 Scan the QR code with the Expo Go app on your phone.
 
 **On Android emulator:**
-1. Start your emulator first
+1. Start the emulator (see [Android Emulator: Start / Stop](#android-emulator-start--stop) below)
 2. Run:
 ```bash
 npx expo start --tunnel --clear
@@ -47,6 +47,31 @@ npx expo start --tunnel --clear
 Press `i` in the Metro terminal to open on iOS.
 
 > **Note:** Use `--tunnel` mode — it routes traffic via ngrok and avoids local network issues with emulators.
+
+---
+
+## Android Emulator: Start / Stop
+
+The Android SDK for this project is installed at `/opt/homebrew/share/android-commandlinetools/`, with an emulator AVD named `Pixel_6_API_34`.
+
+**Start:**
+```bash
+/opt/homebrew/share/android-commandlinetools/emulator/emulator -avd Pixel_6_API_34 -no-audio -no-snapshot
+```
+This opens the emulator window and boots the device. Wait for the home screen before running `npx expo start`.
+
+**Stop:**
+```bash
+/opt/homebrew/share/android-commandlinetools/platform-tools/adb emu kill
+```
+Or just close the emulator window directly.
+
+**List available AVDs** (if you need to confirm the name or create a different one):
+```bash
+/opt/homebrew/share/android-commandlinetools/emulator/emulator -list-avds
+```
+
+> **Tip:** If the emulator's network looks broken (bundling hangs forever, or Expo Go throws `Failed to download remote update`), don't just reload the app — do a full cold restart: `adb emu kill`, wait for it to fully exit, then start it again with the command above.
 
 ---
 
