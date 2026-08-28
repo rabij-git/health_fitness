@@ -5,12 +5,15 @@ import {
   StyleSheet,
   ScrollView,
   TouchableOpacity,
-  SafeAreaView,
   Modal,
+  TextInput,
+  KeyboardAvoidingView,
+  Platform,
 } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { colors } from '../../theme/colors';
-import { getMyTrainees, getProfile, getPrograms, getTraineeHistory, getUnreadMessagesForCoach, markMessageRead } from '../../lib/db';
+import { getMyTrainees, getProfile, getPrograms, getTraineeHistory, getUnreadMessagesForCoach, markMessageRead, getMessages, sendMessage } from '../../lib/db';
 import { DBUser, DBMessage } from '../../lib/supabase';
 
 function timeAgo(iso: string) {
@@ -57,6 +60,11 @@ export default function CoachDashboard({ onLogout, coachId, navigation }: Props)
   const [unreadMessages, setUnreadMessages] = useState<(DBMessage & { fromUser?: DBUser })[]>([]);
   const [showNotifications, setShowNotifications] = useState(false);
 
+  // ── Reply chat thread (opened from a notification) ──
+  const [chatTrainee, setChatTrainee] = useState<DBUser | null>(null);
+  const [chatMessages, setChatMessages] = useState<DBMessage[]>([]);
+  const [chatInput, setChatInput] = useState('');
+
   const loadNotifications = useCallback(() => {
     getUnreadMessagesForCoach(coachId).then(setUnreadMessages);
   }, [coachId]);
@@ -74,6 +82,29 @@ export default function CoachDashboard({ onLogout, coachId, navigation }: Props)
     setShowNotifications(false);
     setUnreadMessages([]);
   }, []);
+
+  const openChatWithTrainee = useCallback((trainee: DBUser) => {
+    setShowNotifications(false);
+    setChatTrainee(trainee);
+  }, []);
+
+  useEffect(() => {
+    if (!chatTrainee) { setChatMessages([]); return; }
+    getMessages(coachId, chatTrainee.id).then(setChatMessages);
+  }, [chatTrainee, coachId]);
+
+  const handleSendReply = useCallback(async () => {
+    if (!chatInput.trim() || !chatTrainee) return;
+    const text = chatInput.trim();
+    setChatInput('');
+    try {
+      await sendMessage(coachId, chatTrainee.id, text);
+      const updated = await getMessages(coachId, chatTrainee.id);
+      setChatMessages(updated);
+    } catch (e) {
+      console.warn('Send reply error', e);
+    }
+  }, [coachId, chatTrainee, chatInput]);
 
   useEffect(() => {
     getProfile(coachId).then(setCoachProfile);
@@ -183,7 +214,13 @@ export default function CoachDashboard({ onLogout, coachId, navigation }: Props)
             ) : (
               <ScrollView>
                 {unreadMessages.map(msg => (
-                  <View key={msg.id} style={styles.notifRow}>
+                  <TouchableOpacity
+                    key={msg.id}
+                    style={styles.notifRow}
+                    activeOpacity={0.7}
+                    disabled={!msg.fromUser}
+                    onPress={() => msg.fromUser && openChatWithTrainee(msg.fromUser)}
+                  >
                     <View style={styles.trainerAvatar}>
                       <Text style={styles.trainerAvatarText}>{msg.fromUser?.avatar ?? '?'}</Text>
                     </View>
@@ -192,12 +229,66 @@ export default function CoachDashboard({ onLogout, coachId, navigation }: Props)
                       <Text style={styles.notifMessage}>{msg.message}</Text>
                       <Text style={styles.notifTime}>{timeAgo(msg.created_at)}</Text>
                     </View>
-                  </View>
+                    <Ionicons name="chevron-forward" size={16} color={colors.textSecondary} />
+                  </TouchableOpacity>
                 ))}
               </ScrollView>
             )}
           </View>
         </View>
+      </Modal>
+
+      {/* Reply Chat Modal */}
+      <Modal visible={!!chatTrainee} transparent animationType="slide">
+        <KeyboardAvoidingView
+          behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+          style={{ flex: 1 }}
+        >
+          <View style={styles.notifOverlay}>
+            <View style={[styles.notifSheet, { maxHeight: '78%' }]}>
+              <View style={styles.chatHeader}>
+                <View style={styles.trainerAvatar}>
+                  <Text style={styles.trainerAvatarText}>{chatTrainee?.avatar ?? '?'}</Text>
+                </View>
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.notifTitle}>{chatTrainee?.name ?? 'Trainee'}</Text>
+                </View>
+                <TouchableOpacity onPress={() => setChatTrainee(null)}>
+                  <Ionicons name="close" size={22} color={colors.textSecondary} />
+                </TouchableOpacity>
+              </View>
+              <ScrollView style={styles.chatMessages} showsVerticalScrollIndicator={false}>
+                {chatMessages.length === 0 && (
+                  <Text style={{ color: colors.textSecondary, textAlign: 'center', marginTop: 20 }}>
+                    No messages yet.
+                  </Text>
+                )}
+                {chatMessages.map(msg => {
+                  const isMe = msg.from_id === coachId;
+                  return (
+                    <View key={msg.id} style={[styles.bubble, isMe ? styles.bubbleMe : styles.bubbleTrainee]}>
+                      <Text style={[styles.bubbleText, isMe && styles.bubbleTextMe]}>{msg.message}</Text>
+                      <Text style={styles.bubbleTime}>{new Date(msg.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</Text>
+                    </View>
+                  );
+                })}
+              </ScrollView>
+              <View style={styles.chatInputRow}>
+                <TextInput
+                  style={styles.chatInput}
+                  value={chatInput}
+                  onChangeText={setChatInput}
+                  placeholder={`Message ${chatTrainee?.name?.split(' ')[0] ?? 'trainee'}...`}
+                  placeholderTextColor={colors.textSecondary}
+                  multiline
+                />
+                <TouchableOpacity style={styles.sendBtn} onPress={handleSendReply}>
+                  <Ionicons name="send" size={18} color={colors.text} />
+                </TouchableOpacity>
+              </View>
+            </View>
+          </View>
+        </KeyboardAvoidingView>
       </Modal>
     </SafeAreaView>
   );
@@ -249,6 +340,57 @@ const styles = StyleSheet.create({
   notifName: { fontSize: 14, fontWeight: '700', color: colors.text },
   notifMessage: { fontSize: 13, color: colors.textSecondary, marginTop: 2, lineHeight: 18 },
   notifTime: { fontSize: 11, color: colors.textSecondary, marginTop: 4 },
+
+  // Reply chat modal
+  chatHeader: { flexDirection: 'row', alignItems: 'center', gap: 12, marginBottom: 16 },
+  chatMessages: { maxHeight: 320, marginBottom: 16 },
+  bubble: {
+    maxWidth: '80%',
+    padding: 12,
+    borderRadius: 16,
+    marginBottom: 10,
+  },
+  bubbleTrainee: {
+    backgroundColor: colors.secondary,
+    alignSelf: 'flex-start',
+    borderBottomLeftRadius: 4,
+  },
+  bubbleMe: {
+    backgroundColor: colors.xpBar + '33',
+    alignSelf: 'flex-end',
+    borderBottomRightRadius: 4,
+  },
+  bubbleText: { fontSize: 14, color: colors.text, lineHeight: 20 },
+  bubbleTextMe: { color: colors.xpBar },
+  bubbleTime: { fontSize: 10, color: colors.textSecondary, marginTop: 4, textAlign: 'right' },
+  chatInputRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-end',
+    gap: 10,
+    borderTopWidth: 1,
+    borderTopColor: colors.border,
+    paddingTop: 12,
+  },
+  chatInput: {
+    flex: 1,
+    backgroundColor: colors.secondary,
+    borderRadius: 20,
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+    fontSize: 14,
+    color: colors.text,
+    borderWidth: 1,
+    borderColor: colors.border,
+    maxHeight: 80,
+  },
+  sendBtn: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: colors.xpBar,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
   quickStats: {
     flexDirection: 'row',
     backgroundColor: colors.card,

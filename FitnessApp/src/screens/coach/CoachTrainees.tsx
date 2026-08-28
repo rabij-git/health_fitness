@@ -4,7 +4,6 @@ import {
   Text,
   StyleSheet,
   ScrollView,
-  SafeAreaView,
   TouchableOpacity,
   Modal,
   TextInput,
@@ -12,6 +11,7 @@ import {
   Platform,
   ActivityIndicator,
 } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import * as DocumentPicker from 'expo-document-picker';
 import { colors } from '../../theme/colors';
@@ -34,8 +34,10 @@ import {
   getNutritionPlans,
   uploadNutritionPlan,
   deleteNutritionPlan,
+  getMessages,
+  sendMessage,
 } from '../../lib/db';
-import { DBProgram, DBUser, DBWorkout, DBExercise, DBWeightLog, DBNutritionPlan, DBCoachRequest, DBLibraryExercise } from '../../lib/supabase';
+import { DBProgram, DBUser, DBWorkout, DBExercise, DBWeightLog, DBNutritionPlan, DBCoachRequest, DBLibraryExercise, DBMessage } from '../../lib/supabase';
 import { sanitizeCount, sanitizeWeightInput, stripKg, withKg } from '../../lib/exerciseInput';
 
 interface ExerciseEntry {
@@ -85,11 +87,13 @@ export default function CoachTrainees({ coachId }: Props) {
 
   // ── Trainee detail modal ──
   const [selectedTrainee, setSelectedTrainee] = useState<DBUser | null>(null);
-  const [detailTab, setDetailTab] = useState<'program' | 'history' | 'weight' | 'nutrition'>('program');
+  const [detailTab, setDetailTab] = useState<'program' | 'history' | 'weight' | 'nutrition' | 'chat'>('program');
   const [selectedTraineeWorkout, setSelectedTraineeWorkout] = useState<{ workout: DBWorkout; exercises: DBExercise[] } | null>(null);
   const [selectedTraineeHistory, setSelectedTraineeHistory] = useState<any[]>([]);
   const [selectedTraineeWeights, setSelectedTraineeWeights] = useState<DBWeightLog[]>([]);
   const [selectedTraineeNutrition, setSelectedTraineeNutrition] = useState<DBNutritionPlan[]>([]);
+  const [selectedTraineeMessages, setSelectedTraineeMessages] = useState<DBMessage[]>([]);
+  const [chatInput, setChatInput] = useState('');
   const [loadingDetail, setLoadingDetail] = useState(false);
   const [uploadingNutrition, setUploadingNutrition] = useState(false);
 
@@ -149,6 +153,7 @@ export default function CoachTrainees({ coachId }: Props) {
       setSelectedTraineeHistory([]);
       setSelectedTraineeWeights([]);
       setSelectedTraineeNutrition([]);
+      setSelectedTraineeMessages([]);
       return;
     }
     setLoadingDetail(true);
@@ -157,14 +162,29 @@ export default function CoachTrainees({ coachId }: Props) {
       getTraineeHistory(selectedTrainee.id),
       getWeightLogs(selectedTrainee.id),
       getNutritionPlans(selectedTrainee.id),
-    ]).then(([wkt, history, weights, nutrition]) => {
+      getMessages(coachId, selectedTrainee.id),
+    ]).then(([wkt, history, weights, nutrition, messages]) => {
       setSelectedTraineeWorkout(wkt);
       setSelectedTraineeHistory(history);
       setSelectedTraineeWeights(weights);
       setSelectedTraineeNutrition(nutrition);
+      setSelectedTraineeMessages(messages);
       setLoadingDetail(false);
     });
-  }, [selectedTrainee]);
+  }, [selectedTrainee, coachId]);
+
+  const handleSendToTrainee = useCallback(async () => {
+    if (!chatInput.trim() || !selectedTrainee) return;
+    const text = chatInput.trim();
+    setChatInput('');
+    try {
+      await sendMessage(coachId, selectedTrainee.id, text);
+      const updated = await getMessages(coachId, selectedTrainee.id);
+      setSelectedTraineeMessages(updated);
+    } catch (e) {
+      console.warn('Send message error', e);
+    }
+  }, [coachId, selectedTrainee, chatInput]);
 
   const handleUploadNutrition = useCallback(async () => {
     if (!selectedTrainee) return;
@@ -632,14 +652,14 @@ export default function CoachTrainees({ coachId }: Props) {
 
             {/* Tabs */}
             <View style={styles.tabRow}>
-              {(['program', 'history', 'weight', 'nutrition'] as const).map(tab => (
+              {(['program', 'history', 'weight', 'nutrition', 'chat'] as const).map(tab => (
                 <TouchableOpacity
                   key={tab}
                   style={[styles.tab, detailTab === tab && styles.tabActive]}
                   onPress={() => setDetailTab(tab)}
                 >
                   <Text style={[styles.tabText, detailTab === tab && styles.tabTextActive]}>
-                    {tab === 'program' ? 'Program' : tab === 'history' ? 'History' : tab === 'weight' ? 'Weight' : 'Nutrition'}
+                    {tab === 'program' ? 'Program' : tab === 'history' ? 'History' : tab === 'weight' ? 'Weight' : tab === 'nutrition' ? 'Nutrition' : 'Chat'}
                   </Text>
                 </TouchableOpacity>
               ))}
@@ -649,6 +669,41 @@ export default function CoachTrainees({ coachId }: Props) {
               <View style={{ paddingVertical: 40, alignItems: 'center' }}>
                 <ActivityIndicator size="large" color={colors.primary} />
               </View>
+            ) : detailTab === 'chat' ? (
+              <KeyboardAvoidingView
+                behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+                style={{ flex: 1 }}
+              >
+                <ScrollView style={styles.chatMessages} showsVerticalScrollIndicator={false}>
+                  {selectedTraineeMessages.length === 0 && (
+                    <Text style={{ color: colors.textSecondary, textAlign: 'center', marginTop: 20 }}>
+                      No messages yet. Say hi!
+                    </Text>
+                  )}
+                  {selectedTraineeMessages.map(msg => {
+                    const isMe = msg.from_id === coachId;
+                    return (
+                      <View key={msg.id} style={[styles.bubble, isMe ? styles.bubbleMe : styles.bubbleTrainee]}>
+                        <Text style={[styles.bubbleText, isMe && styles.bubbleTextMe]}>{msg.message}</Text>
+                        <Text style={styles.bubbleTime}>{new Date(msg.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</Text>
+                      </View>
+                    );
+                  })}
+                </ScrollView>
+                <View style={styles.chatInputRow}>
+                  <TextInput
+                    style={styles.chatInput}
+                    value={chatInput}
+                    onChangeText={setChatInput}
+                    placeholder={`Message ${selectedTrainee?.name?.split(' ')[0] ?? 'trainee'}...`}
+                    placeholderTextColor={colors.textSecondary}
+                    multiline
+                  />
+                  <TouchableOpacity style={styles.sendBtn} onPress={handleSendToTrainee}>
+                    <Ionicons name="send" size={18} color={colors.text} />
+                  </TouchableOpacity>
+                </View>
+              </KeyboardAvoidingView>
             ) : (
               <ScrollView showsVerticalScrollIndicator={false} style={{ flex: 1 }}>
                 {/* Program tab */}
@@ -1480,6 +1535,56 @@ const styles = StyleSheet.create({
   tabActive: { backgroundColor: colors.primary },
   tabText: { fontSize: 13, fontWeight: '600', color: colors.textSecondary },
   tabTextActive: { color: colors.text },
+
+  // Chat tab
+  chatMessages: { flex: 1, marginBottom: 12 },
+  bubble: {
+    maxWidth: '80%',
+    padding: 12,
+    borderRadius: 16,
+    marginBottom: 10,
+  },
+  bubbleTrainee: {
+    backgroundColor: colors.secondary,
+    alignSelf: 'flex-start',
+    borderBottomLeftRadius: 4,
+  },
+  bubbleMe: {
+    backgroundColor: colors.xpBar + '33',
+    alignSelf: 'flex-end',
+    borderBottomRightRadius: 4,
+  },
+  bubbleText: { fontSize: 14, color: colors.text, lineHeight: 20 },
+  bubbleTextMe: { color: colors.xpBar },
+  bubbleTime: { fontSize: 10, color: colors.textSecondary, marginTop: 4, textAlign: 'right' },
+  chatInputRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-end',
+    gap: 10,
+    borderTopWidth: 1,
+    borderTopColor: colors.border,
+    paddingTop: 12,
+  },
+  chatInput: {
+    flex: 1,
+    backgroundColor: colors.secondary,
+    borderRadius: 20,
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+    fontSize: 14,
+    color: colors.text,
+    borderWidth: 1,
+    borderColor: colors.border,
+    maxHeight: 80,
+  },
+  sendBtn: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: colors.xpBar,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
 
   // Program detail
   workoutBlock: {
