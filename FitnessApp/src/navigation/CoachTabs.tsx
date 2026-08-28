@@ -1,6 +1,7 @@
 import React from 'react';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import { Ionicons } from '@expo/vector-icons';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { colors } from '../theme/colors';
 import CoachDashboard from '../screens/coach/CoachDashboard';
 import CoachPrograms from '../screens/coach/CoachPrograms';
@@ -16,6 +17,7 @@ interface Props {
 }
 
 export default function CoachTabs({ onLogout, userId }: Props) {
+  const insets = useSafeAreaInsets();
   return (
     <Tab.Navigator
       screenOptions={({ route }) => ({
@@ -24,8 +26,8 @@ export default function CoachTabs({ onLogout, userId }: Props) {
           backgroundColor: colors.card,
           borderTopColor: colors.border,
           borderTopWidth: 1,
-          height: 64,
-          paddingBottom: 10,
+          height: 54 + insets.bottom,
+          paddingBottom: 10 + insets.bottom,
           paddingTop: 8,
         },
         tabBarActiveTintColor: colors.primary,
