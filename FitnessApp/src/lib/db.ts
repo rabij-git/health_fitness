@@ -585,6 +585,29 @@ export async function getUnreadMessagesForCoach(coachId: string): Promise<(DBMes
   return data.map(m => ({ ...m, fromUser: userMap.get(m.from_id) }));
 }
 
+// All notifications a coach has ever received (read + unread), for a persistent
+// notifications list — unlike getUnreadMessagesForCoach, entries don't vanish
+// once marked read.
+export async function getMessagesForCoach(coachId: string, limit: number = 50): Promise<(DBMessage & { fromUser?: DBUser })[]> {
+  const { data, error } = await supabase
+    .from('messages')
+    .select('*')
+    .eq('to_id', coachId)
+    .order('created_at', { ascending: false })
+    .limit(limit);
+  if (error || !data) return [];
+  const fromIds = Array.from(new Set(data.map(m => m.from_id)));
+  if (fromIds.length === 0) return data.map(m => ({ ...m, fromUser: undefined }));
+  const { data: users } = await supabase.from('users').select('*').in('id', fromIds);
+  const userMap = new Map((users ?? []).map(u => [u.id, u]));
+  return data.map(m => ({ ...m, fromUser: userMap.get(m.from_id) }));
+}
+
+export async function deleteMessage(messageId: string) {
+  const { error } = await supabase.from('messages').delete().eq('id', messageId);
+  if (error) throw error;
+}
+
 // ── Medals ────────────────────────────────────────────────────────────────────
 
 export async function getUserMedals(userId: string): Promise<DBUserMedal[]> {

@@ -13,7 +13,7 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { colors } from '../../theme/colors';
-import { getMyTrainees, getProfile, getPrograms, getTraineeHistory, getUnreadMessagesForCoach, markMessageRead, getMessages, sendMessage } from '../../lib/db';
+import { getMyTrainees, getProfile, getPrograms, getTraineeHistory, getMessagesForCoach, markMessageRead, deleteMessage, getMessages, sendMessage } from '../../lib/db';
 import { DBUser, DBMessage } from '../../lib/supabase';
 
 function timeAgo(iso: string) {
@@ -57,8 +57,11 @@ export default function CoachDashboard({ onLogout, coachId, navigation }: Props)
   const [coachProfile, setCoachProfile] = useState<DBUser | null>(null);
   const [programCount, setProgramCount] = useState(0);
   const [compliance, setCompliance] = useState<number | null>(null);
-  const [unreadMessages, setUnreadMessages] = useState<(DBMessage & { fromUser?: DBUser })[]>([]);
+  // Notifications persist here until the coach explicitly deletes them —
+  // unlike the old unread-only fetch, they don't vanish just from being seen.
+  const [notifications, setNotifications] = useState<(DBMessage & { fromUser?: DBUser })[]>([]);
   const [showNotifications, setShowNotifications] = useState(false);
+  const hasUnread = notifications.some(m => !m.read);
 
   // ── Reply chat thread (opened from a notification) ──
   const [chatTrainee, setChatTrainee] = useState<DBUser | null>(null);
@@ -66,7 +69,7 @@ export default function CoachDashboard({ onLogout, coachId, navigation }: Props)
   const [chatInput, setChatInput] = useState('');
 
   const loadNotifications = useCallback(() => {
-    getUnreadMessagesForCoach(coachId).then(setUnreadMessages);
+    getMessagesForCoach(coachId).then(setNotifications);
   }, [coachId]);
 
   useEffect(() => {
@@ -75,12 +78,24 @@ export default function CoachDashboard({ onLogout, coachId, navigation }: Props)
 
   const openNotifications = useCallback(() => {
     setShowNotifications(true);
-    unreadMessages.forEach(m => markMessageRead(m.id));
-  }, [unreadMessages]);
+    const unread = notifications.filter(m => !m.read);
+    if (unread.length > 0) {
+      unread.forEach(m => markMessageRead(m.id));
+      setNotifications(prev => prev.map(m => (m.read ? m : { ...m, read: true })));
+    }
+  }, [notifications]);
 
   const closeNotifications = useCallback(() => {
     setShowNotifications(false);
-    setUnreadMessages([]);
+  }, []);
+
+  const handleDeleteNotification = useCallback(async (id: string) => {
+    setNotifications(prev => prev.filter(m => m.id !== id));
+    try {
+      await deleteMessage(id);
+    } catch (e) {
+      console.warn('deleteMessage error', e);
+    }
   }, []);
 
   const openChatWithTrainee = useCallback((trainee: DBUser) => {
@@ -139,10 +154,10 @@ export default function CoachDashboard({ onLogout, coachId, navigation }: Props)
           <View style={styles.headerRight}>
             <TouchableOpacity style={styles.bellBtn} onPress={openNotifications}>
               <Ionicons name="notifications-outline" size={20} color={colors.xpBar} />
-              {unreadMessages.length > 0 && <View style={styles.bellDot} />}
+              {hasUnread && <View style={styles.bellDot} />}
             </TouchableOpacity>
             <TouchableOpacity style={styles.avatarButton} onPress={onLogout}>
-              <Text style={styles.avatarText}>{coachProfile?.avatar ?? 'CO'}</Text>
+              <Ionicons name="log-out-outline" size={20} color={colors.text} />
             </TouchableOpacity>
           </View>
         </View>
@@ -197,7 +212,7 @@ export default function CoachDashboard({ onLogout, coachId, navigation }: Props)
       </ScrollView>
 
       {/* Notifications Modal */}
-      <Modal visible={showNotifications} transparent animationType="slide">
+      <Modal visible={showNotifications} transparent animationType="slide" onRequestClose={closeNotifications}>
         <View style={styles.notifOverlay}>
           <View style={styles.notifSheet}>
             <View style={styles.notifHeader}>
@@ -206,31 +221,40 @@ export default function CoachDashboard({ onLogout, coachId, navigation }: Props)
                 <Ionicons name="close" size={22} color={colors.textSecondary} />
               </TouchableOpacity>
             </View>
-            {unreadMessages.length === 0 ? (
+            {notifications.length === 0 ? (
               <View style={{ alignItems: 'center', paddingVertical: 32, gap: 8 }}>
                 <Ionicons name="notifications-off-outline" size={32} color={colors.textSecondary} />
-                <Text style={{ color: colors.textSecondary }}>Nothing new</Text>
+                <Text style={{ color: colors.textSecondary }}>Nothing yet</Text>
               </View>
             ) : (
               <ScrollView>
-                {unreadMessages.map(msg => (
-                  <TouchableOpacity
-                    key={msg.id}
-                    style={styles.notifRow}
-                    activeOpacity={0.7}
-                    disabled={!msg.fromUser}
-                    onPress={() => msg.fromUser && openChatWithTrainee(msg.fromUser)}
-                  >
-                    <View style={styles.trainerAvatar}>
-                      <Text style={styles.trainerAvatarText}>{msg.fromUser?.avatar ?? '?'}</Text>
-                    </View>
-                    <View style={{ flex: 1 }}>
-                      <Text style={styles.notifName}>{msg.fromUser?.name ?? 'Trainee'}</Text>
-                      <Text style={styles.notifMessage}>{msg.message}</Text>
-                      <Text style={styles.notifTime}>{timeAgo(msg.created_at)}</Text>
-                    </View>
-                    <Ionicons name="chevron-forward" size={16} color={colors.textSecondary} />
-                  </TouchableOpacity>
+                {notifications.map(msg => (
+                  <View key={msg.id} style={styles.notifRow}>
+                    {!msg.read && <View style={styles.notifUnreadDot} />}
+                    <TouchableOpacity
+                      style={styles.notifRowMain}
+                      activeOpacity={0.7}
+                      disabled={!msg.fromUser}
+                      onPress={() => msg.fromUser && openChatWithTrainee(msg.fromUser)}
+                    >
+                      <View style={styles.trainerAvatar}>
+                        <Text style={styles.trainerAvatarText}>{msg.fromUser?.avatar ?? '?'}</Text>
+                      </View>
+                      <View style={{ flex: 1 }}>
+                        <Text style={styles.notifName}>{msg.fromUser?.name ?? 'Trainee'}</Text>
+                        <Text style={styles.notifMessage}>{msg.message}</Text>
+                        <Text style={styles.notifTime}>{timeAgo(msg.created_at)}</Text>
+                      </View>
+                      <Ionicons name="chevron-forward" size={16} color={colors.textSecondary} />
+                    </TouchableOpacity>
+                    <TouchableOpacity
+                      style={styles.notifDeleteBtn}
+                      onPress={() => handleDeleteNotification(msg.id)}
+                      hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                    >
+                      <Ionicons name="trash-outline" size={16} color={colors.primary} />
+                    </TouchableOpacity>
+                  </View>
                 ))}
               </ScrollView>
             )}
@@ -239,7 +263,12 @@ export default function CoachDashboard({ onLogout, coachId, navigation }: Props)
       </Modal>
 
       {/* Reply Chat Modal */}
-      <Modal visible={!!chatTrainee} transparent animationType="slide">
+      <Modal
+        visible={!!chatTrainee}
+        transparent
+        animationType="slide"
+        onRequestClose={() => setChatTrainee(null)}
+      >
         <KeyboardAvoidingView
           behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
           style={{ flex: 1 }}
@@ -314,7 +343,6 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
-  avatarText: { color: colors.text, fontWeight: '700', fontSize: 14 },
   headerRight: { flexDirection: 'row', alignItems: 'center', gap: 10 },
   bellBtn: {
     width: 44, height: 44, borderRadius: 22,
@@ -334,9 +362,12 @@ const styles = StyleSheet.create({
   notifHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 },
   notifTitle: { fontSize: 18, fontWeight: '800', color: colors.text },
   notifRow: {
-    flexDirection: 'row', alignItems: 'flex-start', gap: 12,
+    flexDirection: 'row', alignItems: 'center', gap: 8,
     paddingVertical: 12, borderBottomWidth: 1, borderBottomColor: colors.border,
   },
+  notifRowMain: { flex: 1, flexDirection: 'row', alignItems: 'flex-start', gap: 12 },
+  notifUnreadDot: { width: 7, height: 7, borderRadius: 3.5, backgroundColor: colors.primary },
+  notifDeleteBtn: { padding: 6 },
   notifName: { fontSize: 14, fontWeight: '700', color: colors.text },
   notifMessage: { fontSize: 13, color: colors.textSecondary, marginTop: 2, lineHeight: 18 },
   notifTime: { fontSize: 11, color: colors.textSecondary, marginTop: 4 },

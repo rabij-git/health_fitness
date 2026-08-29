@@ -60,7 +60,7 @@ export default function CoachTabs({ onLogout, userId }: Props) {
         {() => <CoachRankings coachId={userId} />}
       </Tab.Screen>
       <Tab.Screen name="Settings">
-        {() => <CoachSettings onLogout={onLogout} />}
+        {({ navigation }) => <CoachSettings onLogout={onLogout} coachId={userId} navigation={navigation} />}
       </Tab.Screen>
     </Tab.Navigator>
   );
