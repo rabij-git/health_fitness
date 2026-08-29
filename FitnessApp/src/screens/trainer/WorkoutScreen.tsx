@@ -442,7 +442,7 @@ export default function WorkoutScreen({ userId }: Props) {
       </ScrollView>
 
       {/* Medal Modal */}
-      <Modal visible={showMedal} transparent animationType="fade">
+      <Modal visible={showMedal} transparent animationType="fade" onRequestClose={() => setShowMedal(false)}>
         <View style={styles.medalOverlay}>
           <View style={styles.medalToast}>
             <View style={styles.medalIconWrapper}>

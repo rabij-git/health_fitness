@@ -220,7 +220,12 @@ export default function CoachRankings({ coachId }: Props) {
       </ScrollView>
 
       {/* Create Gym Modal */}
-      <Modal visible={showCreateGym} transparent animationType="slide">
+      <Modal
+        visible={showCreateGym}
+        transparent
+        animationType="slide"
+        onRequestClose={() => setShowCreateGym(false)}
+      >
         <View style={styles.overlay}>
           <View style={styles.sheet}>
             <View style={styles.sheetHeader}>
@@ -252,7 +257,12 @@ export default function CoachRankings({ coachId }: Props) {
       </Modal>
 
       {/* Add Member Modal */}
-      <Modal visible={showAddMember} transparent animationType="slide">
+      <Modal
+        visible={showAddMember}
+        transparent
+        animationType="slide"
+        onRequestClose={() => { setShowAddMember(false); setSearchQuery(''); setSearchResults([]); }}
+      >
         <View style={styles.overlay}>
           <View style={styles.sheet}>
             <View style={styles.sheetHeader}>

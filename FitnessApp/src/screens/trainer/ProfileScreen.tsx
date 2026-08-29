@@ -394,7 +394,12 @@ export default function ProfileScreen({ onLogout, userId }: Props) {
       </ScrollView>
 
       {/* Find a Coach Modal */}
-      <Modal visible={showFindCoach} transparent animationType="slide">
+      <Modal
+        visible={showFindCoach}
+        transparent
+        animationType="slide"
+        onRequestClose={() => { setShowFindCoach(false); setCoachSearchQuery(''); setCoachSearchResults([]); }}
+      >
         <View style={styles.overlay}>
           <View style={styles.sheet}>
             <View style={styles.sheetHeader}>

@@ -154,7 +154,7 @@ export default function ExerciseLogScreen({ userId }: { userId: string }) {
       </ScrollView>
 
       {/* Exercise Detail Modal */}
-      <Modal visible={!!selected} transparent animationType="slide">
+      <Modal visible={!!selected} transparent animationType="slide" onRequestClose={() => setSelected(null)}>
         <View style={styles.overlay}>
           <View style={styles.sheet}>
             <View style={styles.sheetHeaderRow}>
@@ -200,7 +200,12 @@ export default function ExerciseLogScreen({ userId }: { userId: string }) {
       </Modal>
 
       {/* Add Entry Modal */}
-      <Modal visible={showAdd} transparent animationType="fade">
+      <Modal
+        visible={showAdd}
+        transparent
+        animationType="fade"
+        onRequestClose={() => { setShowAdd(false); setNewWeight(''); setNewReps(''); }}
+      >
         <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={{ flex: 1 }}>
           <View style={styles.overlay}>
             <View style={styles.sheet}>

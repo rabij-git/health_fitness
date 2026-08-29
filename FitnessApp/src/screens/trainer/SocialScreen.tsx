@@ -297,7 +297,12 @@ export default function SocialScreen({ userId }: Props) {
       </ScrollView>
 
       {/* Find Friends Modal */}
-      <Modal visible={showSearch} transparent animationType="slide">
+      <Modal
+        visible={showSearch}
+        transparent
+        animationType="slide"
+        onRequestClose={() => { setShowSearch(false); setSearchQuery(''); setSearchResults([]); }}
+      >
         <View style={styles.overlay}>
           <View style={styles.sheet}>
             <View style={styles.sheetHeader}>

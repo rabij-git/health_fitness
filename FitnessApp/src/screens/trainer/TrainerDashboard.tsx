@@ -386,7 +386,7 @@ export default function TrainerDashboard({ onLogout, userId }: Props) {
       </ScrollView>
 
       {/* Message Coach Modal */}
-      <Modal visible={showMsgModal} transparent animationType="slide">
+      <Modal visible={showMsgModal} transparent animationType="slide" onRequestClose={() => setShowMsgModal(false)}>
         <KeyboardAvoidingView
           behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
           style={{ flex: 1 }}
