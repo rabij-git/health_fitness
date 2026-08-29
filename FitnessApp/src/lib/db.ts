@@ -251,12 +251,12 @@ export async function deleteLibraryExercise(id: string) {
 // ── Workouts ──────────────────────────────────────────────────────────────────
 
 export async function createWorkout(
-  workout: Omit<DBWorkout, 'id' | 'created_at'>,
+  workout: Omit<DBWorkout, 'id' | 'created_at' | 'active'>,
   exercises: ExercisePayloadEntry[]
 ): Promise<DBWorkout> {
   const { data: wData, error: wError } = await supabase
     .from('workouts')
-    .insert(workout)
+    .insert({ ...workout, active: true })
     .select()
     .single();
   if (wError) throw wError;
@@ -270,13 +270,30 @@ export async function createWorkout(
   return wData;
 }
 
-export async function getWorkoutWithExercises(traineeId: string) {
-  const { data: workout, error: wError } = await supabase
+// All workouts ever assigned to a trainee (active + inactive), newest first —
+// a trainee can have several at once; a coach retires one by setting it
+// inactive (setWorkoutActive) rather than deleting it, so it stays visible
+// as history.
+export async function getWorkoutsForTrainee(traineeId: string): Promise<DBWorkout[]> {
+  const { data, error } = await supabase
     .from('workouts')
     .select('*')
     .eq('trainee_id', traineeId)
-    .order('created_at', { ascending: false })
-    .limit(1)
+    .order('created_at', { ascending: false });
+  if (error) return [];
+  return data ?? [];
+}
+
+export async function setWorkoutActive(workoutId: string, active: boolean) {
+  const { error } = await supabase.from('workouts').update({ active }).eq('id', workoutId);
+  if (error) throw error;
+}
+
+export async function getWorkoutWithExercises(workoutId: string) {
+  const { data: workout, error: wError } = await supabase
+    .from('workouts')
+    .select('*')
+    .eq('id', workoutId)
     .single();
   if (wError) return null;
 

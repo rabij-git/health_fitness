@@ -61,6 +61,7 @@ export interface DBWorkout {
   description: string;
   duration: string;
   difficulty: string;
+  active: boolean;
   created_at: string;
 }
 
