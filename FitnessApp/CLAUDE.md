@@ -3,8 +3,9 @@
 # Session Notes & Decisions
 
 ## Dev Environment Setup
-- **Framework:** React Native / Expo SDK 56
-- **Node version:** v20.20.2 via nvm (minimum >=20.19.4 required for Expo 56)
+- **Framework:** React Native / Expo SDK 54 (downgraded from 56 to match the SDK version installed in Expo Go on the test phone)
+- **Node version:** v20.20.2 via nvm (minimum >=20.19.4 required)
+- **Watchman:** installed via `brew install watchman` — Metro falls back to Node's slower built-in file watcher without it, and the gap widens as the project grows. Required for reasonable bundle/reload times on macOS.
 - **Android SDK:** Installed at `/opt/homebrew/share/android-commandlinetools/`
 - **Emulator:** Pixel 6, API 34 (Android 14), AVD name `Pixel_6_API_34`
 - **adb path:** `/opt/homebrew/share/android-commandlinetools/platform-tools/adb`
@@ -187,6 +188,18 @@ Replaces the old "coach unilaterally assigns" flow entirely.
 
 ---
 
+## Multiple Workouts Per Trainee
+
+Previously a trainee could only ever have one workout — `getWorkoutWithExercises(traineeId)` always fetched the single latest `workouts` row, and assigning a new program silently superseded whatever came before. This is now a genuine multi-workout model:
+
+- **Schema:** `workouts.active` (boolean, default `true`) — a coach retires a workout by toggling it inactive rather than deleting it, so it stays visible as history. Migration: `/private/tmp/scratch/workouts_add_active_flag.sql` (already run).
+- **`db.ts`:** `getWorkoutWithExercises` now takes a **`workoutId`**, not a `traineeId` — it fetches one specific workout, since "the latest one" is no longer a meaningful concept. `getWorkoutsForTrainee(traineeId)` returns *all* of a trainee's workouts (active + inactive), newest first. `setWorkoutActive(workoutId, active)` toggles the flag. `createWorkout` always inserts with `active: true`.
+- **`CoachTrainees.tsx` (coach side):** the trainee-detail modal's "Program" tab is now a list of every workout ever assigned, each an expandable row (tap to load its exercises on demand) with an **Edit** button and an **Active/Inactive `Switch`**. "Assign New Workout" in the status row is always available and always *adds* — there's no more "Switch Program" replace semantics. The roster card shows each trainee's active-workout count (`traineeActiveCounts`, batch-fetched in `loadData`) instead of a single program name.
+- **`WorkoutScreen.tsx` (trainee side):** the tab's landing view is now a workout picker — "Active" workouts (tappable, start logging) and "Past" workouts (tappable, opens a read-only exercise list — no effort inputs, no Finish button, since only active workouts can be completed). Selecting a workout shows a "‹ All Workouts" back row to return to the picker. `submitted`/exercise-log state resets per selected workout via a `useEffect` keyed on `selectedWorkoutId`.
+- **`TrainerDashboard.tsx` (Home):** the workout preview card fetches `getWorkoutsForTrainee`, previews the most recent *active* one (`primaryWorkout`), and the whole card is now tappable (`navigation.navigate('Workout')`) — previously the "+N more exercises" line was a bare `<Text>` with no `onPress`, a dead link. If more than one active workout exists, a "+N more active workouts — tap to view all" row appears. `navigation` is threaded in via `TrainerTabs.tsx`.
+
+---
+
 ## Shared Exercise Library
 
 - `exercise_library` table, global — seeded with the original 22 default exercises (Push/Pull/Legs/Core). Since renamed/extended: `Leg Curl` → `Knee Extension`, plus a new `Knee Curl` added.
@@ -243,6 +256,7 @@ No push notifications — in-app only, built on the existing `messages` table:
 - Each notification row has a delete button (`deleteMessage(id)`) so the coach can clear old ones instead of being stuck with a growing list.
 - Tapping a notification (not its delete button) opens a reply-chat modal scoped to that trainee (`openChatWithTrainee`) — see Messaging below.
 - Trainee's own chat button (`TrainerDashboard.tsx`) — the unread dot now only renders when there's a genuine unread message from the coach (`dbMessages.some(m => m.from_id === coachId && !m.read)`). It used to always render whenever a coach was assigned, regardless of unread state.
+- That same messages fetch used to run in a plain `useEffect` keyed on `[coachId, userId]` — since `coachId` only changes once (when first assigned), it never refetched again, so a new message arriving while the trainee was on another tab wouldn't flip the badge on until something else forced a remount. Converted to `useFocusEffect` so it re-checks every time Home regains focus, same pattern as `loadHome`.
 
 ---
 
