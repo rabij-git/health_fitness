@@ -128,13 +128,19 @@ All tables have RLS enabled with allow-all policies.
 - **AdminUsers:** small orange (`#FF8C00`) icon button, `marginRight: 12` to keep it tappable on Android — unchanged/unverified this session.
 - **CoachPrograms:** now a full-width orange **"Add Program"** button pinned above the list (not gated behind the list's loading state — see Robustness Pitfalls below), so it's always reachable even if the program list is slow or fails to load.
 
+### Header Avatar Button (Logout)
+Both `TrainerDashboard.tsx` (trainee Home) and `CoachDashboard.tsx` show a `log-out-outline` icon in the top-right header button instead of the user's initials — the button still calls `onLogout` directly (no confirm step), but the icon makes the action self-evident instead of looking like a profile shortcut.
+
 ### Workout Screen (Trainee)
 - **Per-set table layout** with columns: `SET | REPS | WEIGHT | EFFORT`
 - Each exercise shows one row per set (not a single combined row)
 - Coach reps shown as **single numbers** (e.g. `8`, not `8-10`)
-- **Reps input rules (trainee logging a set):** number-pad only, clamped between `0` and `coachReps + 8`, non-numeric stripped
+- **Reps field:** display-only for the trainee, same as weight — trainees follow the coach-assigned rep count and can't edit it (previously an editable number-pad input clamped to `coachReps + 8`; changed so a trainee can't modify the prescribed reps for their own workout).
 - **Weight field:** Display only for the trainee — no keyboard, no editing
-- **Effort rating:** per-set buttons 0–4 (RIR — Reps In Reserve), colors `#4CAF50 → #8BC34A → #FF9800 → #FF5722 → #E94560`
+- **Effort rating:** per-set buttons 0–4 (RIR — Reps In Reserve), colors `#4CAF50 → #8BC34A → #FF9800 → #FF5722 → #E94560`. **Deselectable** — tapping an already-selected rating clears it back to `null` instead of being stuck once picked.
+- **Finish gating:** the Finish button is disabled (with a hint text) until at least one set has a logged effort rating — previously a workout could be "finished" with zero progress logged, which still counted toward medal eligibility and sent a misleading "0% done, +0 XP" notification to the coach.
+- **Log tab integration:** finishing a workout now writes an `exercise_weight_logs` entry (via `logExerciseWeight`) for every exercise that had at least one set's effort logged, using that day's coach-assigned sets/reps/weight — previously the Log tab was entirely disconnected from workout completion and always stayed empty.
+- **Medal XP is real:** earning a medal on finish now actually adds its `xpReward` to the trainee's XP total (on top of the workout's own XP), instead of just being a number the medal-toast displayed that nothing added up to.
 
 ### Exercise Input Rules (coach-facing: program templates, workout assignment, exercise library)
 Shared sanitizers in `src/lib/exerciseInput.ts`, used by `CoachPrograms.tsx`, `CoachTrainees.tsx`, and `ExerciseLibraryManager.tsx`:
@@ -147,6 +153,15 @@ Workout name is **not editable** at assignment or edit time in `CoachTrainees.ts
 
 ### Exercise Reordering
 Up/down chevron controls exist on exercise rows in `CoachTrainees.tsx`'s assign-workout (step 2) and edit-workout modals. **Not yet implemented** in the Program template builder itself (`CoachPrograms.tsx`) — reordering a template's exercise list isn't possible yet, only a per-trainee workout's.
+
+### Coach Settings Screen (CoachSettings.tsx)
+Previously entirely non-functional — hardcoded "Coach Taylor" profile card and 5 menu rows with no `onPress` at all. Now takes `coachId` + `navigation` props (wired in `CoachTabs.tsx`):
+- Profile card and "Profile" menu item load the real coach via `getProfile(coachId)` and open a modal showing actual name/email.
+- "Notifications" navigates to the Dashboard tab (where the real notification bell/reply flow lives).
+- "Privacy" / "Help & Support" / "About FitPro" open small honest info modals (app name/version from `app.json`, plain descriptions of actual app behavior) — deliberately not fabricated legal/policy text.
+
+### Trainee Profile Screen — Coach Card
+Header renamed "Your Trainer" → "Your Coach"; removed the redundant "Your coach" caption that repeated directly under the coach's name once the card title already said it.
 
 ---
 
@@ -223,8 +238,19 @@ Fully reworked — no more partial-save/resume semantics.
 
 No push notifications — in-app only, built on the existing `messages` table:
 - Trainee finishing a workout auto-sends a message to their coach (`🏋️ {name} completed "{workout}" — {pct}% done, +{xp} XP`).
-- `CoachDashboard.tsx` has a notification bell in the header with a red-dot badge (`getUnreadMessagesForCoach`); tapping opens a modal listing them and marks them read (`markMessageRead`).
+- `CoachDashboard.tsx` has a notification bell in the header with a red-dot badge; tapping opens a modal listing them.
+- **Notifications persist** — `getMessagesForCoach(coachId)` fetches all messages to the coach (read + unread), not just unread (unlike the retired `getUnreadMessagesForCoach`, which made notifications vanish forever the moment they were marked read, since only the unread set was ever fetched). Opening the modal still marks unread ones read (`markMessageRead`), but they stay visible in the list — marked with a small dot — until explicitly deleted.
+- Each notification row has a delete button (`deleteMessage(id)`) so the coach can clear old ones instead of being stuck with a growing list.
+- Tapping a notification (not its delete button) opens a reply-chat modal scoped to that trainee (`openChatWithTrainee`) — see Messaging below.
 - Trainee's own chat button (`TrainerDashboard.tsx`) — the unread dot now only renders when there's a genuine unread message from the coach (`dbMessages.some(m => m.from_id === coachId && !m.read)`). It used to always render whenever a coach was assigned, regardless of unread state.
+
+---
+
+## Program Assignment & Lifecycle
+
+- **Switching a trainee's program:** `CoachTrainees.tsx`'s trainee-detail modal used to only offer "Assign Program" when a trainee had *no* workout yet, and "Edit Program" (edit exercises within the current workout) once one existed — there was no way to move a trainee onto a *different* program template after the first assignment. Now both actions are available once a program exists: "Edit" (exercises) and "Switch Program" (re-run the assign flow against a different template). `createWorkout` always inserts a new `workouts` row, and `getWorkoutWithExercises` picks the most recent by `created_at`, so switching naturally supersedes the old one without deleting session history tied to it.
+- **Roster visibility:** the trainee list in `CoachTrainees.tsx` now shows each trainee's actual assigned program name (or "No program assigned") instead of a static "Active" badge that gave no real signal. `loadData` batch-fetches every trainee's current workout via `Promise.all` into a `traineeProgramNames` map.
+- **Deleting a program:** `deleteProgram(programId)` in `db.ts` — refuses (throws a friendly error, caught by `CoachPrograms.tsx` and shown via `Alert`) if any `workouts` row still references the program, since that would silently orphan a trainee's program link. Deletes the program's own `program_exercises` rows first, then the `programs` row. UI: trash icon on each program card, confirm via `Alert.alert`.
 
 ---
 
@@ -258,7 +284,7 @@ const [newlyEarnedMedalIds, setNewlyEarnedMedalIds] = useState<string[]>([]);
 - Opening the modal calls `markMessagesRead(userId, coachId)`.
 
 ### Coach → Trainee
-- No dedicated compose UI yet — the only coach→trainee-originated messages today are the automatic workout-completion notification. Real-time coach-initiated chat is not built.
+- Coaches can now reply/initiate: `CoachDashboard.tsx`'s notification-triggered reply modal, and a dedicated "Chat" tab in `CoachTrainees.tsx`'s trainee-detail modal for messaging any trainee proactively, not just in response to a notification.
 
 ---
 
@@ -284,6 +310,7 @@ const [newlyEarnedMedalIds, setNewlyEarnedMedalIds] = useState<string[]>([]);
 
 1. **Never gate `setLoading(false)` behind a `try` with no `catch`.** `CoachPrograms.tsx` and `CoachTrainees.tsx` both originally had a load effect where any Supabase error (flaky network, RLS hiccup) left the screen stuck on a full-screen spinner forever — including hiding action buttons like "Add Program" that had nothing to do with the failing query. Fix pattern: always `try { ... } catch { setLoadError(true) } finally { setLoading(false) }`, and don't gate primary actions behind a data-load spinner if they don't actually depend on that data.
 2. **Hooks must never sit after an early `return`.** `WorkoutScreen.tsx` had a `useMemo` positioned after two conditional early returns (`if (loadingWorkout) return...`, `if (isPending) return...`), so the hook only ran once loading finished — a different hook count between the first and second render, which crashes with "Rendered more hooks than during the previous render." Always put every hook call before any conditional return, no exceptions.
+3. **Every `<Modal>` needs `onRequestClose`.** None of the ~18 `Modal`s in the app passed it — on Android, the hardware/gesture back button does nothing while a `Modal` is open unless `onRequestClose` is wired up, which reads as "stuck" (reported first via the coach↔trainee chat modal, but it was universal). Fix pattern: `onRequestClose` should call the exact same handler as the modal's own visible close/X button, so both paths behave identically.
 
 ---
 
