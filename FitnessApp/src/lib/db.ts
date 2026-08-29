@@ -193,6 +193,27 @@ export async function updateProgramExercises(programId: string, exercises: Exerc
   await syncExerciseRows('program_exercises', 'exercise_id', 'program_id', programId, exercises);
 }
 
+// Deletes a program template. Refuses (with a clear error) if any trainee has
+// ever been assigned a workout from it — deleting would silently orphan their
+// workout's program reference, and their workout history would lose its link
+// back to the template it came from.
+export async function deleteProgram(programId: string) {
+  const { count, error: countError } = await supabase
+    .from('workouts')
+    .select('id', { count: 'exact', head: true })
+    .eq('program_id', programId);
+  if (countError) throw countError;
+  if ((count ?? 0) > 0) {
+    throw new Error('This program has already been assigned to one or more trainees and can\'t be deleted.');
+  }
+
+  const { error: exError } = await supabase.from('program_exercises').delete().eq('program_id', programId);
+  if (exError) throw exError;
+
+  const { error } = await supabase.from('programs').delete().eq('id', programId);
+  if (error) throw error;
+}
+
 // ── Exercise library (shared across all coaches) ──────────────────────────────
 
 export async function getExerciseLibrary(): Promise<DBLibraryExercise[]> {

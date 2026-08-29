@@ -10,11 +10,12 @@ import {
   KeyboardAvoidingView,
   Platform,
   ActivityIndicator,
+  Alert,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { colors } from '../../theme/colors';
-import { getPrograms, createProgram, updateProgram, getProgramExercises, updateProgramExercises, getExerciseLibrary, createLibraryExercise } from '../../lib/db';
+import { getPrograms, createProgram, updateProgram, deleteProgram, getProgramExercises, updateProgramExercises, getExerciseLibrary, createLibraryExercise } from '../../lib/db';
 import { DBProgram, DBLibraryExercise } from '../../lib/supabase';
 import ExerciseLibraryManager from './ExerciseLibraryManager';
 import { sanitizeCount, sanitizeWeightInput, stripKg, withKg } from '../../lib/exerciseInput';
@@ -63,6 +64,7 @@ export default function CoachPrograms({ coachId }: Props) {
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [deletingId, setDeletingId] = useState<string | null>(null);
 
   // ── Add Program modal ──
   const [showAddProgram, setShowAddProgram] = useState(false);
@@ -103,6 +105,31 @@ export default function CoachPrograms({ coachId }: Props) {
 
   const loadLibrary = useCallback(async () => {
     setLibrary(await getExerciseLibrary());
+  }, []);
+
+  const handleDeleteProgram = useCallback((program: DBProgram) => {
+    Alert.alert(
+      'Delete Program',
+      `Delete "${program.name}"? This can't be undone.`,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Delete',
+          style: 'destructive',
+          onPress: async () => {
+            setDeletingId(program.id);
+            try {
+              await deleteProgram(program.id);
+              setPrograms(prev => prev.filter(p => p.id !== program.id));
+            } catch (e: any) {
+              Alert.alert('Can\'t Delete Program', e?.message ?? 'Something went wrong — try again.');
+            } finally {
+              setDeletingId(null);
+            }
+          },
+        },
+      ]
+    );
   }, []);
 
   useEffect(() => {
@@ -340,13 +367,30 @@ export default function CoachPrograms({ coachId }: Props) {
             <Text style={styles.programDesc}>{program.description}</Text>
             <View style={styles.programFooter}>
               <Text style={styles.createdText}>Created {formatDate(program.created_at)}</Text>
+              <TouchableOpacity
+                style={styles.deleteProgramBtn}
+                onPress={() => handleDeleteProgram(program)}
+                disabled={deletingId === program.id}
+                hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+              >
+                {deletingId === program.id ? (
+                  <ActivityIndicator size="small" color={colors.primary} />
+                ) : (
+                  <Ionicons name="trash-outline" size={18} color={colors.primary} />
+                )}
+              </TouchableOpacity>
             </View>
           </TouchableOpacity>
         ))}
       </ScrollView>
 
       {/* ── Add Program Modal ── */}
-      <Modal visible={showAddProgram} transparent animationType="slide">
+      <Modal
+        visible={showAddProgram}
+        transparent
+        animationType="slide"
+        onRequestClose={() => setShowAddProgram(false)}
+      >
         <KeyboardAvoidingView
           behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
           style={styles.modalOverlay}
@@ -545,7 +589,12 @@ export default function CoachPrograms({ coachId }: Props) {
       </Modal>
 
       {/* ── Edit Program Modal ── */}
-      <Modal visible={showEditProgram} transparent animationType="slide">
+      <Modal
+        visible={showEditProgram}
+        transparent
+        animationType="slide"
+        onRequestClose={() => setShowEditProgram(false)}
+      >
         <KeyboardAvoidingView
           behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
           style={styles.modalOverlay}
@@ -762,7 +811,12 @@ export default function CoachPrograms({ coachId }: Props) {
       />
 
       {/* ── Exercise Name Picker ── */}
-      <Modal visible={showNamePicker} transparent animationType="slide">
+      <Modal
+        visible={showNamePicker}
+        transparent
+        animationType="slide"
+        onRequestClose={() => setShowNamePicker(false)}
+      >
         <View style={styles.namePickerOverlay}>
           <View style={styles.namePickerSheet}>
             <View style={styles.modalHeader}>
@@ -845,8 +899,9 @@ const styles = StyleSheet.create({
   badge: { backgroundColor: colors.primary + '33', paddingHorizontal: 10, paddingVertical: 4, borderRadius: 8 },
   badgeText: { fontSize: 11, fontWeight: '700', color: colors.primary },
   programDesc: { fontSize: 13, color: colors.textSecondary, lineHeight: 18, marginBottom: 14 },
-  programFooter: { flexDirection: 'row', alignItems: 'center' },
+  programFooter: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
   createdText: { fontSize: 12, color: colors.textSecondary },
+  deleteProgramBtn: { padding: 4 },
 
   emptyState: { alignItems: 'center', paddingVertical: 32, gap: 8 },
   emptyText: { fontSize: 16, fontWeight: '700', color: colors.text },

@@ -122,6 +122,11 @@ export default function CoachTrainees({ coachId }: Props) {
   }, [library]);
 
   // ── Load data ──
+  // Program name currently assigned to each trainee, shown on the roster card
+  // so a coach can tell at a glance who's on what — without opening every
+  // trainee's detail modal one by one.
+  const [traineeProgramNames, setTraineeProgramNames] = useState<Record<string, string | null>>({});
+
   const loadData = useCallback(async () => {
     try {
       const [assigned, incoming, outgoing, progs] = await Promise.all([
@@ -134,6 +139,14 @@ export default function CoachTrainees({ coachId }: Props) {
       setIncomingRequests(incoming);
       setOutgoingRequests(outgoing);
       setPrograms(progs);
+
+      const workouts = await Promise.all(assigned.map(t => getWorkoutWithExercises(t.id)));
+      const nameMap: Record<string, string | null> = {};
+      assigned.forEach((t, i) => {
+        const wkt = workouts[i];
+        nameMap[t.id] = wkt ? (progs.find(p => p.id === wkt.workout.program_id)?.name ?? wkt.workout.name) : null;
+      });
+      setTraineeProgramNames(nameMap);
     } catch (e) {
       console.warn('CoachTrainees loadData error', e);
     } finally {
@@ -345,6 +358,7 @@ export default function CoachTrainees({ coachId }: Props) {
           difficulty: selProgram.difficulty,
         }, exs);
         setAssignStep(3);
+        setTraineeProgramNames(prev => ({ ...prev, [assigningTrainee!.id]: selProgram.name }));
         if (selectedTrainee?.id === assigningTrainee!.id) {
           const wkt = await getWorkoutWithExercises(assigningTrainee!.id);
           setSelectedTraineeWorkout(wkt);
@@ -530,11 +544,16 @@ export default function CoachTrainees({ coachId }: Props) {
             <View style={styles.traineeInfo}>
               <Text style={styles.traineeName}>{t.name}</Text>
               <Text style={styles.traineeEmail}>{t.email}</Text>
+              <Text style={traineeProgramNames[t.id] ? styles.traineeProgramText : styles.traineeProgramTextEmpty}>
+                {traineeProgramNames[t.id] ?? 'No program assigned'}
+              </Text>
             </View>
             <View style={styles.traineeActions}>
-              <View style={styles.assignedBadge}>
-                <View style={styles.assignedDot} />
-                <Text style={styles.assignedText}>Active</Text>
+              <View style={[styles.assignedBadge, !traineeProgramNames[t.id] && styles.assignedBadgeEmpty]}>
+                <View style={[styles.assignedDot, !traineeProgramNames[t.id] && styles.assignedDotEmpty]} />
+                <Text style={[styles.assignedText, !traineeProgramNames[t.id] && styles.assignedTextEmpty]}>
+                  {traineeProgramNames[t.id] ? 'Active' : 'Pending'}
+                </Text>
               </View>
               <Ionicons name="chevron-forward" size={16} color={colors.textSecondary} />
             </View>
@@ -543,7 +562,12 @@ export default function CoachTrainees({ coachId }: Props) {
       </ScrollView>
 
       {/* ── Find Trainee Modal ── */}
-      <Modal visible={showFindTrainee} transparent animationType="slide">
+      <Modal
+        visible={showFindTrainee}
+        transparent
+        animationType="slide"
+        onRequestClose={() => { setShowFindTrainee(false); setTraineeSearchQuery(''); setTraineeSearchResults([]); }}
+      >
         <View style={styles.overlay}>
           <View style={styles.sheet}>
             <View style={styles.sheetHeader}>
@@ -597,7 +621,12 @@ export default function CoachTrainees({ coachId }: Props) {
       </Modal>
 
       {/* ── Trainee Detail Modal ── */}
-      <Modal visible={!!selectedTrainee} transparent animationType="slide">
+      <Modal
+        visible={!!selectedTrainee}
+        transparent
+        animationType="slide"
+        onRequestClose={() => setSelectedTrainee(null)}
+      >
         <View style={styles.modalOverlay}>
           <View style={[styles.modalSheet, { maxHeight: '92%' }]}>
             {/* Header */}
@@ -621,22 +650,25 @@ export default function CoachTrainees({ coachId }: Props) {
 
             {/* Status row */}
             <View style={styles.statusRow}>
-              <View style={[styles.statusBadge, styles.statusBadgeActive]}>
-                <View style={[styles.statusDot, { backgroundColor: colors.success }]} />
-                <Text style={[styles.statusText, { color: colors.success }]}>Assigned</Text>
+              <View style={[styles.statusBadge, selectedTraineeWorkout ? styles.statusBadgeActive : styles.statusBadgeEmpty]}>
+                <View style={[styles.statusDot, { backgroundColor: selectedTraineeWorkout ? colors.success : colors.warning }]} />
+                <Text style={[styles.statusText, { color: selectedTraineeWorkout ? colors.success : colors.warning }]}>
+                  {selectedTraineeWorkout ? 'Assigned' : 'No Program'}
+                </Text>
               </View>
-              {selectedTraineeWorkout ? (
-                <TouchableOpacity
-                  style={styles.editProgramBtn}
-                  onPress={() => {
-                    setSelectedTrainee(null);
-                    openEditModal(selectedTrainee!);
-                  }}
-                >
-                  <Ionicons name="create-outline" size={16} color={colors.xpBar} />
-                  <Text style={styles.editProgramBtnText}>Edit Program</Text>
-                </TouchableOpacity>
-              ) : (
+              <View style={styles.statusActions}>
+                {selectedTraineeWorkout && (
+                  <TouchableOpacity
+                    style={styles.editProgramBtn}
+                    onPress={() => {
+                      setSelectedTrainee(null);
+                      openEditModal(selectedTrainee!);
+                    }}
+                  >
+                    <Ionicons name="create-outline" size={16} color={colors.xpBar} />
+                    <Text style={styles.editProgramBtnText}>Edit</Text>
+                  </TouchableOpacity>
+                )}
                 <TouchableOpacity
                   style={styles.editProgramBtn}
                   onPress={() => {
@@ -645,9 +677,11 @@ export default function CoachTrainees({ coachId }: Props) {
                   }}
                 >
                   <Ionicons name="add-circle-outline" size={16} color={colors.xpBar} />
-                  <Text style={styles.editProgramBtnText}>Assign Program</Text>
+                  <Text style={styles.editProgramBtnText}>
+                    {selectedTraineeWorkout ? 'Switch Program' : 'Assign Program'}
+                  </Text>
                 </TouchableOpacity>
-              )}
+              </View>
             </View>
 
             {/* Tabs */}
@@ -850,7 +884,12 @@ export default function CoachTrainees({ coachId }: Props) {
       </Modal>
 
       {/* ── Assign Workout Modal (3-step) ── */}
-      <Modal visible={showAssignModal} transparent animationType="slide">
+      <Modal
+        visible={showAssignModal}
+        transparent
+        animationType="slide"
+        onRequestClose={() => setShowAssignModal(false)}
+      >
         <KeyboardAvoidingView
           style={styles.modalOverlay}
           behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
@@ -1113,7 +1152,12 @@ export default function CoachTrainees({ coachId }: Props) {
       </Modal>
 
       {/* ── Edit Program Modal ── */}
-      <Modal visible={showEditModal} transparent animationType="slide">
+      <Modal
+        visible={showEditModal}
+        transparent
+        animationType="slide"
+        onRequestClose={() => setShowEditModal(false)}
+      >
         <KeyboardAvoidingView
           style={styles.modalOverlay}
           behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
@@ -1349,14 +1393,19 @@ const styles = StyleSheet.create({
   traineeInfo: { flex: 1 },
   traineeName: { fontSize: 15, fontWeight: '700', color: colors.text },
   traineeEmail: { fontSize: 12, color: colors.textSecondary, marginTop: 1 },
+  traineeProgramText: { fontSize: 12, color: colors.xpBar, fontWeight: '600', marginTop: 3 },
+  traineeProgramTextEmpty: { fontSize: 12, color: colors.textSecondary, fontStyle: 'italic', marginTop: 3 },
   traineeActions: { flexDirection: 'row', alignItems: 'center', gap: 8 },
   assignedBadge: {
     flexDirection: 'row', alignItems: 'center', gap: 4,
     backgroundColor: colors.success + '22',
     paddingHorizontal: 8, paddingVertical: 4, borderRadius: 8,
   },
+  assignedBadgeEmpty: { backgroundColor: colors.warning + '22' },
   assignedDot: { width: 6, height: 6, borderRadius: 3, backgroundColor: colors.success },
+  assignedDotEmpty: { backgroundColor: colors.warning },
   assignedText: { fontSize: 11, color: colors.success, fontWeight: '600' },
+  assignedTextEmpty: { color: colors.warning },
 
   // Search modal
   overlay: { flex: 1, backgroundColor: '#000000aa', justifyContent: 'flex-end' },
@@ -1512,12 +1561,14 @@ const styles = StyleSheet.create({
   detailName: { fontSize: 19, fontWeight: '800', color: colors.text },
   detailEmail: { fontSize: 13, color: colors.textSecondary, marginTop: 2 },
   detailProg: { fontSize: 13, color: colors.xpBar, fontWeight: '600', marginTop: 3 },
-  statusRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 18 },
+  statusRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 18, flexWrap: 'wrap', gap: 8 },
+  statusActions: { flexDirection: 'row', alignItems: 'center', gap: 8, flexWrap: 'wrap' },
   statusBadge: {
     flexDirection: 'row', alignItems: 'center', gap: 6,
     paddingHorizontal: 10, paddingVertical: 5, borderRadius: 8,
   },
   statusBadgeActive: { backgroundColor: colors.success + '22' },
+  statusBadgeEmpty: { backgroundColor: colors.warning + '22' },
   statusDot: { width: 6, height: 6, borderRadius: 3 },
   statusText: { fontSize: 12, fontWeight: '700' },
   editProgramBtn: {
