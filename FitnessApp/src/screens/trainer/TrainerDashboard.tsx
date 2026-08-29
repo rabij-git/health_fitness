@@ -16,7 +16,7 @@ import { useFocusEffect } from '@react-navigation/native';
 import { Ionicons } from '@expo/vector-icons';
 import { colors } from '../../theme/colors';
 import { getXpForNextLevel, getCurrentLevelXp } from '../../data/mockData';
-import { getProfile, logBodyWeight, getWeightLogs, getMessages, sendMessage, markMessagesRead, getWorkoutWithExercises, getTraineeHistory } from '../../lib/db';
+import { getProfile, logBodyWeight, getWeightLogs, getMessages, sendMessage, markMessagesRead, getWorkoutsForTrainee, getWorkoutWithExercises, getTraineeHistory } from '../../lib/db';
 import { DBUser, DBWeightLog, DBMessage, DBWorkout, DBExercise } from '../../lib/supabase';
 
 const DAY_LABELS = ['M', 'T', 'W', 'T', 'F', 'S', 'S'];
@@ -24,14 +24,18 @@ const DAY_LABELS = ['M', 'T', 'W', 'T', 'F', 'S', 'S'];
 interface Props {
   onLogout: () => void;
   userId: string;
+  navigation?: { navigate: (screen: string) => void };
 }
 
-export default function TrainerDashboard({ onLogout, userId }: Props) {
+export default function TrainerDashboard({ onLogout, userId, navigation }: Props) {
   const [profile, setProfile] = useState<DBUser | null>(null);
   const [coachProfile, setCoachProfile] = useState<DBUser | null>(null);
   const [weightLogs, setWeightLogs] = useState<DBWeightLog[]>([]);
   const [dbMessages, setDbMessages] = useState<DBMessage[]>([]);
-  const [dbWorkout, setDbWorkout] = useState<{ workout: DBWorkout; exercises: DBExercise[] } | null>(null);
+  // A trainee can have several active workouts now; the Home card previews
+  // the most recent one and links out to the Workout tab to see/pick others.
+  const [activeWorkouts, setActiveWorkouts] = useState<DBWorkout[]>([]);
+  const [primaryWorkout, setPrimaryWorkout] = useState<{ workout: DBWorkout; exercises: DBExercise[] } | null>(null);
   const [sessionHistory, setSessionHistory] = useState<any[]>([]);
   const [coachId, setCoachId] = useState<string | null>(null);
   const [loadingProfile, setLoadingProfile] = useState(true);
@@ -42,20 +46,22 @@ export default function TrainerDashboard({ onLogout, userId }: Props) {
   const [msgInput, setMsgInput] = useState('');
   const [dismissedNotifs, setDismissedNotifs] = useState<string[]>([]);
 
-  const loadHome = useCallback(() => {
-    Promise.all([
+  const loadHome = useCallback(async () => {
+    const [p, weights, workouts, history] = await Promise.all([
       getProfile(userId),
       getWeightLogs(userId),
-      getWorkoutWithExercises(userId),
+      getWorkoutsForTrainee(userId),
       getTraineeHistory(userId),
-    ]).then(([p, weights, workout, history]) => {
-      setProfile(p);
-      setCoachId(p?.coach_id ?? null);
-      setWeightLogs(weights);
-      setDbWorkout(workout);
-      setSessionHistory(history);
-      setLoadingProfile(false);
-    });
+    ]);
+    setProfile(p);
+    setCoachId(p?.coach_id ?? null);
+    setWeightLogs(weights);
+    setSessionHistory(history);
+    setLoadingProfile(false);
+
+    const active = workouts.filter(w => w.active);
+    setActiveWorkouts(active);
+    setPrimaryWorkout(active.length > 0 ? await getWorkoutWithExercises(active[0].id) : null);
   }, [userId]);
 
   // Refetch every time the Home tab regains focus (not just on first mount) —
@@ -63,7 +69,10 @@ export default function TrainerDashboard({ onLogout, userId }: Props) {
   // never shows up here since bottom-tab screens stay mounted between tab switches.
   useFocusEffect(useCallback(() => { loadHome(); }, [loadHome]));
 
-  useEffect(() => {
+  // Also refetch coach messages on every focus, not just when coachId first
+  // becomes known — otherwise the unread-message badge goes stale the moment
+  // you leave and return to Home, since it never re-checks for new messages.
+  useFocusEffect(useCallback(() => {
     if (!coachId) return;
     Promise.all([
       getMessages(userId, coachId),
@@ -72,7 +81,7 @@ export default function TrainerDashboard({ onLogout, userId }: Props) {
       setDbMessages(messages);
       setCoachProfile(coach);
     });
-  }, [coachId, userId]);
+  }, [coachId, userId]));
 
   const user = profile ?? { name: '...', avatar: '?', level: 1, xp: 0, streak: 0 };
   const xpForNext = getXpForNextLevel(user.level);
@@ -298,30 +307,42 @@ export default function TrainerDashboard({ onLogout, userId }: Props) {
           </View>
         </View>
 
-        {/* Today's Workout Card */}
-        <View style={styles.workoutCard}>
-          {dbWorkout ? (
+        {/* Workout Card — tap through to the Workout tab to view/pick/log */}
+        <TouchableOpacity
+          style={styles.workoutCard}
+          onPress={() => navigation?.navigate('Workout')}
+          activeOpacity={navigation ? 0.8 : 1}
+        >
+          {primaryWorkout ? (
             <>
               <View style={styles.workoutHeader}>
                 <View>
-                  <Text style={styles.workoutTitle}>{dbWorkout.workout.name}</Text>
+                  <Text style={styles.workoutTitle}>{primaryWorkout.workout.name}</Text>
                   <Text style={styles.workoutSub}>
-                    {dbWorkout.exercises.length} exercises • {dbWorkout.workout.duration}
+                    {primaryWorkout.exercises.length} exercises • {primaryWorkout.workout.duration}
                   </Text>
                 </View>
                 <View style={[styles.difficultyBadge, { backgroundColor: colors.accent + '66' }]}>
-                  <Text style={styles.difficultyText}>{dbWorkout.workout.difficulty}</Text>
+                  <Text style={styles.difficultyText}>{primaryWorkout.workout.difficulty}</Text>
                 </View>
               </View>
-              {dbWorkout.exercises.slice(0, 3).map((ex) => (
+              {primaryWorkout.exercises.slice(0, 3).map((ex) => (
                 <View key={ex.id} style={styles.exerciseRow}>
                   <View style={styles.exerciseDot} />
                   <Text style={styles.exerciseName}>{ex.name}</Text>
                   <Text style={styles.exerciseMeta}>{ex.sets}×{ex.reps}</Text>
                 </View>
               ))}
-              {dbWorkout.exercises.length > 3 && (
-                <Text style={styles.moreText}>+{dbWorkout.exercises.length - 3} more exercises</Text>
+              {primaryWorkout.exercises.length > 3 && (
+                <Text style={styles.moreText}>+{primaryWorkout.exercises.length - 3} more exercises</Text>
+              )}
+              {activeWorkouts.length > 1 && (
+                <View style={styles.moreWorkoutsRow}>
+                  <Ionicons name="layers-outline" size={14} color={colors.xpBar} />
+                  <Text style={styles.moreWorkoutsText}>
+                    +{activeWorkouts.length - 1} more active workout{activeWorkouts.length - 1 === 1 ? '' : 's'} — tap to view all
+                  </Text>
+                </View>
               )}
             </>
           ) : (
@@ -331,7 +352,7 @@ export default function TrainerDashboard({ onLogout, userId }: Props) {
               <Text style={styles.workoutSub}>Your coach will assign your program soon.</Text>
             </View>
           )}
-        </View>
+        </TouchableOpacity>
 
         {/* Biometrics Logger */}
         <View style={styles.biometricsCard}>
@@ -643,6 +664,11 @@ const styles = StyleSheet.create({
   exerciseName: { flex: 1, fontSize: 14, color: colors.text, fontWeight: '500' },
   exerciseMeta: { fontSize: 13, color: colors.textSecondary, fontWeight: '600' },
   moreText: { fontSize: 12, color: colors.textSecondary, marginTop: 10, textAlign: 'center' },
+  moreWorkoutsRow: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6,
+    marginTop: 12, paddingTop: 12, borderTopWidth: 1, borderTopColor: colors.border,
+  },
+  moreWorkoutsText: { fontSize: 12, color: colors.xpBar, fontWeight: '600' },
 
   // Biometrics
   biometricsCard: {

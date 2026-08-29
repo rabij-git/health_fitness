@@ -9,10 +9,12 @@ import {
   ActivityIndicator,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import { useFocusEffect } from '@react-navigation/native';
 import { Ionicons } from '@expo/vector-icons';
 import { colors } from '../../theme/colors';
 import { Workout, mockMedals, computeLevelFromXp } from '../../data/mockData';
 import {
+  getWorkoutsForTrainee,
   getWorkoutWithExercises,
   getProfile,
   saveWorkoutSession,
@@ -22,6 +24,7 @@ import {
   sendMessage,
   logExerciseWeight,
 } from '../../lib/db';
+import { DBWorkout } from '../../lib/supabase';
 
 function computeNewStreak(currentStreak: number, priorHistory: { completed_at: string }[]): number {
   if (priorHistory.length === 0) return 1;
@@ -81,11 +84,37 @@ function buildInitialExercises(workout: Workout): ExerciseLog[] {
 }
 
 export default function WorkoutScreen({ userId }: Props) {
-  const [dbWorkout, setDbWorkout] = useState<Workout | null>(null);
-  const [dbWorkoutId, setDbWorkoutId] = useState<string | null>(null);
+  // ── Workout list (a trainee can have several workouts; only active ones can be done) ──
+  const [workouts, setWorkouts] = useState<DBWorkout[]>([]);
+  const [loadingWorkouts, setLoadingWorkouts] = useState(true);
   const [isPending, setIsPending] = useState(false);
-  const [loadingWorkout, setLoadingWorkout] = useState(true);
+  const [selectedWorkoutId, setSelectedWorkoutId] = useState<string | null>(null);
 
+  useFocusEffect(useCallback(() => {
+    let cancelled = false;
+    async function load() {
+      const profile = await getProfile(userId);
+      if (cancelled) return;
+      if (!profile) { setLoadingWorkouts(false); return; }
+      if (profile.status === 'pending') { setIsPending(true); setLoadingWorkouts(false); return; }
+      setIsPending(false);
+      const list = await getWorkoutsForTrainee(userId);
+      if (!cancelled) { setWorkouts(list); setLoadingWorkouts(false); }
+    }
+    load();
+    return () => { cancelled = true; };
+  }, [userId]));
+
+  const activeWorkouts = useMemo(() => workouts.filter(w => w.active), [workouts]);
+  const pastWorkouts = useMemo(() => workouts.filter(w => !w.active), [workouts]);
+  const selectedWorkoutMeta = useMemo(
+    () => workouts.find(w => w.id === selectedWorkoutId) ?? null,
+    [workouts, selectedWorkoutId]
+  );
+
+  // ── Selected workout detail (exercise log / read-only view) ──
+  const [dbWorkout, setDbWorkout] = useState<Workout | null>(null);
+  const [loadingDetail, setLoadingDetail] = useState(false);
   const [exercises, setExercises] = useState<ExerciseLog[]>([]);
   const [submitted, setSubmitted] = useState(false);
   const [showMedal, setShowMedal] = useState(false);
@@ -93,25 +122,19 @@ export default function WorkoutScreen({ userId }: Props) {
   const [modalIsComplete, setModalIsComplete] = useState(false);
   const [newlyEarnedMedalIds, setNewlyEarnedMedalIds] = useState<string[]>([]);
 
-  const toggleExercise = useCallback((id: string) => {
-    setExercises(prev => prev.map(ex => ex.id === id ? { ...ex, completed: !ex.completed } : ex));
-  }, []);
-
-  const updateSet = useCallback((exId: string, setIndex: number, field: 'reps' | 'weight' | 'effort', value: string | number | null) => {
-    setExercises(prev => prev.map(ex => {
-      if (ex.id !== exId) return ex;
-      const newSets = ex.sets.map((s, i) => i === setIndex ? { ...s, [field]: value } : s);
-      return { ...ex, sets: newSets };
-    }));
-  }, []);
-
   useEffect(() => {
-    async function loadWorkout() {
-      const profile = await getProfile(userId);
-      if (!profile) { setLoadingWorkout(false); return; }
-      if (profile.status === 'pending') { setIsPending(true); setLoadingWorkout(false); return; }
-
-      const result = await getWorkoutWithExercises(userId);
+    if (!selectedWorkoutId) {
+      setDbWorkout(null);
+      setExercises([]);
+      setSubmitted(false);
+      setShowMedal(false);
+      setNewlyEarnedMedalIds([]);
+      return;
+    }
+    let cancelled = false;
+    setLoadingDetail(true);
+    getWorkoutWithExercises(selectedWorkoutId).then((result) => {
+      if (cancelled) return;
       if (result) {
         const w: Workout = {
           id: result.workout.id,
@@ -129,15 +152,27 @@ export default function WorkoutScreen({ userId }: Props) {
           })),
         };
         setDbWorkout(w);
-        setDbWorkoutId(result.workout.id);
         setExercises(buildInitialExercises(w));
       } else {
-        setExercises([]);
+        setDbWorkout(null);
       }
-      setLoadingWorkout(false);
-    }
-    loadWorkout();
-  }, [userId]);
+      setSubmitted(false);
+      setLoadingDetail(false);
+    });
+    return () => { cancelled = true; };
+  }, [selectedWorkoutId]);
+
+  const toggleExercise = useCallback((id: string) => {
+    setExercises(prev => prev.map(ex => ex.id === id ? { ...ex, completed: !ex.completed } : ex));
+  }, []);
+
+  const updateSet = useCallback((exId: string, setIndex: number, field: 'reps' | 'weight' | 'effort', value: string | number | null) => {
+    setExercises(prev => prev.map(ex => {
+      if (ex.id !== exId) return ex;
+      const newSets = ex.sets.map((s, i) => i === setIndex ? { ...s, [field]: value } : s);
+      return { ...ex, sets: newSets };
+    }));
+  }, []);
 
   const { completedCount, totalSets, loggedSets, progress, isFullyComplete } = useMemo(() => {
     const completed = exercises.filter(e => e.completed).length;
@@ -152,38 +187,12 @@ export default function WorkoutScreen({ userId }: Props) {
     };
   }, [exercises]);
 
-  if (loadingWorkout) {
-    return (
-      <SafeAreaView style={styles.container}>
-        <View style={styles.pendingContainer}>
-          <ActivityIndicator size="large" color={colors.xpBar} />
-          <Text style={{ color: colors.textSecondary, marginTop: 16 }}>Loading workout...</Text>
-        </View>
-      </SafeAreaView>
-    );
-  }
-
-  if (isPending) {
-    return (
-      <SafeAreaView style={styles.container}>
-        <View style={styles.pendingContainer}>
-          <Ionicons name="time-outline" size={64} color={colors.xpBar} />
-          <Text style={styles.pendingTitle}>Waiting for Coach</Text>
-          <Text style={styles.pendingSub}>Your account is set up.{'\n'}Your coach will assign your program soon.</Text>
-        </View>
-      </SafeAreaView>
-    );
-  }
-
-  const activeWorkout = dbWorkout;
-
   const handleSubmit = async () => {
-    if (submitted || loggedSets === 0) return;
+    if (submitted || loggedSets === 0 || !selectedWorkoutId) return;
     const workoutXp = Math.round(250 * progress);
     setModalIsComplete(isFullyComplete);
     setSubmitted(true);
     setShowMedal(true);
-    if (!dbWorkoutId) return;
 
     // Each step is isolated so a failure in one (e.g. the coach notification)
     // can never silently block the ones after it — most importantly xp/streak.
@@ -198,7 +207,7 @@ export default function WorkoutScreen({ userId }: Props) {
     try {
       await saveWorkoutSession({
         trainee_id: userId,
-        workout_id: dbWorkoutId,
+        workout_id: selectedWorkoutId,
         completion_pct: Math.round(progress * 100),
         xp_awarded: workoutXp,
       });
@@ -247,7 +256,7 @@ export default function WorkoutScreen({ userId }: Props) {
         await sendMessage(
           userId,
           profile.coach_id,
-          `🏋️ ${profile.name} completed "${activeWorkout?.name}" — ${Math.round(progress * 100)}% done, +${totalXp} XP`
+          `🏋️ ${profile.name} completed "${dbWorkout?.name}" — ${Math.round(progress * 100)}% done, +${totalXp} XP`
         );
       }
     } catch (e) {
@@ -255,14 +264,153 @@ export default function WorkoutScreen({ userId }: Props) {
     }
   };
 
-  if (!activeWorkout) {
+  if (loadingWorkouts) {
     return (
       <SafeAreaView style={styles.container}>
         <View style={styles.pendingContainer}>
-          <Ionicons name="barbell-outline" size={64} color={colors.textSecondary} />
-          <Text style={styles.pendingTitle}>No Workout Assigned</Text>
-          <Text style={styles.pendingSub}>Your coach hasn't assigned a workout yet.{'\n'}Check back soon!</Text>
+          <ActivityIndicator size="large" color={colors.xpBar} />
+          <Text style={{ color: colors.textSecondary, marginTop: 16 }}>Loading workouts...</Text>
         </View>
+      </SafeAreaView>
+    );
+  }
+
+  if (isPending) {
+    return (
+      <SafeAreaView style={styles.container}>
+        <View style={styles.pendingContainer}>
+          <Ionicons name="time-outline" size={64} color={colors.xpBar} />
+          <Text style={styles.pendingTitle}>Waiting for Coach</Text>
+          <Text style={styles.pendingSub}>Your account is set up.{'\n'}Your coach will assign your program soon.</Text>
+        </View>
+      </SafeAreaView>
+    );
+  }
+
+  // ── Workout picker (landing view) ──
+  if (!selectedWorkoutId) {
+    return (
+      <SafeAreaView style={styles.container}>
+        <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.scrollContent}>
+          <View style={styles.header}>
+            <Text style={styles.programLabel}>YOUR WORKOUTS</Text>
+            <Text style={styles.workoutName}>Choose a Workout</Text>
+          </View>
+
+          {workouts.length === 0 ? (
+            <View style={styles.pendingContainer}>
+              <Ionicons name="barbell-outline" size={64} color={colors.textSecondary} />
+              <Text style={styles.pendingTitle}>No Workout Assigned</Text>
+              <Text style={styles.pendingSub}>Your coach hasn't assigned a workout yet.{'\n'}Check back soon!</Text>
+            </View>
+          ) : (
+            <>
+              {activeWorkouts.length > 0 && (
+                <>
+                  <Text style={styles.sectionTitle}>ACTIVE — TAP TO START</Text>
+                  {activeWorkouts.map(w => (
+                    <TouchableOpacity
+                      key={w.id}
+                      style={styles.workoutPickCard}
+                      onPress={() => setSelectedWorkoutId(w.id)}
+                      activeOpacity={0.8}
+                    >
+                      <View style={styles.workoutPickIcon}>
+                        <Ionicons name="barbell" size={20} color={colors.primary} />
+                      </View>
+                      <View style={{ flex: 1 }}>
+                        <Text style={styles.workoutPickName}>{w.name}</Text>
+                        <Text style={styles.workoutPickMeta}>{w.duration} • {w.difficulty}</Text>
+                      </View>
+                      <Ionicons name="chevron-forward" size={18} color={colors.textSecondary} />
+                    </TouchableOpacity>
+                  ))}
+                </>
+              )}
+
+              {pastWorkouts.length > 0 && (
+                <>
+                  <Text style={[styles.sectionTitle, { marginTop: activeWorkouts.length > 0 ? 20 : 0 }]}>
+                    PAST — VIEW ONLY
+                  </Text>
+                  {pastWorkouts.map(w => (
+                    <TouchableOpacity
+                      key={w.id}
+                      style={[styles.workoutPickCard, styles.workoutPickCardInactive]}
+                      onPress={() => setSelectedWorkoutId(w.id)}
+                      activeOpacity={0.8}
+                    >
+                      <View style={[styles.workoutPickIcon, styles.workoutPickIconInactive]}>
+                        <Ionicons name="archive-outline" size={20} color={colors.textSecondary} />
+                      </View>
+                      <View style={{ flex: 1 }}>
+                        <Text style={styles.workoutPickName}>{w.name}</Text>
+                        <Text style={styles.workoutPickMeta}>{w.duration} • {w.difficulty}</Text>
+                      </View>
+                      <Ionicons name="chevron-forward" size={18} color={colors.textSecondary} />
+                    </TouchableOpacity>
+                  ))}
+                </>
+              )}
+            </>
+          )}
+        </ScrollView>
+      </SafeAreaView>
+    );
+  }
+
+  // ── Selected workout: loading its exercises ──
+  if (loadingDetail || !dbWorkout) {
+    return (
+      <SafeAreaView style={styles.container}>
+        <TouchableOpacity style={styles.backRow} onPress={() => setSelectedWorkoutId(null)}>
+          <Ionicons name="chevron-back" size={20} color={colors.xpBar} />
+          <Text style={styles.backRowText}>All Workouts</Text>
+        </TouchableOpacity>
+        <View style={styles.pendingContainer}>
+          <ActivityIndicator size="large" color={colors.xpBar} />
+        </View>
+      </SafeAreaView>
+    );
+  }
+
+  const isReadOnly = selectedWorkoutMeta ? !selectedWorkoutMeta.active : false;
+
+  // ── Past (inactive) workout: read-only view, no logging/finish ──
+  if (isReadOnly) {
+    return (
+      <SafeAreaView style={styles.container}>
+        <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.scrollContent}>
+          <TouchableOpacity style={styles.backRow} onPress={() => setSelectedWorkoutId(null)}>
+            <Ionicons name="chevron-back" size={20} color={colors.xpBar} />
+            <Text style={styles.backRowText}>All Workouts</Text>
+          </TouchableOpacity>
+
+          <View style={styles.readOnlyBanner}>
+            <Ionicons name="archive-outline" size={16} color={colors.textSecondary} />
+            <Text style={styles.readOnlyBannerText}>This workout is no longer active — view only.</Text>
+          </View>
+
+          <View style={styles.header}>
+            <Text style={styles.programLabel}>PAST WORKOUT</Text>
+            <Text style={styles.workoutName}>{dbWorkout.name}</Text>
+            <Text style={styles.workoutMeta}>
+              {dbWorkout.exercises.length} exercises • {dbWorkout.duration} • {dbWorkout.difficulty}
+            </Text>
+          </View>
+
+          <Text style={styles.sectionTitle}>EXERCISES</Text>
+          {dbWorkout.exercises.map((ex, i) => (
+            <View key={ex.id} style={styles.readOnlyExerciseRow}>
+              <View style={styles.exerciseNumber}>
+                <Text style={styles.exerciseNumberText}>{i + 1}</Text>
+              </View>
+              <Text style={styles.readOnlyExerciseName}>{ex.name}</Text>
+              <Text style={styles.readOnlyExerciseMeta}>{ex.sets}×{ex.reps}</Text>
+              {ex.weight ? <Text style={styles.readOnlyExerciseWeight}>{ex.weight}</Text> : null}
+            </View>
+          ))}
+        </ScrollView>
       </SafeAreaView>
     );
   }
@@ -270,13 +418,17 @@ export default function WorkoutScreen({ userId }: Props) {
   return (
     <SafeAreaView style={styles.container}>
       <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.scrollContent}>
+        <TouchableOpacity style={styles.backRow} onPress={() => setSelectedWorkoutId(null)}>
+          <Ionicons name="chevron-back" size={20} color={colors.xpBar} />
+          <Text style={styles.backRowText}>All Workouts</Text>
+        </TouchableOpacity>
 
         {/* Header */}
         <View style={styles.header}>
           <Text style={styles.programLabel}>TODAY'S SESSION</Text>
-          <Text style={styles.workoutName}>{activeWorkout.name}</Text>
+          <Text style={styles.workoutName}>{dbWorkout.name}</Text>
           <Text style={styles.workoutMeta}>
-            {activeWorkout.exercises.length} exercises • {activeWorkout.duration} • {activeWorkout.difficulty}
+            {dbWorkout.exercises.length} exercises • {dbWorkout.duration} • {dbWorkout.difficulty}
           </Text>
         </View>
 
@@ -422,7 +574,7 @@ export default function WorkoutScreen({ userId }: Props) {
           </View>
         )}
 
-        {/* Action button — hidden once finished; each day gets a new workout, so there's no resuming */}
+        {/* Action button — hidden once finished; each session gets logged once */}
         {!submitted && (
           <>
             <TouchableOpacity
@@ -490,7 +642,42 @@ const styles = StyleSheet.create({
   pendingCard: { flexDirection: 'row', alignItems: 'center', gap: 10, backgroundColor: colors.card, borderRadius: 12, padding: 14, borderWidth: 1, borderColor: colors.border },
   pendingCardText: { fontSize: 14, color: colors.textSecondary },
 
-  header: { marginBottom: 24, marginTop: 8 },
+  // Back row (returns to workout picker)
+  backRow: { flexDirection: 'row', alignItems: 'center', gap: 2, marginBottom: 12, marginTop: 4, alignSelf: 'flex-start' },
+  backRowText: { fontSize: 14, fontWeight: '600', color: colors.xpBar },
+
+  // Workout picker cards
+  workoutPickCard: {
+    flexDirection: 'row', alignItems: 'center', gap: 12,
+    backgroundColor: colors.card, borderRadius: 14, padding: 16,
+    marginBottom: 10, borderWidth: 1, borderColor: colors.border,
+  },
+  workoutPickCardInactive: { opacity: 0.7 },
+  workoutPickIcon: {
+    width: 40, height: 40, borderRadius: 12,
+    backgroundColor: colors.primary + '22', alignItems: 'center', justifyContent: 'center',
+  },
+  workoutPickIconInactive: { backgroundColor: colors.secondary },
+  workoutPickName: { fontSize: 16, fontWeight: '700', color: colors.text },
+  workoutPickMeta: { fontSize: 12, color: colors.textSecondary, marginTop: 2 },
+
+  // Read-only (past workout) view
+  readOnlyBanner: {
+    flexDirection: 'row', alignItems: 'center', gap: 8,
+    backgroundColor: colors.secondary, borderRadius: 10, padding: 12, marginBottom: 16,
+    borderWidth: 1, borderColor: colors.border,
+  },
+  readOnlyBannerText: { fontSize: 12, color: colors.textSecondary, flex: 1 },
+  readOnlyExerciseRow: {
+    flexDirection: 'row', alignItems: 'center', gap: 12,
+    backgroundColor: colors.card, borderRadius: 12, padding: 14, marginBottom: 8,
+    borderWidth: 1, borderColor: colors.border,
+  },
+  readOnlyExerciseName: { flex: 1, fontSize: 15, fontWeight: '600', color: colors.text },
+  readOnlyExerciseMeta: { fontSize: 13, color: colors.textSecondary, fontWeight: '600' },
+  readOnlyExerciseWeight: { fontSize: 12, color: colors.xpBar, fontWeight: '600', marginLeft: 8 },
+
+  header: { marginBottom: 24, marginTop: 4 },
   programLabel: { fontSize: 11, fontWeight: '700', color: colors.primary, letterSpacing: 2, marginBottom: 6 },
   workoutName: { fontSize: 26, fontWeight: '800', color: colors.text, marginBottom: 6 },
   workoutMeta: { fontSize: 13, color: colors.textSecondary },
@@ -557,19 +744,6 @@ const styles = StyleSheet.create({
   },
   setBadgeText: { fontSize: 13, fontWeight: '700', color: colors.textSecondary },
 
-  setInput: {
-    backgroundColor: colors.secondary,
-    borderRadius: 8,
-    paddingHorizontal: 8,
-    paddingVertical: 7,
-    color: colors.text,
-    fontSize: 14,
-    fontWeight: '600',
-    borderWidth: 1,
-    borderColor: colors.border,
-    textAlign: 'center',
-    width: '90%',
-  },
   setInputDisplay: {
     backgroundColor: colors.secondary,
     borderRadius: 8,

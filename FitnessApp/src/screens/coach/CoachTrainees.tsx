@@ -10,6 +10,7 @@ import {
   KeyboardAvoidingView,
   Platform,
   ActivityIndicator,
+  Switch,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
@@ -28,7 +29,9 @@ import {
   getExerciseLibrary,
   createWorkout,
   updateWorkoutExercises,
+  getWorkoutsForTrainee,
   getWorkoutWithExercises,
+  setWorkoutActive,
   getTraineeHistory,
   getWeightLogs,
   getNutritionPlans,
@@ -88,7 +91,14 @@ export default function CoachTrainees({ coachId }: Props) {
   // ── Trainee detail modal ──
   const [selectedTrainee, setSelectedTrainee] = useState<DBUser | null>(null);
   const [detailTab, setDetailTab] = useState<'program' | 'history' | 'weight' | 'nutrition' | 'chat'>('program');
-  const [selectedTraineeWorkout, setSelectedTraineeWorkout] = useState<{ workout: DBWorkout; exercises: DBExercise[] } | null>(null);
+  // All workouts (active + inactive) assigned to the selected trainee — a trainee
+  // can now have several at once, unlike the old single-latest-workout model.
+  const [selectedTraineeWorkouts, setSelectedTraineeWorkouts] = useState<DBWorkout[]>([]);
+  const [expandedWorkoutId, setExpandedWorkoutId] = useState<string | null>(null);
+  const [expandedWorkoutExercises, setExpandedWorkoutExercises] = useState<DBExercise[]>([]);
+  const [loadingExpandedWorkout, setLoadingExpandedWorkout] = useState(false);
+  const [togglingWorkoutId, setTogglingWorkoutId] = useState<string | null>(null);
+  const [openingEditWorkoutId, setOpeningEditWorkoutId] = useState<string | null>(null);
   const [selectedTraineeHistory, setSelectedTraineeHistory] = useState<any[]>([]);
   const [selectedTraineeWeights, setSelectedTraineeWeights] = useState<DBWeightLog[]>([]);
   const [selectedTraineeNutrition, setSelectedTraineeNutrition] = useState<DBNutritionPlan[]>([]);
@@ -122,10 +132,10 @@ export default function CoachTrainees({ coachId }: Props) {
   }, [library]);
 
   // ── Load data ──
-  // Program name currently assigned to each trainee, shown on the roster card
+  // Count of currently-active workouts per trainee, shown on the roster card
   // so a coach can tell at a glance who's on what — without opening every
   // trainee's detail modal one by one.
-  const [traineeProgramNames, setTraineeProgramNames] = useState<Record<string, string | null>>({});
+  const [traineeActiveCounts, setTraineeActiveCounts] = useState<Record<string, number>>({});
 
   const loadData = useCallback(async () => {
     try {
@@ -140,13 +150,12 @@ export default function CoachTrainees({ coachId }: Props) {
       setOutgoingRequests(outgoing);
       setPrograms(progs);
 
-      const workouts = await Promise.all(assigned.map(t => getWorkoutWithExercises(t.id)));
-      const nameMap: Record<string, string | null> = {};
+      const workoutLists = await Promise.all(assigned.map(t => getWorkoutsForTrainee(t.id)));
+      const countMap: Record<string, number> = {};
       assigned.forEach((t, i) => {
-        const wkt = workouts[i];
-        nameMap[t.id] = wkt ? (progs.find(p => p.id === wkt.workout.program_id)?.name ?? wkt.workout.name) : null;
+        countMap[t.id] = workoutLists[i].filter(w => w.active).length;
       });
-      setTraineeProgramNames(nameMap);
+      setTraineeActiveCounts(countMap);
     } catch (e) {
       console.warn('CoachTrainees loadData error', e);
     } finally {
@@ -162,7 +171,9 @@ export default function CoachTrainees({ coachId }: Props) {
   // Load detail data when a trainee is selected
   useEffect(() => {
     if (!selectedTrainee) {
-      setSelectedTraineeWorkout(null);
+      setSelectedTraineeWorkouts([]);
+      setExpandedWorkoutId(null);
+      setExpandedWorkoutExercises([]);
       setSelectedTraineeHistory([]);
       setSelectedTraineeWeights([]);
       setSelectedTraineeNutrition([]);
@@ -171,13 +182,13 @@ export default function CoachTrainees({ coachId }: Props) {
     }
     setLoadingDetail(true);
     Promise.all([
-      getWorkoutWithExercises(selectedTrainee.id),
+      getWorkoutsForTrainee(selectedTrainee.id),
       getTraineeHistory(selectedTrainee.id),
       getWeightLogs(selectedTrainee.id),
       getNutritionPlans(selectedTrainee.id),
       getMessages(coachId, selectedTrainee.id),
-    ]).then(([wkt, history, weights, nutrition, messages]) => {
-      setSelectedTraineeWorkout(wkt);
+    ]).then(([workouts, history, weights, nutrition, messages]) => {
+      setSelectedTraineeWorkouts(workouts);
       setSelectedTraineeHistory(history);
       setSelectedTraineeWeights(weights);
       setSelectedTraineeNutrition(nutrition);
@@ -185,6 +196,41 @@ export default function CoachTrainees({ coachId }: Props) {
       setLoadingDetail(false);
     });
   }, [selectedTrainee, coachId]);
+
+  // Keep the roster's active-workout count for the currently-open trainee in
+  // sync as workouts get toggled active/inactive inside the detail modal.
+  useEffect(() => {
+    if (!selectedTrainee) return;
+    const activeCount = selectedTraineeWorkouts.filter(w => w.active).length;
+    setTraineeActiveCounts(prev => ({ ...prev, [selectedTrainee.id]: activeCount }));
+  }, [selectedTraineeWorkouts, selectedTrainee]);
+
+  const toggleExpandWorkout = useCallback(async (workout: DBWorkout) => {
+    if (expandedWorkoutId === workout.id) {
+      setExpandedWorkoutId(null);
+      setExpandedWorkoutExercises([]);
+      return;
+    }
+    setExpandedWorkoutId(workout.id);
+    setLoadingExpandedWorkout(true);
+    const wkt = await getWorkoutWithExercises(workout.id);
+    setExpandedWorkoutExercises(wkt?.exercises ?? []);
+    setLoadingExpandedWorkout(false);
+  }, [expandedWorkoutId]);
+
+  const handleToggleWorkoutActive = useCallback(async (workout: DBWorkout) => {
+    const nextActive = !workout.active;
+    setTogglingWorkoutId(workout.id);
+    setSelectedTraineeWorkouts(prev => prev.map(w => w.id === workout.id ? { ...w, active: nextActive } : w));
+    try {
+      await setWorkoutActive(workout.id, nextActive);
+    } catch (e) {
+      console.warn('setWorkoutActive error', e);
+      setSelectedTraineeWorkouts(prev => prev.map(w => w.id === workout.id ? { ...w, active: workout.active } : w));
+    } finally {
+      setTogglingWorkoutId(null);
+    }
+  }, []);
 
   const handleSendToTrainee = useCallback(async () => {
     if (!chatInput.trim() || !selectedTrainee) return;
@@ -358,11 +404,7 @@ export default function CoachTrainees({ coachId }: Props) {
           difficulty: selProgram.difficulty,
         }, exs);
         setAssignStep(3);
-        setTraineeProgramNames(prev => ({ ...prev, [assigningTrainee!.id]: selProgram.name }));
-        if (selectedTrainee?.id === assigningTrainee!.id) {
-          const wkt = await getWorkoutWithExercises(assigningTrainee!.id);
-          setSelectedTraineeWorkout(wkt);
-        }
+        setTraineeActiveCounts(prev => ({ ...prev, [assigningTrainee!.id]: (prev[assigningTrainee!.id] ?? 0) + 1 }));
       } catch (e) {
         console.warn('assign error', e);
       } finally {
@@ -372,24 +414,29 @@ export default function CoachTrainees({ coachId }: Props) {
   };
 
   // ── Edit flow ──
-  const openEditModal = (trainee: DBUser) => {
-    setEditingTrainee(trainee);
-    const wkt = selectedTraineeWorkout;
-    setEditingWorkoutId(wkt?.workout.id ?? null);
-    setEditWorkoutName(wkt?.workout.name ?? 'Day 1 Workout');
-    setEditExercises(
-      (wkt?.exercises ?? []).map((ex, i) => ({
-        id: String(i) + ex.name,
-        dbId: ex.id,
-        name: ex.name,
-        sets: String(ex.sets),
-        reps: ex.reps,
-        weight: stripKg(ex.weight),
-      }))
-    );
-    setEditActiveCategory('Push');
-    setShowEditModal(true);
-  };
+  const openEditModal = useCallback(async (trainee: DBUser, workout: DBWorkout) => {
+    setOpeningEditWorkoutId(workout.id);
+    try {
+      const wkt = await getWorkoutWithExercises(workout.id);
+      setEditingTrainee(trainee);
+      setEditingWorkoutId(workout.id);
+      setEditWorkoutName(workout.name);
+      setEditExercises(
+        (wkt?.exercises ?? []).map((ex, i) => ({
+          id: String(i) + ex.name,
+          dbId: ex.id,
+          name: ex.name,
+          sets: String(ex.sets),
+          reps: ex.reps,
+          weight: stripKg(ex.weight),
+        }))
+      );
+      setEditActiveCategory('Push');
+      setShowEditModal(true);
+    } finally {
+      setOpeningEditWorkoutId(null);
+    }
+  }, []);
 
   const addEditSuggestedExercise = useCallback((item: { name: string; sets: string; reps: string; weight: string }) => {
     setEditExercises(prev => {
@@ -413,9 +460,11 @@ export default function CoachTrainees({ coachId }: Props) {
     setSaving(true);
     try {
       await updateWorkoutExercises(editingWorkoutId, exs);
-      if (selectedTrainee?.id === editingTrainee.id) {
-        const wkt = await getWorkoutWithExercises(editingTrainee.id);
-        setSelectedTraineeWorkout(wkt);
+      // Collapse the workout row if it was expanded — re-expanding fetches
+      // the freshly-saved exercises instead of showing stale ones.
+      if (expandedWorkoutId === editingWorkoutId) {
+        setExpandedWorkoutId(null);
+        setExpandedWorkoutExercises([]);
       }
       setShowEditModal(false);
       setEditingTrainee(null);
@@ -544,15 +593,17 @@ export default function CoachTrainees({ coachId }: Props) {
             <View style={styles.traineeInfo}>
               <Text style={styles.traineeName}>{t.name}</Text>
               <Text style={styles.traineeEmail}>{t.email}</Text>
-              <Text style={traineeProgramNames[t.id] ? styles.traineeProgramText : styles.traineeProgramTextEmpty}>
-                {traineeProgramNames[t.id] ?? 'No program assigned'}
+              <Text style={traineeActiveCounts[t.id] ? styles.traineeProgramText : styles.traineeProgramTextEmpty}>
+                {traineeActiveCounts[t.id]
+                  ? `${traineeActiveCounts[t.id]} active workout${traineeActiveCounts[t.id] === 1 ? '' : 's'}`
+                  : 'No workouts assigned'}
               </Text>
             </View>
             <View style={styles.traineeActions}>
-              <View style={[styles.assignedBadge, !traineeProgramNames[t.id] && styles.assignedBadgeEmpty]}>
-                <View style={[styles.assignedDot, !traineeProgramNames[t.id] && styles.assignedDotEmpty]} />
-                <Text style={[styles.assignedText, !traineeProgramNames[t.id] && styles.assignedTextEmpty]}>
-                  {traineeProgramNames[t.id] ? 'Active' : 'Pending'}
+              <View style={[styles.assignedBadge, !traineeActiveCounts[t.id] && styles.assignedBadgeEmpty]}>
+                <View style={[styles.assignedDot, !traineeActiveCounts[t.id] && styles.assignedDotEmpty]} />
+                <Text style={[styles.assignedText, !traineeActiveCounts[t.id] && styles.assignedTextEmpty]}>
+                  {traineeActiveCounts[t.id] ? 'Active' : 'Pending'}
                 </Text>
               </View>
               <Ionicons name="chevron-forward" size={16} color={colors.textSecondary} />
@@ -637,11 +688,6 @@ export default function CoachTrainees({ coachId }: Props) {
               <View style={{ flex: 1 }}>
                 <Text style={styles.detailName}>{selectedTrainee?.name}</Text>
                 <Text style={styles.detailEmail}>{selectedTrainee?.email}</Text>
-                {selectedTraineeWorkout && (
-                  <Text style={styles.detailProg}>
-                    {programs.find(p => p.id === selectedTraineeWorkout.workout.program_id)?.name ?? 'Program Active'}
-                  </Text>
-                )}
               </View>
               <TouchableOpacity style={styles.closeBtn} onPress={() => setSelectedTrainee(null)}>
                 <Ionicons name="close" size={22} color={colors.textSecondary} />
@@ -649,40 +695,29 @@ export default function CoachTrainees({ coachId }: Props) {
             </View>
 
             {/* Status row */}
-            <View style={styles.statusRow}>
-              <View style={[styles.statusBadge, selectedTraineeWorkout ? styles.statusBadgeActive : styles.statusBadgeEmpty]}>
-                <View style={[styles.statusDot, { backgroundColor: selectedTraineeWorkout ? colors.success : colors.warning }]} />
-                <Text style={[styles.statusText, { color: selectedTraineeWorkout ? colors.success : colors.warning }]}>
-                  {selectedTraineeWorkout ? 'Assigned' : 'No Program'}
-                </Text>
-              </View>
-              <View style={styles.statusActions}>
-                {selectedTraineeWorkout && (
+            {(() => {
+              const activeCount = selectedTraineeWorkouts.filter(w => w.active).length;
+              return (
+                <View style={styles.statusRow}>
+                  <View style={[styles.statusBadge, activeCount > 0 ? styles.statusBadgeActive : styles.statusBadgeEmpty]}>
+                    <View style={[styles.statusDot, { backgroundColor: activeCount > 0 ? colors.success : colors.warning }]} />
+                    <Text style={[styles.statusText, { color: activeCount > 0 ? colors.success : colors.warning }]}>
+                      {activeCount > 0 ? `${activeCount} Active Workout${activeCount === 1 ? '' : 's'}` : 'No Workouts'}
+                    </Text>
+                  </View>
                   <TouchableOpacity
                     style={styles.editProgramBtn}
                     onPress={() => {
                       setSelectedTrainee(null);
-                      openEditModal(selectedTrainee!);
+                      openAssignModal(selectedTrainee!);
                     }}
                   >
-                    <Ionicons name="create-outline" size={16} color={colors.xpBar} />
-                    <Text style={styles.editProgramBtnText}>Edit</Text>
+                    <Ionicons name="add-circle-outline" size={16} color={colors.xpBar} />
+                    <Text style={styles.editProgramBtnText}>Assign New Workout</Text>
                   </TouchableOpacity>
-                )}
-                <TouchableOpacity
-                  style={styles.editProgramBtn}
-                  onPress={() => {
-                    setSelectedTrainee(null);
-                    openAssignModal(selectedTrainee!);
-                  }}
-                >
-                  <Ionicons name="add-circle-outline" size={16} color={colors.xpBar} />
-                  <Text style={styles.editProgramBtnText}>
-                    {selectedTraineeWorkout ? 'Switch Program' : 'Assign Program'}
-                  </Text>
-                </TouchableOpacity>
-              </View>
-            </View>
+                </View>
+              );
+            })()}
 
             {/* Tabs */}
             <View style={styles.tabRow}>
@@ -743,32 +778,93 @@ export default function CoachTrainees({ coachId }: Props) {
                 {/* Program tab */}
                 {detailTab === 'program' && (
                   <View>
-                    {selectedTraineeWorkout ? (
-                      <>
-                        <Text style={styles.fieldLabel}>CURRENT WORKOUT</Text>
-                        <View style={styles.workoutBlock}>
-                          <Text style={styles.workoutBlockName}>{selectedTraineeWorkout.workout.name}</Text>
-                          <Text style={styles.workoutBlockMeta}>
-                            {selectedTraineeWorkout.exercises.length} exercises · {selectedTraineeWorkout.workout.duration}
-                          </Text>
-                        </View>
-                        {selectedTraineeWorkout.exercises.map((ex, i) => (
-                          <View key={ex.id} style={styles.exDetailRow}>
-                            <View style={styles.exDetailNum}>
-                              <Text style={styles.exDetailNumText}>{i + 1}</Text>
-                            </View>
-                            <Text style={styles.exDetailName}>{ex.name}</Text>
-                            <Text style={styles.exDetailMeta}>{ex.sets}×{ex.reps}</Text>
-                            {ex.weight && <Text style={styles.exDetailWeight}>{ex.weight}</Text>}
-                          </View>
-                        ))}
-                      </>
-                    ) : (
+                    {selectedTraineeWorkouts.length === 0 ? (
                       <View style={styles.pendingBlock}>
                         <Ionicons name="barbell-outline" size={40} color={colors.textSecondary} />
-                        <Text style={styles.pendingTitle}>No Program Yet</Text>
-                        <Text style={styles.pendingSubtitle}>Assign a program to get this trainee started.</Text>
+                        <Text style={styles.pendingTitle}>No Workouts Yet</Text>
+                        <Text style={styles.pendingSubtitle}>Assign a workout to get this trainee started.</Text>
                       </View>
+                    ) : (
+                      <>
+                        <Text style={styles.fieldLabel}>WORKOUTS ({selectedTraineeWorkouts.length})</Text>
+                        {selectedTraineeWorkouts.map(w => {
+                          const isExpanded = expandedWorkoutId === w.id;
+                          return (
+                            <View key={w.id} style={[styles.workoutBlock, !w.active && styles.workoutBlockInactive]}>
+                              <TouchableOpacity
+                                style={styles.workoutBlockHeader}
+                                onPress={() => toggleExpandWorkout(w)}
+                                activeOpacity={0.7}
+                              >
+                                <View style={{ flex: 1 }}>
+                                  <View style={styles.workoutBlockNameRow}>
+                                    <Text style={styles.workoutBlockName}>{w.name}</Text>
+                                    {!w.active && (
+                                      <View style={styles.inactiveTag}>
+                                        <Text style={styles.inactiveTagText}>Inactive</Text>
+                                      </View>
+                                    )}
+                                  </View>
+                                  <Text style={styles.workoutBlockMeta}>{w.duration} · {w.difficulty}</Text>
+                                </View>
+                                <Ionicons
+                                  name={isExpanded ? 'chevron-up' : 'chevron-down'}
+                                  size={18}
+                                  color={colors.textSecondary}
+                                />
+                              </TouchableOpacity>
+
+                              {isExpanded && (
+                                <View style={styles.workoutBlockBody}>
+                                  {loadingExpandedWorkout ? (
+                                    <ActivityIndicator size="small" color={colors.primary} style={{ paddingVertical: 12 }} />
+                                  ) : (
+                                    expandedWorkoutExercises.map((ex, i) => (
+                                      <View key={ex.id} style={styles.exDetailRow}>
+                                        <View style={styles.exDetailNum}>
+                                          <Text style={styles.exDetailNumText}>{i + 1}</Text>
+                                        </View>
+                                        <Text style={styles.exDetailName}>{ex.name}</Text>
+                                        <Text style={styles.exDetailMeta}>{ex.sets}×{ex.reps}</Text>
+                                        {ex.weight && <Text style={styles.exDetailWeight}>{ex.weight}</Text>}
+                                      </View>
+                                    ))
+                                  )}
+                                  <View style={styles.workoutBlockActions}>
+                                    <TouchableOpacity
+                                      style={styles.workoutActionBtn}
+                                      onPress={() => selectedTrainee && openEditModal(selectedTrainee, w)}
+                                      disabled={openingEditWorkoutId === w.id}
+                                    >
+                                      {openingEditWorkoutId === w.id ? (
+                                        <ActivityIndicator size="small" color={colors.xpBar} />
+                                      ) : (
+                                        <>
+                                          <Ionicons name="create-outline" size={16} color={colors.xpBar} />
+                                          <Text style={styles.workoutActionBtnText}>Edit</Text>
+                                        </>
+                                      )}
+                                    </TouchableOpacity>
+                                    <View style={styles.workoutActiveToggle}>
+                                      <Text style={styles.workoutActiveToggleLabel}>{w.active ? 'Active' : 'Inactive'}</Text>
+                                      {togglingWorkoutId === w.id ? (
+                                        <ActivityIndicator size="small" color={colors.success} />
+                                      ) : (
+                                        <Switch
+                                          value={w.active}
+                                          onValueChange={() => handleToggleWorkoutActive(w)}
+                                          trackColor={{ false: colors.border, true: colors.success + '88' }}
+                                          thumbColor={w.active ? colors.success : colors.textSecondary}
+                                        />
+                                      )}
+                                    </View>
+                                  </View>
+                                </View>
+                              )}
+                            </View>
+                          );
+                        })}
+                      </>
                     )}
                   </View>
                 )}
@@ -1560,9 +1656,7 @@ const styles = StyleSheet.create({
   detailAvatarText: { fontSize: 17, fontWeight: '800', color: colors.text },
   detailName: { fontSize: 19, fontWeight: '800', color: colors.text },
   detailEmail: { fontSize: 13, color: colors.textSecondary, marginTop: 2 },
-  detailProg: { fontSize: 13, color: colors.xpBar, fontWeight: '600', marginTop: 3 },
   statusRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 18, flexWrap: 'wrap', gap: 8 },
-  statusActions: { flexDirection: 'row', alignItems: 'center', gap: 8, flexWrap: 'wrap' },
   statusBadge: {
     flexDirection: 'row', alignItems: 'center', gap: 6,
     paddingHorizontal: 10, paddingVertical: 5, borderRadius: 8,
@@ -1642,8 +1736,27 @@ const styles = StyleSheet.create({
     backgroundColor: colors.secondary, borderRadius: 12, padding: 14,
     borderWidth: 1, borderColor: colors.border, marginBottom: 12,
   },
+  workoutBlockInactive: { opacity: 0.65 },
+  workoutBlockHeader: { flexDirection: 'row', alignItems: 'center', gap: 10 },
+  workoutBlockNameRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
   workoutBlockName: { fontSize: 16, fontWeight: '700', color: colors.text },
   workoutBlockMeta: { fontSize: 12, color: colors.textSecondary, marginTop: 3 },
+  workoutBlockBody: { marginTop: 12, borderTopWidth: 1, borderTopColor: colors.border, paddingTop: 10 },
+  workoutBlockActions: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
+    marginTop: 12, paddingTop: 12, borderTopWidth: 1, borderTopColor: colors.border,
+  },
+  workoutActionBtn: {
+    flexDirection: 'row', alignItems: 'center', gap: 6,
+    backgroundColor: colors.xpBar + '22', paddingHorizontal: 12, paddingVertical: 7, borderRadius: 10,
+  },
+  workoutActionBtnText: { fontSize: 13, fontWeight: '700', color: colors.xpBar },
+  workoutActiveToggle: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  workoutActiveToggleLabel: { fontSize: 12, fontWeight: '600', color: colors.textSecondary },
+  inactiveTag: {
+    backgroundColor: colors.warning + '22', paddingHorizontal: 8, paddingVertical: 2, borderRadius: 6,
+  },
+  inactiveTagText: { fontSize: 10, fontWeight: '700', color: colors.warning },
   exDetailRow: {
     flexDirection: 'row', alignItems: 'center', gap: 10,
     paddingVertical: 10, borderBottomWidth: 1, borderBottomColor: colors.border,
