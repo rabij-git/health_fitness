@@ -822,7 +822,6 @@ export default function CoachTrainees({ coachId }: Props) {
       {/* ── Trainee Detail Modal ── */}
       <Modal
         visible={!!selectedTrainee}
-        transparent
         animationType="slide"
         onRequestClose={() => setSelectedTrainee(null)}
       >
@@ -867,13 +866,19 @@ export default function CoachTrainees({ coachId }: Props) {
               );
             })()}
 
-            {/* Tabs */}
-            <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.tabRow} contentContainerStyle={{ flexGrow: 1 }}>
+            {/* Tabs — a slim text menu, not a row of buttons */}
+            <ScrollView
+              horizontal
+              showsHorizontalScrollIndicator={false}
+              style={styles.tabRow}
+              contentContainerStyle={{ flexDirection: 'row', alignItems: 'center' }}
+            >
               {(['program', 'history', 'weight', 'nutrition', 'chat'] as const).map(tab => (
                 <TouchableOpacity
                   key={tab}
                   style={[styles.tab, detailTab === tab && styles.tabActive]}
                   onPress={() => setDetailTab(tab)}
+                  hitSlop={{ top: 8, bottom: 8 }}
                 >
                   <Text style={[styles.tabText, detailTab === tab && styles.tabTextActive]} numberOfLines={1}>
                     {tab === 'program' ? 'Program' : tab === 'history' ? 'History' : tab === 'weight' ? 'Weight' : tab === 'nutrition' ? 'Nutrition' : 'Chat'}
@@ -2139,15 +2144,16 @@ const styles = StyleSheet.create({
     paddingVertical: 6, borderRadius: 10,
   },
   editProgramBtnText: { fontSize: 12, fontWeight: '700', color: colors.xpBar },
+  // Underline menu, not buttons — sized to the text, not a card.
   tabRow: {
-    flexDirection: 'row', backgroundColor: colors.secondary,
-    borderRadius: 10, padding: 3, marginBottom: 10,
-    borderWidth: 1, borderColor: colors.border,
+    flexGrow: 0, flexShrink: 0, height: 34,
+    flexDirection: 'row', marginBottom: 12,
+    borderBottomWidth: 1, borderBottomColor: colors.border,
   },
-  tab: { minWidth: 62, paddingVertical: 6, paddingHorizontal: 8, borderRadius: 7, alignItems: 'center' },
-  tabActive: { backgroundColor: colors.primary },
-  tabText: { fontSize: 12, fontWeight: '600', color: colors.textSecondary },
-  tabTextActive: { color: colors.text },
+  tab: { paddingVertical: 6, marginRight: 18, borderBottomWidth: 2, borderBottomColor: 'transparent' },
+  tabActive: { borderBottomColor: colors.primary },
+  tabText: { fontSize: 13, fontWeight: '600', color: colors.textSecondary },
+  tabTextActive: { color: colors.text, fontWeight: '700' },
 
   // Chat tab
   chatMessages: { flex: 1, marginBottom: 12 },
