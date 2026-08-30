@@ -120,13 +120,32 @@ export interface DBMessage {
   created_at: string;
 }
 
+// A trainee can have several nutrition plans (a coach retires one by setting
+// it inactive rather than deleting it, same pattern as workouts.active).
+// Each plan can carry structured targets, an uploaded PDF, or both.
 export interface DBNutritionPlan {
   id: string;
   trainee_id: string;
   coach_id: string;
-  file_name: string;
-  file_url: string;
-  storage_path: string;
+  title: string;
+  notes: string | null;
+  target_calories: number | null;
+  target_protein: number | null;
+  target_carbs: number | null;
+  target_fat: number | null;
+  active: boolean;
+  file_name: string | null;
+  file_url: string | null;
+  storage_path: string | null;
+  created_at: string;
+}
+
+export interface DBFoodLogEntry {
+  id: string;
+  trainee_id: string;
+  food_name: string;
+  calories: number | null;
+  logged_at: string;
   created_at: string;
 }
 

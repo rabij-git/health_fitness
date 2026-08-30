@@ -6,15 +6,11 @@ import {
   ScrollView,
   TouchableOpacity,
   Modal,
-  TextInput,
-  KeyboardAvoidingView,
-  Platform,
 } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { colors } from '../../theme/colors';
 import { ExerciseWeightLog } from '../../data/mockData';
-import { getExerciseWeightLogs, logExerciseWeight } from '../../lib/db';
+import { getExerciseWeightLogs } from '../../lib/db';
 import { DBExerciseWeightLog } from '../../lib/supabase';
 
 // Group DB rows into ExerciseWeightLog shape
@@ -41,10 +37,6 @@ function groupLogs(rows: DBExerciseWeightLog[]): ExerciseWeightLog[] {
 export default function ExerciseLogScreen({ userId }: { userId: string }) {
   const [logs, setLogs] = useState<ExerciseWeightLog[]>([]);
   const [selected, setSelected] = useState<ExerciseWeightLog | null>(null);
-  const [showAdd, setShowAdd] = useState(false);
-  const [newWeight, setNewWeight] = useState('');
-  const [newReps, setNewReps] = useState('');
-  const [saved, setSaved] = useState(false);
 
   const loadLogs = useCallback(async () => {
     const rows = await getExerciseWeightLogs(userId);
@@ -53,33 +45,19 @@ export default function ExerciseLogScreen({ userId }: { userId: string }) {
 
   useEffect(() => { loadLogs(); }, [loadLogs]);
 
-  const handleAddEntry = async () => {
-    if (!selected || !newWeight) return;
-    try {
-      const exerciseName = selected.exerciseName;
-      await logExerciseWeight(userId, exerciseName, newWeight + 'kg', newReps || '8', 3);
-      // Single fetch: load all logs, then derive selected from the result
-      const rows = await getExerciseWeightLogs(userId);
-      const grouped = groupLogs(rows);
-      setLogs(grouped);
-      setSelected(grouped.find(l => l.exerciseName === exerciseName) ?? null);
-      setSaved(true);
-      setTimeout(() => {
-        setSaved(false);
-        setShowAdd(false);
-        setNewWeight('');
-        setNewReps('');
-      }, 1200);
-    } catch (e) {
-      console.warn('Exercise log error', e);
-    }
-  };
-
   return (
-    <SafeAreaView style={styles.container}>
+    <View style={styles.container}>
       <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.scrollContent}>
         <Text style={styles.title}>Exercise Log</Text>
-        <Text style={styles.subtitle}>Track your weight progression per exercise</Text>
+        <Text style={styles.subtitle}>Your weight progression per exercise, logged automatically when you finish a workout</Text>
+
+        {logs.length === 0 && (
+          <View style={styles.emptyState}>
+            <Ionicons name="barbell-outline" size={40} color={colors.textSecondary} />
+            <Text style={styles.emptyTitle}>No entries yet</Text>
+            <Text style={styles.emptySub}>Finish a workout on the Workout tab to start building your log.</Text>
+          </View>
+        )}
 
         {logs.map(log => {
           const entries = log.entries;
@@ -186,74 +164,10 @@ export default function ExerciseLogScreen({ userId }: { userId: string }) {
                 </View>
               ))}
             </ScrollView>
-
-            <TouchableOpacity
-              style={styles.addEntryBtn}
-              onPress={() => setShowAdd(true)}
-              activeOpacity={0.85}
-            >
-              <Ionicons name="add-circle" size={18} color={colors.text} />
-              <Text style={styles.addEntryText}>Add Today's Weight</Text>
-            </TouchableOpacity>
           </View>
         </View>
       </Modal>
-
-      {/* Add Entry Modal */}
-      <Modal
-        visible={showAdd}
-        transparent
-        animationType="fade"
-        onRequestClose={() => { setShowAdd(false); setNewWeight(''); setNewReps(''); }}
-      >
-        <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={{ flex: 1 }}>
-          <View style={styles.overlay}>
-            <View style={styles.sheet}>
-              <Text style={styles.sheetTitle}>Log Today's Weight</Text>
-              <Text style={styles.sheetSub}>{selected?.exerciseName}</Text>
-
-              <Text style={styles.inputLabel}>Weight (kg)</Text>
-              <TextInput
-                style={styles.input}
-                value={newWeight}
-                onChangeText={setNewWeight}
-                placeholder="e.g. 82.5"
-                placeholderTextColor={colors.textSecondary}
-                keyboardType="decimal-pad"
-                autoFocus
-              />
-
-              <Text style={styles.inputLabel}>Reps</Text>
-              <TextInput
-                style={styles.input}
-                value={newReps}
-                onChangeText={setNewReps}
-                placeholder="e.g. 8"
-                placeholderTextColor={colors.textSecondary}
-                keyboardType="number-pad"
-              />
-
-              <View style={styles.modalFooter}>
-                <TouchableOpacity
-                  style={styles.cancelBtn}
-                  onPress={() => { setShowAdd(false); setNewWeight(''); setNewReps(''); }}
-                >
-                  <Text style={styles.cancelText}>Cancel</Text>
-                </TouchableOpacity>
-                <TouchableOpacity
-                  style={[styles.saveBtn, saved && styles.saveBtnSuccess]}
-                  onPress={handleAddEntry}
-                  activeOpacity={0.85}
-                >
-                  <Ionicons name={saved ? 'checkmark' : 'save'} size={18} color={colors.text} />
-                  <Text style={styles.saveText}>{saved ? 'Saved!' : 'Save'}</Text>
-                </TouchableOpacity>
-              </View>
-            </View>
-          </View>
-        </KeyboardAvoidingView>
-      </Modal>
-    </SafeAreaView>
+    </View>
   );
 }
 
@@ -357,48 +271,7 @@ const styles = StyleSheet.create({
   historyWeight: { flex: 1, fontSize: 14, fontWeight: '700', color: colors.text },
   historyMeta: { flex: 1, fontSize: 13, color: colors.textSecondary },
 
-  addEntryBtn: {
-    marginTop: 16,
-    backgroundColor: colors.primary,
-    borderRadius: 14,
-    padding: 16,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 8,
-  },
-  addEntryText: { color: colors.text, fontSize: 15, fontWeight: '700' },
-
-  inputLabel: { fontSize: 11, fontWeight: '700', color: colors.textSecondary, letterSpacing: 1, marginBottom: 8 },
-  input: {
-    backgroundColor: colors.secondary,
-    borderRadius: 12,
-    padding: 14,
-    fontSize: 16,
-    color: colors.text,
-    borderWidth: 1,
-    borderColor: colors.border,
-    marginBottom: 16,
-  },
-  modalFooter: { flexDirection: 'row', gap: 12, marginTop: 4 },
-  cancelBtn: {
-    flex: 1,
-    padding: 15,
-    borderRadius: 12,
-    backgroundColor: colors.secondary,
-    alignItems: 'center',
-  },
-  cancelText: { color: colors.textSecondary, fontSize: 15, fontWeight: '600' },
-  saveBtn: {
-    flex: 1,
-    padding: 15,
-    borderRadius: 12,
-    backgroundColor: colors.primary,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 6,
-  },
-  saveBtnSuccess: { backgroundColor: colors.success },
-  saveText: { color: colors.text, fontSize: 15, fontWeight: '700' },
+  emptyState: { alignItems: 'center', paddingVertical: 40, gap: 10 },
+  emptyTitle: { fontSize: 17, fontWeight: '700', color: colors.text },
+  emptySub: { fontSize: 13, color: colors.textSecondary, textAlign: 'center', paddingHorizontal: 24 },
 });

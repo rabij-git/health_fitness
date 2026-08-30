@@ -1,4 +1,4 @@
-import { supabase, DBUser, DBProgram, DBWorkout, DBExercise, DBWeightLog, DBExerciseWeightLog, DBMessage, DBWorkoutSession, DBGym, DBFriendship, DBNutritionPlan, DBCoachRequest, DBProgramExercise, DBLibraryExercise, DBUserMedal } from './supabase';
+import { supabase, DBUser, DBProgram, DBWorkout, DBExercise, DBWeightLog, DBExerciseWeightLog, DBMessage, DBWorkoutSession, DBGym, DBFriendship, DBNutritionPlan, DBCoachRequest, DBProgramExercise, DBLibraryExercise, DBUserMedal, DBFoodLogEntry } from './supabase';
 
 // ── Auth ──────────────────────────────────────────────────────────────────────
 
@@ -388,6 +388,8 @@ export async function getExerciseWeightLogs(traineeId: string, limit: number = 1
 
 const NUTRITION_BUCKET = 'nutrition-plans';
 
+// Quick PDF-only plan — structured targets (if any) are added/edited afterward
+// via updateNutritionPlan, same as any other plan.
 export async function uploadNutritionPlan(
   traineeId: string,
   coachId: string,
@@ -410,6 +412,8 @@ export async function uploadNutritionPlan(
     .insert({
       trainee_id: traineeId,
       coach_id: coachId,
+      title: fileName,
+      active: true,
       file_name: fileName,
       file_url: urlData.publicUrl,
       storage_path: storagePath,
@@ -418,6 +422,43 @@ export async function uploadNutritionPlan(
     .single();
   if (error) throw error;
   return data;
+}
+
+// Structured plan with no PDF attachment — a coach can add one later via
+// updateNutritionPlan if they also want to attach a document.
+export async function createNutritionPlan(
+  traineeId: string,
+  coachId: string,
+  fields: Pick<DBNutritionPlan, 'title' | 'notes' | 'target_calories' | 'target_protein' | 'target_carbs' | 'target_fat'>
+): Promise<DBNutritionPlan> {
+  const { data, error } = await supabase
+    .from('nutrition_plans')
+    .insert({ trainee_id: traineeId, coach_id: coachId, active: true, ...fields })
+    .select()
+    .single();
+  if (error) throw error;
+  return data;
+}
+
+export async function updateNutritionPlan(
+  planId: string,
+  fields: Partial<Pick<DBNutritionPlan, 'title' | 'notes' | 'target_calories' | 'target_protein' | 'target_carbs' | 'target_fat'>>
+): Promise<DBNutritionPlan> {
+  const { data, error } = await supabase
+    .from('nutrition_plans')
+    .update(fields)
+    .eq('id', planId)
+    .select()
+    .single();
+  if (error) throw error;
+  return data;
+}
+
+// A trainee can have several nutrition plans; a coach retires one by setting
+// it inactive rather than deleting it, so it stays visible as history.
+export async function setNutritionPlanActive(planId: string, active: boolean) {
+  const { error } = await supabase.from('nutrition_plans').update({ active }).eq('id', planId);
+  if (error) throw error;
 }
 
 export async function getNutritionPlans(traineeId: string): Promise<DBNutritionPlan[]> {
@@ -430,9 +471,39 @@ export async function getNutritionPlans(traineeId: string): Promise<DBNutritionP
   return data ?? [];
 }
 
-export async function deleteNutritionPlan(planId: string, storagePath: string) {
-  await supabase.storage.from(NUTRITION_BUCKET).remove([storagePath]);
+export async function deleteNutritionPlan(planId: string, storagePath: string | null) {
+  if (storagePath) {
+    await supabase.storage.from(NUTRITION_BUCKET).remove([storagePath]);
+  }
   const { error } = await supabase.from('nutrition_plans').delete().eq('id', planId);
+  if (error) throw error;
+}
+
+export async function getFoodLogEntries(traineeId: string, limit: number = 200): Promise<DBFoodLogEntry[]> {
+  const { data, error } = await supabase
+    .from('food_log_entries')
+    .select('*')
+    .eq('trainee_id', traineeId)
+    .order('logged_at', { ascending: false })
+    .order('created_at', { ascending: false })
+    .limit(limit);
+  if (error) return [];
+  return data ?? [];
+}
+
+export async function addFoodLogEntry(traineeId: string, foodName: string, calories: number | null): Promise<DBFoodLogEntry> {
+  const today = new Date().toISOString().split('T')[0];
+  const { data, error } = await supabase
+    .from('food_log_entries')
+    .insert({ trainee_id: traineeId, food_name: foodName, calories, logged_at: today })
+    .select()
+    .single();
+  if (error) throw error;
+  return data;
+}
+
+export async function deleteFoodLogEntry(id: string) {
+  const { error } = await supabase.from('food_log_entries').delete().eq('id', id);
   if (error) throw error;
 }
 

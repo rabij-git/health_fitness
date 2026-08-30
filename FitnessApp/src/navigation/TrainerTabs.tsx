@@ -8,7 +8,7 @@ import WorkoutScreen from '../screens/trainer/WorkoutScreen';
 import GamificationScreen from '../screens/trainer/GamificationScreen';
 import SocialScreen from '../screens/trainer/SocialScreen';
 import ProfileScreen from '../screens/trainer/ProfileScreen';
-import ExerciseLogScreen from '../screens/trainer/ExerciseLogScreen';
+import LogScreen from '../screens/trainer/LogScreen';
 
 const Tab = createBottomTabNavigator();
 

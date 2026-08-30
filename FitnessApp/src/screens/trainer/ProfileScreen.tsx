@@ -265,20 +265,17 @@ export default function ProfileScreen({ onLogout, userId }: Props) {
         {/* Weight Chart */}
         <WeightChart logs={weightLogs} />
 
-        {/* Nutrition Plan */}
-        <View style={styles.nutritionCard}>
-          <Text style={styles.nutritionTitle}>Nutrition Plan</Text>
-          {nutritionPlans.length === 0 ? (
-            <View style={styles.nutritionEmpty}>
-              <Ionicons name="document-text-outline" size={22} color={colors.textSecondary} />
-              <Text style={styles.nutritionEmptyText}>Your coach hasn't added a nutrition plan yet</Text>
-            </View>
-          ) : (
-            nutritionPlans.map((plan, index) => (
+        {/* Nutrition Documents — quick access to any uploaded PDFs; full plan
+            details (targets, notes, active/inactive) live on the Log tab's
+            "Nutrition" segment instead. */}
+        {nutritionPlans.some(p => p.file_url) && (
+          <View style={styles.nutritionCard}>
+            <Text style={styles.nutritionTitle}>Nutrition Documents</Text>
+            {nutritionPlans.filter(p => p.file_url).map((plan, index, arr) => (
               <TouchableOpacity
                 key={plan.id}
-                style={[styles.nutritionRow, index < nutritionPlans.length - 1 && styles.nutritionRowBorder]}
-                onPress={() => Linking.openURL(plan.file_url)}
+                style={[styles.nutritionRow, index < arr.length - 1 && styles.nutritionRowBorder]}
+                onPress={() => Linking.openURL(plan.file_url!)}
                 activeOpacity={0.7}
               >
                 <View style={styles.nutritionIcon}>
@@ -290,9 +287,9 @@ export default function ProfileScreen({ onLogout, userId }: Props) {
                 </View>
                 <Ionicons name="open-outline" size={18} color={colors.textSecondary} />
               </TouchableOpacity>
-            ))
-          )}
-        </View>
+            ))}
+          </View>
+        )}
 
         {/* Coach Card */}
         <View style={styles.coachCard}>
@@ -572,8 +569,6 @@ const styles = StyleSheet.create({
     borderColor: colors.border,
   },
   nutritionTitle: { fontSize: 15, fontWeight: '700', color: colors.text, marginBottom: 14 },
-  nutritionEmpty: { flexDirection: 'row', alignItems: 'center', gap: 10 },
-  nutritionEmptyText: { fontSize: 13, color: colors.textSecondary, flex: 1 },
   nutritionRow: { flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 10 },
   nutritionRowBorder: { borderBottomWidth: 1, borderBottomColor: colors.border },
   nutritionIcon: {

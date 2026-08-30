@@ -11,6 +11,7 @@ import {
   Platform,
   ActivityIndicator,
   Switch,
+  Linking,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
@@ -36,6 +37,9 @@ import {
   getWeightLogs,
   getNutritionPlans,
   uploadNutritionPlan,
+  createNutritionPlan,
+  updateNutritionPlan,
+  setNutritionPlanActive,
   deleteNutritionPlan,
   getMessages,
   sendMessage,
@@ -101,11 +105,25 @@ export default function CoachTrainees({ coachId }: Props) {
   const [openingEditWorkoutId, setOpeningEditWorkoutId] = useState<string | null>(null);
   const [selectedTraineeHistory, setSelectedTraineeHistory] = useState<any[]>([]);
   const [selectedTraineeWeights, setSelectedTraineeWeights] = useState<DBWeightLog[]>([]);
+  // A trainee can have several nutrition plans — some active, some retired —
+  // each optionally carrying macro targets, notes, and/or an uploaded PDF.
   const [selectedTraineeNutrition, setSelectedTraineeNutrition] = useState<DBNutritionPlan[]>([]);
+  const [expandedPlanId, setExpandedPlanId] = useState<string | null>(null);
+  const [togglingPlanId, setTogglingPlanId] = useState<string | null>(null);
   const [selectedTraineeMessages, setSelectedTraineeMessages] = useState<DBMessage[]>([]);
   const [chatInput, setChatInput] = useState('');
   const [loadingDetail, setLoadingDetail] = useState(false);
   const [uploadingNutrition, setUploadingNutrition] = useState(false);
+
+  // ── Nutrition plan editor (inline within the "Nutrition" tab) ──
+  const [editingPlanId, setEditingPlanId] = useState<string | null | 'new'>(null);
+  const [planTitle, setPlanTitle] = useState('');
+  const [planNotes, setPlanNotes] = useState('');
+  const [planCalories, setPlanCalories] = useState('');
+  const [planProtein, setPlanProtein] = useState('');
+  const [planCarbs, setPlanCarbs] = useState('');
+  const [planFat, setPlanFat] = useState('');
+  const [savingPlan, setSavingPlan] = useState(false);
 
   // ── Assign workout modal (3-step: program → workout → success) ──
   const [showAssignModal, setShowAssignModal] = useState(false);
@@ -177,7 +195,9 @@ export default function CoachTrainees({ coachId }: Props) {
       setSelectedTraineeHistory([]);
       setSelectedTraineeWeights([]);
       setSelectedTraineeNutrition([]);
+      setExpandedPlanId(null);
       setSelectedTraineeMessages([]);
+      setEditingPlanId(null);
       return;
     }
     setLoadingDetail(true);
@@ -269,6 +289,71 @@ export default function CoachTrainees({ coachId }: Props) {
       console.warn('Nutrition plan delete error', e);
     }
   }, []);
+
+  const toggleExpandPlan = useCallback((planId: string) => {
+    setExpandedPlanId(prev => (prev === planId ? null : planId));
+  }, []);
+
+  const handleToggleNutritionActive = useCallback(async (plan: DBNutritionPlan) => {
+    const nextActive = !plan.active;
+    setTogglingPlanId(plan.id);
+    setSelectedTraineeNutrition(prev => prev.map(p => p.id === plan.id ? { ...p, active: nextActive } : p));
+    try {
+      await setNutritionPlanActive(plan.id, nextActive);
+    } catch (e) {
+      console.warn('setNutritionPlanActive error', e);
+      setSelectedTraineeNutrition(prev => prev.map(p => p.id === plan.id ? { ...p, active: plan.active } : p));
+    } finally {
+      setTogglingPlanId(null);
+    }
+  }, []);
+
+  const openNewPlanEditor = useCallback(() => {
+    setPlanTitle('');
+    setPlanNotes('');
+    setPlanCalories('');
+    setPlanProtein('');
+    setPlanCarbs('');
+    setPlanFat('');
+    setEditingPlanId('new');
+  }, []);
+
+  const openEditPlanEditor = useCallback((plan: DBNutritionPlan) => {
+    setPlanTitle(plan.title);
+    setPlanNotes(plan.notes ?? '');
+    setPlanCalories(plan.target_calories != null ? String(plan.target_calories) : '');
+    setPlanProtein(plan.target_protein != null ? String(plan.target_protein) : '');
+    setPlanCarbs(plan.target_carbs != null ? String(plan.target_carbs) : '');
+    setPlanFat(plan.target_fat != null ? String(plan.target_fat) : '');
+    setEditingPlanId(plan.id);
+  }, []);
+
+  const handleSavePlan = useCallback(async () => {
+    if (!selectedTrainee || !planTitle.trim() || savingPlan || !editingPlanId) return;
+    setSavingPlan(true);
+    const fields = {
+      title: planTitle.trim(),
+      notes: planNotes.trim() || null,
+      target_calories: planCalories ? parseInt(planCalories, 10) : null,
+      target_protein: planProtein ? parseInt(planProtein, 10) : null,
+      target_carbs: planCarbs ? parseInt(planCarbs, 10) : null,
+      target_fat: planFat ? parseInt(planFat, 10) : null,
+    };
+    try {
+      if (editingPlanId === 'new') {
+        const plan = await createNutritionPlan(selectedTrainee.id, coachId, fields);
+        setSelectedTraineeNutrition(prev => [plan, ...prev]);
+      } else {
+        const plan = await updateNutritionPlan(editingPlanId, fields);
+        setSelectedTraineeNutrition(prev => prev.map(p => p.id === plan.id ? plan : p));
+      }
+      setEditingPlanId(null);
+    } catch (e) {
+      console.warn('saveNutritionPlan error', e);
+    } finally {
+      setSavingPlan(false);
+    }
+  }, [selectedTrainee, coachId, editingPlanId, planTitle, planNotes, planCalories, planProtein, planCarbs, planFat, savingPlan]);
 
   // ── Requests ──
   const handleSearchTrainees = useCallback(async (query: string) => {
@@ -678,8 +763,8 @@ export default function CoachTrainees({ coachId }: Props) {
         animationType="slide"
         onRequestClose={() => setSelectedTrainee(null)}
       >
-        <View style={styles.modalOverlay}>
-          <View style={[styles.modalSheet, { maxHeight: '92%' }]}>
+        <SafeAreaView style={styles.fullScreenContainer}>
+          <View style={styles.fullScreenSheet}>
             {/* Header */}
             <View style={styles.detailHeader}>
               <View style={[styles.detailAvatar, styles.detailAvatarAssigned]}>
@@ -720,19 +805,19 @@ export default function CoachTrainees({ coachId }: Props) {
             })()}
 
             {/* Tabs */}
-            <View style={styles.tabRow}>
+            <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.tabRow} contentContainerStyle={{ flexGrow: 1 }}>
               {(['program', 'history', 'weight', 'nutrition', 'chat'] as const).map(tab => (
                 <TouchableOpacity
                   key={tab}
                   style={[styles.tab, detailTab === tab && styles.tabActive]}
                   onPress={() => setDetailTab(tab)}
                 >
-                  <Text style={[styles.tabText, detailTab === tab && styles.tabTextActive]}>
+                  <Text style={[styles.tabText, detailTab === tab && styles.tabTextActive]} numberOfLines={1}>
                     {tab === 'program' ? 'Program' : tab === 'history' ? 'History' : tab === 'weight' ? 'Weight' : tab === 'nutrition' ? 'Nutrition' : 'Chat'}
                   </Text>
                 </TouchableOpacity>
               ))}
-            </View>
+            </ScrollView>
 
             {loadingDetail ? (
               <View style={{ paddingVertical: 40, alignItems: 'center' }}>
@@ -940,43 +1025,237 @@ export default function CoachTrainees({ coachId }: Props) {
                 {/* Nutrition tab */}
                 {detailTab === 'nutrition' && (
                   <View>
-                    <Text style={styles.fieldLabel}>NUTRITION PLAN</Text>
-                    <TouchableOpacity
-                      style={styles.uploadPlanBtn}
-                      onPress={handleUploadNutrition}
-                      disabled={uploadingNutrition}
-                      activeOpacity={0.85}
-                    >
-                      {uploadingNutrition ? (
-                        <ActivityIndicator size="small" color={colors.text} />
-                      ) : (
-                        <Ionicons name="cloud-upload-outline" size={18} color={colors.text} />
-                      )}
-                      <Text style={styles.uploadPlanBtnText}>
-                        {uploadingNutrition ? 'Uploading...' : 'Upload Scanned PDF'}
-                      </Text>
-                    </TouchableOpacity>
-                    {selectedTraineeNutrition.length === 0 && (
-                      <Text style={{ color: colors.textSecondary, textAlign: 'center', paddingVertical: 20 }}>No nutrition plans uploaded yet</Text>
-                    )}
-                    {selectedTraineeNutrition.map(plan => (
-                      <View key={plan.id} style={styles.nutritionPlanRow}>
-                        <Ionicons name="document-text" size={18} color={colors.xpBar} />
-                        <View style={{ flex: 1 }}>
-                          <Text style={styles.nutritionPlanName} numberOfLines={1}>{plan.file_name}</Text>
-                          <Text style={styles.nutritionPlanDate}>{formatDate(plan.created_at)}</Text>
+                    {editingPlanId ? (
+                      <>
+                        <Text style={styles.fieldLabel}>PLAN TITLE</Text>
+                        <TextInput
+                          style={styles.textInput}
+                          value={planTitle}
+                          onChangeText={setPlanTitle}
+                          placeholder="e.g. Cutting Phase"
+                          placeholderTextColor={colors.textSecondary}
+                        />
+
+                        <Text style={[styles.fieldLabel, { marginTop: 16 }]}>DAILY TARGETS (OPTIONAL)</Text>
+                        <View style={styles.dietTargetRow}>
+                          <View style={styles.dietTargetField}>
+                            <Text style={styles.exMetaLabel}>CALORIES</Text>
+                            <TextInput
+                              style={styles.exMetaInput}
+                              value={planCalories}
+                              onChangeText={v => setPlanCalories(v.replace(/[^0-9]/g, ''))}
+                              keyboardType="number-pad"
+                              placeholder="0"
+                              placeholderTextColor={colors.textSecondary}
+                            />
+                          </View>
+                          <View style={styles.dietTargetField}>
+                            <Text style={styles.exMetaLabel}>PROTEIN (G)</Text>
+                            <TextInput
+                              style={styles.exMetaInput}
+                              value={planProtein}
+                              onChangeText={v => setPlanProtein(v.replace(/[^0-9]/g, ''))}
+                              keyboardType="number-pad"
+                              placeholder="0"
+                              placeholderTextColor={colors.textSecondary}
+                            />
+                          </View>
                         </View>
-                        <TouchableOpacity onPress={() => handleDeleteNutrition(plan)}>
-                          <Ionicons name="trash-outline" size={18} color={colors.primary} />
-                        </TouchableOpacity>
-                      </View>
-                    ))}
+                        <View style={styles.dietTargetRow}>
+                          <View style={styles.dietTargetField}>
+                            <Text style={styles.exMetaLabel}>CARBS (G)</Text>
+                            <TextInput
+                              style={styles.exMetaInput}
+                              value={planCarbs}
+                              onChangeText={v => setPlanCarbs(v.replace(/[^0-9]/g, ''))}
+                              keyboardType="number-pad"
+                              placeholder="0"
+                              placeholderTextColor={colors.textSecondary}
+                            />
+                          </View>
+                          <View style={styles.dietTargetField}>
+                            <Text style={styles.exMetaLabel}>FAT (G)</Text>
+                            <TextInput
+                              style={styles.exMetaInput}
+                              value={planFat}
+                              onChangeText={v => setPlanFat(v.replace(/[^0-9]/g, ''))}
+                              keyboardType="number-pad"
+                              placeholder="0"
+                              placeholderTextColor={colors.textSecondary}
+                            />
+                          </View>
+                        </View>
+
+                        <Text style={[styles.fieldLabel, { marginTop: 16 }]}>NOTES (OPTIONAL)</Text>
+                        <TextInput
+                          style={[styles.textInput, { minHeight: 80, textAlignVertical: 'top' }]}
+                          value={planNotes}
+                          onChangeText={setPlanNotes}
+                          placeholder="e.g. Prioritize protein at every meal, avoid sugary drinks..."
+                          placeholderTextColor={colors.textSecondary}
+                          multiline
+                        />
+
+                        <View style={[styles.workoutBlockActions, { borderTopWidth: 0, marginTop: 20 }]}>
+                          <TouchableOpacity
+                            style={styles.workoutActionBtn}
+                            onPress={() => setEditingPlanId(null)}
+                          >
+                            <Text style={styles.workoutActionBtnText}>Cancel</Text>
+                          </TouchableOpacity>
+                          <TouchableOpacity
+                            style={[styles.uploadPlanBtn, { flex: 1, marginLeft: 12 }, (!planTitle.trim() || savingPlan) && { opacity: 0.5 }]}
+                            onPress={handleSavePlan}
+                            disabled={!planTitle.trim() || savingPlan}
+                          >
+                            {savingPlan ? (
+                              <ActivityIndicator size="small" color={colors.text} />
+                            ) : (
+                              <>
+                                <Ionicons name="checkmark" size={18} color={colors.text} />
+                                <Text style={styles.uploadPlanBtnText}>Save Plan</Text>
+                              </>
+                            )}
+                          </TouchableOpacity>
+                        </View>
+                      </>
+                    ) : (
+                      <>
+                        <View style={styles.programTabHeaderRow}>
+                          <TouchableOpacity
+                            style={[styles.workoutActionBtn, { flex: 1 }]}
+                            onPress={handleUploadNutrition}
+                            disabled={uploadingNutrition}
+                          >
+                            {uploadingNutrition ? (
+                              <ActivityIndicator size="small" color={colors.xpBar} />
+                            ) : (
+                              <>
+                                <Ionicons name="cloud-upload-outline" size={16} color={colors.xpBar} />
+                                <Text style={styles.workoutActionBtnText}>Upload PDF</Text>
+                              </>
+                            )}
+                          </TouchableOpacity>
+                          <TouchableOpacity
+                            style={[styles.workoutActionBtn, { flex: 1 }]}
+                            onPress={openNewPlanEditor}
+                          >
+                            <Ionicons name="add-circle-outline" size={16} color={colors.xpBar} />
+                            <Text style={styles.workoutActionBtnText}>New Plan</Text>
+                          </TouchableOpacity>
+                        </View>
+
+                        {selectedTraineeNutrition.length === 0 ? (
+                          <View style={styles.pendingBlock}>
+                            <Ionicons name="restaurant-outline" size={40} color={colors.textSecondary} />
+                            <Text style={styles.pendingTitle}>No Nutrition Plans Yet</Text>
+                            <Text style={styles.pendingSubtitle}>Upload a PDF or create a plan so this trainee can start logging their food.</Text>
+                          </View>
+                        ) : (
+                          selectedTraineeNutrition.map(plan => {
+                            const isExpanded = expandedPlanId === plan.id;
+                            const hasTargets = plan.target_calories || plan.target_protein || plan.target_carbs || plan.target_fat;
+                            return (
+                              <View key={plan.id} style={[styles.workoutBlock, !plan.active && styles.workoutBlockInactive]}>
+                                <TouchableOpacity
+                                  style={styles.workoutBlockHeader}
+                                  onPress={() => toggleExpandPlan(plan.id)}
+                                  activeOpacity={0.7}
+                                >
+                                  <View style={{ flex: 1 }}>
+                                    <View style={styles.workoutBlockNameRow}>
+                                      <Text style={styles.workoutBlockName}>{plan.title}</Text>
+                                      {!plan.active && (
+                                        <View style={styles.inactiveTag}>
+                                          <Text style={styles.inactiveTagText}>Inactive</Text>
+                                        </View>
+                                      )}
+                                    </View>
+                                    <Text style={styles.workoutBlockMeta}>
+                                      {plan.file_name ? plan.file_name : 'No PDF attached'} · {formatDate(plan.created_at)}
+                                    </Text>
+                                  </View>
+                                  <Ionicons name={isExpanded ? 'chevron-up' : 'chevron-down'} size={18} color={colors.textSecondary} />
+                                </TouchableOpacity>
+
+                                {isExpanded && (
+                                  <View style={styles.workoutBlockBody}>
+                                    {hasTargets ? (
+                                      <View style={styles.dietTargetsDisplay}>
+                                        {plan.target_calories != null && (
+                                          <View style={styles.dietTargetChip}>
+                                            <Text style={styles.dietTargetChipVal}>{plan.target_calories}</Text>
+                                            <Text style={styles.dietTargetChipLabel}>kcal</Text>
+                                          </View>
+                                        )}
+                                        {plan.target_protein != null && (
+                                          <View style={styles.dietTargetChip}>
+                                            <Text style={styles.dietTargetChipVal}>{plan.target_protein}g</Text>
+                                            <Text style={styles.dietTargetChipLabel}>protein</Text>
+                                          </View>
+                                        )}
+                                        {plan.target_carbs != null && (
+                                          <View style={styles.dietTargetChip}>
+                                            <Text style={styles.dietTargetChipVal}>{plan.target_carbs}g</Text>
+                                            <Text style={styles.dietTargetChipLabel}>carbs</Text>
+                                          </View>
+                                        )}
+                                        {plan.target_fat != null && (
+                                          <View style={styles.dietTargetChip}>
+                                            <Text style={styles.dietTargetChipVal}>{plan.target_fat}g</Text>
+                                            <Text style={styles.dietTargetChipLabel}>fat</Text>
+                                          </View>
+                                        )}
+                                      </View>
+                                    ) : null}
+                                    {plan.notes && <Text style={styles.dietPlanNotes}>{plan.notes}</Text>}
+                                    {plan.file_url && (
+                                      <TouchableOpacity
+                                        style={styles.nutritionPlanRow}
+                                        onPress={() => Linking.openURL(plan.file_url!)}
+                                      >
+                                        <Ionicons name="document-text" size={18} color={colors.xpBar} />
+                                        <Text style={[styles.nutritionPlanName, { flex: 1 }]} numberOfLines={1}>{plan.file_name}</Text>
+                                        <Ionicons name="open-outline" size={16} color={colors.textSecondary} />
+                                      </TouchableOpacity>
+                                    )}
+
+                                    <View style={styles.workoutBlockActions}>
+                                      <TouchableOpacity style={styles.workoutActionBtn} onPress={() => openEditPlanEditor(plan)}>
+                                        <Ionicons name="create-outline" size={16} color={colors.xpBar} />
+                                        <Text style={styles.workoutActionBtnText}>Edit</Text>
+                                      </TouchableOpacity>
+                                      <View style={styles.workoutActiveToggle}>
+                                        <Text style={styles.workoutActiveToggleLabel}>{plan.active ? 'Active' : 'Inactive'}</Text>
+                                        {togglingPlanId === plan.id ? (
+                                          <ActivityIndicator size="small" color={colors.success} />
+                                        ) : (
+                                          <Switch
+                                            value={plan.active}
+                                            onValueChange={() => handleToggleNutritionActive(plan)}
+                                            trackColor={{ false: colors.border, true: colors.success + '88' }}
+                                            thumbColor={plan.active ? colors.success : colors.textSecondary}
+                                          />
+                                        )}
+                                      </View>
+                                      <TouchableOpacity onPress={() => handleDeleteNutrition(plan)}>
+                                        <Ionicons name="trash-outline" size={18} color={colors.primary} />
+                                      </TouchableOpacity>
+                                    </View>
+                                  </View>
+                                )}
+                              </View>
+                            );
+                          })
+                        )}
+                      </>
+                    )}
                   </View>
                 )}
               </ScrollView>
             )}
           </View>
-        </View>
+        </SafeAreaView>
       </Modal>
 
       {/* ── Assign Workout Modal (3-step) ── */}
@@ -1537,6 +1816,13 @@ const styles = StyleSheet.create({
     backgroundColor: colors.card, borderTopLeftRadius: 28,
     borderTopRightRadius: 28, padding: 24, maxHeight: '90%',
   },
+  // Full-screen variant (trainee detail modal) — a bottom sheet with maxHeight
+  // + no flex meant its ScrollView content (which is flex:1) had nothing
+  // bounded to expand into and collapsed to ~0 height, so the tab content
+  // was effectively invisible. Filling the whole screen fixes that and gives
+  // the tab content real room.
+  fullScreenContainer: { flex: 1, backgroundColor: colors.background },
+  fullScreenSheet: { flex: 1, padding: 24 },
   modalHeader: {
     flexDirection: 'row', justifyContent: 'space-between',
     alignItems: 'flex-start', marginBottom: 20,
@@ -1676,7 +1962,7 @@ const styles = StyleSheet.create({
     borderRadius: 12, padding: 4, marginBottom: 18,
     borderWidth: 1, borderColor: colors.border,
   },
-  tab: { flex: 1, paddingVertical: 9, borderRadius: 8, alignItems: 'center' },
+  tab: { minWidth: 76, paddingVertical: 9, paddingHorizontal: 10, borderRadius: 8, alignItems: 'center' },
   tabActive: { backgroundColor: colors.primary },
   tabText: { fontSize: 13, fontWeight: '600', color: colors.textSecondary },
   tabTextActive: { color: colors.text },
@@ -1812,10 +2098,22 @@ const styles = StyleSheet.create({
     paddingVertical: 12, borderBottomWidth: 1, borderBottomColor: colors.border,
   },
   nutritionPlanName: { fontSize: 14, fontWeight: '600', color: colors.text },
-  nutritionPlanDate: { fontSize: 11, color: colors.textSecondary, marginTop: 2 },
 
   // Pending block
   pendingBlock: { alignItems: 'center', paddingVertical: 32, gap: 10 },
   pendingTitle: { fontSize: 17, fontWeight: '700', color: colors.text },
-  pendingSubtitle: { fontSize: 13, color: colors.textSecondary, textAlign: 'center' },
+  pendingSubtitle: { fontSize: 13, color: colors.textSecondary, textAlign: 'center', marginBottom: 8 },
+
+  // Nutrition tab
+  programTabHeaderRow: { flexDirection: 'row', gap: 10, marginBottom: 16 },
+  dietTargetRow: { flexDirection: 'row', gap: 12, marginTop: 10 },
+  dietTargetField: { flex: 1 },
+  dietTargetsDisplay: { flexDirection: 'row', flexWrap: 'wrap', gap: 10, marginTop: 14 },
+  dietTargetChip: {
+    backgroundColor: colors.card, borderRadius: 10, paddingVertical: 8, paddingHorizontal: 12,
+    alignItems: 'center', borderWidth: 1, borderColor: colors.border, minWidth: 70,
+  },
+  dietTargetChipVal: { fontSize: 15, fontWeight: '800', color: colors.xpBar },
+  dietTargetChipLabel: { fontSize: 10, color: colors.textSecondary, fontWeight: '600', marginTop: 2 },
+  dietPlanNotes: { fontSize: 13, color: colors.textSecondary, marginTop: 14, lineHeight: 19 },
 });
