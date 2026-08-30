@@ -16,6 +16,7 @@ import { Workout, mockMedals, computeLevelFromXp } from '../../data/mockData';
 import {
   getWorkoutsForTrainee,
   getWorkoutWithExercises,
+  getWorkoutIdsCompletedToday,
   getProfile,
   saveWorkoutSession,
   updateProfile,
@@ -25,6 +26,17 @@ import {
   logExerciseWeight,
 } from '../../lib/db';
 import { DBWorkout } from '../../lib/supabase';
+
+const DAY_ABBR = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+
+function isScheduledForToday(workout: DBWorkout): boolean {
+  if (!workout.scheduled_days || workout.scheduled_days.length === 0) return true;
+  return workout.scheduled_days.includes(new Date().getDay());
+}
+
+function scheduledDaysLabel(days: number[]): string {
+  return [...days].sort((a, b) => a - b).map(d => DAY_ABBR[d]).join(', ');
+}
 
 function computeNewStreak(currentStreak: number, priorHistory: { completed_at: string }[]): number {
   if (priorHistory.length === 0) return 1;
@@ -86,6 +98,9 @@ function buildInitialExercises(workout: Workout): ExerciseLog[] {
 export default function WorkoutScreen({ userId }: Props) {
   // ── Workout list (a trainee can have several workouts; only active ones can be done) ──
   const [workouts, setWorkouts] = useState<DBWorkout[]>([]);
+  // A workout locks once completed, but only for the rest of today — it's
+  // open again tomorrow. Scoped per calendar day, not permanent.
+  const [completedTodayIds, setCompletedTodayIds] = useState<Set<string>>(new Set());
   const [loadingWorkouts, setLoadingWorkouts] = useState(true);
   const [isPending, setIsPending] = useState(false);
   const [selectedWorkoutId, setSelectedWorkoutId] = useState<string | null>(null);
@@ -98,14 +113,32 @@ export default function WorkoutScreen({ userId }: Props) {
       if (!profile) { setLoadingWorkouts(false); return; }
       if (profile.status === 'pending') { setIsPending(true); setLoadingWorkouts(false); return; }
       setIsPending(false);
-      const list = await getWorkoutsForTrainee(userId);
-      if (!cancelled) { setWorkouts(list); setLoadingWorkouts(false); }
+      const [list, completedIds] = await Promise.all([
+        getWorkoutsForTrainee(userId),
+        getWorkoutIdsCompletedToday(userId),
+      ]);
+      if (!cancelled) {
+        setWorkouts(list);
+        setCompletedTodayIds(completedIds);
+        setLoadingWorkouts(false);
+      }
     }
     load();
     return () => { cancelled = true; };
   }, [userId]));
 
-  const activeWorkouts = useMemo(() => workouts.filter(w => w.active), [workouts]);
+  const toDoWorkouts = useMemo(
+    () => workouts.filter(w => w.active && !completedTodayIds.has(w.id) && isScheduledForToday(w)),
+    [workouts, completedTodayIds]
+  );
+  const completedTodayWorkouts = useMemo(
+    () => workouts.filter(w => w.active && completedTodayIds.has(w.id)),
+    [workouts, completedTodayIds]
+  );
+  const notTodayWorkouts = useMemo(
+    () => workouts.filter(w => w.active && !completedTodayIds.has(w.id) && !isScheduledForToday(w)),
+    [workouts, completedTodayIds]
+  );
   const pastWorkouts = useMemo(() => workouts.filter(w => !w.active), [workouts]);
   const selectedWorkoutMeta = useMemo(
     () => workouts.find(w => w.id === selectedWorkoutId) ?? null,
@@ -211,6 +244,8 @@ export default function WorkoutScreen({ userId }: Props) {
         completion_pct: Math.round(progress * 100),
         xp_awarded: workoutXp,
       });
+      // Locks this workout for the rest of today — it reopens tomorrow.
+      setCompletedTodayIds(prev => new Set(prev).add(selectedWorkoutId));
     } catch (e) {
       console.warn('Workout completion: failed to save session', e);
     }
@@ -305,10 +340,10 @@ export default function WorkoutScreen({ userId }: Props) {
             </View>
           ) : (
             <>
-              {activeWorkouts.length > 0 && (
+              {toDoWorkouts.length > 0 && (
                 <>
-                  <Text style={styles.sectionTitle}>ACTIVE — TAP TO START</Text>
-                  {activeWorkouts.map(w => (
+                  <Text style={styles.sectionTitle}>TO DO — TAP TO START</Text>
+                  {toDoWorkouts.map(w => (
                     <TouchableOpacity
                       key={w.id}
                       style={styles.workoutPickCard}
@@ -320,7 +355,62 @@ export default function WorkoutScreen({ userId }: Props) {
                       </View>
                       <View style={{ flex: 1 }}>
                         <Text style={styles.workoutPickName}>{w.name}</Text>
+                        <Text style={styles.workoutPickMeta}>
+                          {w.duration} • {w.difficulty}
+                          {w.scheduled_days && w.scheduled_days.length > 0 ? ` • ${scheduledDaysLabel(w.scheduled_days)}` : ''}
+                        </Text>
+                      </View>
+                      <Ionicons name="chevron-forward" size={18} color={colors.textSecondary} />
+                    </TouchableOpacity>
+                  ))}
+                </>
+              )}
+
+              {completedTodayWorkouts.length > 0 && (
+                <>
+                  <Text style={[styles.sectionTitle, { marginTop: toDoWorkouts.length > 0 ? 20 : 0 }]}>
+                    COMPLETED TODAY — BACK TOMORROW
+                  </Text>
+                  {completedTodayWorkouts.map(w => (
+                    <TouchableOpacity
+                      key={w.id}
+                      style={[styles.workoutPickCard, styles.workoutPickCardInactive]}
+                      onPress={() => setSelectedWorkoutId(w.id)}
+                      activeOpacity={0.8}
+                    >
+                      <View style={[styles.workoutPickIcon, styles.workoutPickIconDone]}>
+                        <Ionicons name="checkmark-circle" size={20} color={colors.success} />
+                      </View>
+                      <View style={{ flex: 1 }}>
+                        <Text style={styles.workoutPickName}>{w.name}</Text>
                         <Text style={styles.workoutPickMeta}>{w.duration} • {w.difficulty}</Text>
+                      </View>
+                      <Ionicons name="chevron-forward" size={18} color={colors.textSecondary} />
+                    </TouchableOpacity>
+                  ))}
+                </>
+              )}
+
+              {notTodayWorkouts.length > 0 && (
+                <>
+                  <Text style={[styles.sectionTitle, { marginTop: (toDoWorkouts.length > 0 || completedTodayWorkouts.length > 0) ? 20 : 0 }]}>
+                    NOT TODAY
+                  </Text>
+                  {notTodayWorkouts.map(w => (
+                    <TouchableOpacity
+                      key={w.id}
+                      style={[styles.workoutPickCard, styles.workoutPickCardInactive]}
+                      onPress={() => setSelectedWorkoutId(w.id)}
+                      activeOpacity={0.8}
+                    >
+                      <View style={[styles.workoutPickIcon, styles.workoutPickIconInactive]}>
+                        <Ionicons name="calendar-outline" size={20} color={colors.textSecondary} />
+                      </View>
+                      <View style={{ flex: 1 }}>
+                        <Text style={styles.workoutPickName}>{w.name}</Text>
+                        <Text style={styles.workoutPickMeta}>
+                          {w.duration} • {w.difficulty} • {scheduledDaysLabel(w.scheduled_days ?? [])}
+                        </Text>
                       </View>
                       <Ionicons name="chevron-forward" size={18} color={colors.textSecondary} />
                     </TouchableOpacity>
@@ -330,7 +420,7 @@ export default function WorkoutScreen({ userId }: Props) {
 
               {pastWorkouts.length > 0 && (
                 <>
-                  <Text style={[styles.sectionTitle, { marginTop: activeWorkouts.length > 0 ? 20 : 0 }]}>
+                  <Text style={[styles.sectionTitle, { marginTop: (toDoWorkouts.length > 0 || completedTodayWorkouts.length > 0 || notTodayWorkouts.length > 0) ? 20 : 0 }]}>
                     PAST — VIEW ONLY
                   </Text>
                   {pastWorkouts.map(w => (
@@ -374,10 +464,18 @@ export default function WorkoutScreen({ userId }: Props) {
     );
   }
 
-  const isReadOnly = selectedWorkoutMeta ? !selectedWorkoutMeta.active : false;
+  const isCompletedToday = selectedWorkoutId ? completedTodayIds.has(selectedWorkoutId) : false;
+  const isNotToday = selectedWorkoutMeta ? (selectedWorkoutMeta.active && !isCompletedToday && !isScheduledForToday(selectedWorkoutMeta)) : false;
+  const readOnlyReason: 'inactive' | 'completed' | 'notToday' | null = !selectedWorkoutMeta
+    ? null
+    : !selectedWorkoutMeta.active ? 'inactive'
+    : isCompletedToday ? 'completed'
+    : isNotToday ? 'notToday'
+    : null;
 
-  // ── Past (inactive) workout: read-only view, no logging/finish ──
-  if (isReadOnly) {
+  // ── Read-only view: inactive, already completed today, or not scheduled
+  // for today — either way, no logging/finish. ──
+  if (readOnlyReason) {
     return (
       <SafeAreaView style={styles.container}>
         <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.scrollContent}>
@@ -387,12 +485,24 @@ export default function WorkoutScreen({ userId }: Props) {
           </TouchableOpacity>
 
           <View style={styles.readOnlyBanner}>
-            <Ionicons name="archive-outline" size={16} color={colors.textSecondary} />
-            <Text style={styles.readOnlyBannerText}>This workout is no longer active — view only.</Text>
+            <Ionicons
+              name={readOnlyReason === 'completed' ? 'checkmark-circle' : readOnlyReason === 'notToday' ? 'calendar-outline' : 'archive-outline'}
+              size={16}
+              color={readOnlyReason === 'completed' ? colors.success : colors.textSecondary}
+            />
+            <Text style={styles.readOnlyBannerText}>
+              {readOnlyReason === 'completed'
+                ? "You've already completed this workout today — it reopens tomorrow."
+                : readOnlyReason === 'notToday'
+                ? `Not scheduled for today — comes back on ${scheduledDaysLabel(selectedWorkoutMeta?.scheduled_days ?? [])}.`
+                : 'This workout is no longer active — view only.'}
+            </Text>
           </View>
 
           <View style={styles.header}>
-            <Text style={styles.programLabel}>PAST WORKOUT</Text>
+            <Text style={styles.programLabel}>
+              {readOnlyReason === 'completed' ? 'COMPLETED TODAY' : readOnlyReason === 'notToday' ? 'NOT SCHEDULED TODAY' : 'PAST WORKOUT'}
+            </Text>
             <Text style={styles.workoutName}>{dbWorkout.name}</Text>
             <Text style={styles.workoutMeta}>
               {dbWorkout.exercises.length} exercises • {dbWorkout.duration} • {dbWorkout.difficulty}
@@ -658,6 +768,7 @@ const styles = StyleSheet.create({
     backgroundColor: colors.primary + '22', alignItems: 'center', justifyContent: 'center',
   },
   workoutPickIconInactive: { backgroundColor: colors.secondary },
+  workoutPickIconDone: { backgroundColor: colors.success + '22' },
   workoutPickName: { fontSize: 16, fontWeight: '700', color: colors.text },
   workoutPickMeta: { fontSize: 12, color: colors.textSecondary, marginTop: 2 },
 
