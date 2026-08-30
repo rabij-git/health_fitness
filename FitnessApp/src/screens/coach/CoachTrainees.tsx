@@ -15,6 +15,7 @@ import {
   Alert,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import { useRoute, useNavigation } from '@react-navigation/native';
 import { Ionicons } from '@expo/vector-icons';
 import * as DocumentPicker from 'expo-document-picker';
 import { colors } from '../../theme/colors';
@@ -92,6 +93,8 @@ function formatDate(iso: string) {
 }
 
 export default function CoachTrainees({ coachId }: Props) {
+  const route = useRoute<any>();
+  const navigation = useNavigation<any>();
   const [trainees, setTrainees] = useState<DBUser[]>([]);
   const [programs, setPrograms] = useState<DBProgram[]>([]);
   const [incomingRequests, setIncomingRequests] = useState<(DBCoachRequest & { trainee: DBUser })[]>([]);
@@ -211,6 +214,19 @@ export default function CoachTrainees({ coachId }: Props) {
     getExerciseLibrary().then(setLibrary);
     getNutritionTemplates(coachId).then(setNutritionTemplates);
   }, [loadData, coachId]);
+
+  // Deep-link: another screen (e.g. the Coach Hub dashboard) navigated here
+  // asking to open a specific trainee's detail view directly.
+  useEffect(() => {
+    const openId = route.params?.openTraineeId;
+    if (!openId || trainees.length === 0) return;
+    const target = trainees.find(t => t.id === openId);
+    if (target) {
+      setSelectedTrainee(target);
+      setDetailTab('program');
+    }
+    navigation.setParams({ openTraineeId: undefined });
+  }, [route.params?.openTraineeId, trainees, navigation]);
 
   // Load detail data when a trainee is selected
   useEffect(() => {

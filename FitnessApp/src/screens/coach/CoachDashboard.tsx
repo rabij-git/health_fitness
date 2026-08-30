@@ -29,12 +29,12 @@ function timeAgo(iso: string) {
 interface Props {
   onLogout: () => void;
   coachId: string;
-  navigation?: { navigate: (screen: string) => void };
+  navigation?: { navigate: (screen: string, params?: any) => void };
 }
 
-function TraineePreviewRow({ trainee }: { trainee: DBUser }) {
+function TraineePreviewRow({ trainee, onPress }: { trainee: DBUser; onPress?: () => void }) {
   return (
-    <View style={styles.trainerCard}>
+    <TouchableOpacity style={styles.trainerCard} onPress={onPress} disabled={!onPress} activeOpacity={0.7}>
       <View style={styles.trainerAvatar}>
         <Text style={styles.trainerAvatarText}>{trainee.avatar}</Text>
       </View>
@@ -48,7 +48,8 @@ function TraineePreviewRow({ trainee }: { trainee: DBUser }) {
       <View style={styles.trainerLevel}>
         <Text style={styles.trainerLevelNum}>Lv.{trainee.level}</Text>
       </View>
-    </View>
+      {onPress && <Ionicons name="chevron-forward" size={16} color={colors.textSecondary} />}
+    </TouchableOpacity>
   );
 }
 
@@ -202,7 +203,13 @@ export default function CoachDashboard({ onLogout, coachId, navigation }: Props)
             )}
           </View>
         ) : (
-          trainees.slice(0, 5).map(t => <TraineePreviewRow key={t.id} trainee={t} />)
+          trainees.slice(0, 5).map(t => (
+            <TraineePreviewRow
+              key={t.id}
+              trainee={t}
+              onPress={navigation ? () => navigation.navigate('Trainees', { openTraineeId: t.id }) : undefined}
+            />
+          ))
         )}
 
         <TouchableOpacity style={styles.logoutButton} onPress={onLogout}>
