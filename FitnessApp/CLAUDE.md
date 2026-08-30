@@ -140,7 +140,7 @@ Both `TrainerDashboard.tsx` (trainee Home) and `CoachDashboard.tsx` show a `log-
 - **Weight field:** Display only for the trainee — no keyboard, no editing
 - **Effort rating:** per-set buttons 0–4 (RIR — Reps In Reserve), colors `#4CAF50 → #8BC34A → #FF9800 → #FF5722 → #E94560`. **Deselectable** — tapping an already-selected rating clears it back to `null` instead of being stuck once picked.
 - **Finish gating:** the Finish button is disabled (with a hint text) until at least one set has a logged effort rating — previously a workout could be "finished" with zero progress logged, which still counted toward medal eligibility and sent a misleading "0% done, +0 XP" notification to the coach.
-- **Log tab integration:** finishing a workout now writes an `exercise_weight_logs` entry (via `logExerciseWeight`) for every exercise that had at least one set's effort logged, using that day's coach-assigned sets/reps/weight — previously the Log tab was entirely disconnected from workout completion and always stayed empty.
+- **Log tab integration:** finishing a workout now writes an `exercise_weight_logs` entry (via `logExerciseWeight`) for every exercise that had at least one set's effort logged, using that day's coach-assigned sets/reps/weight — previously the Log tab was entirely disconnected from workout completion and always stayed empty. `ExerciseLogScreen.tsx` (the "Exercises" segment of the Log tab) is now **read-only** — the "Add Today's Weight" manual-entry modal was removed entirely; the log is exclusively a byproduct of finishing workouts, never hand-typed.
 - **Medal XP is real:** earning a medal on finish now actually adds its `xpReward` to the trainee's XP total (on top of the workout's own XP), instead of just being a number the medal-toast displayed that nothing added up to.
 
 ### Exercise Input Rules (coach-facing: program templates, workout assignment, exercise library)
@@ -196,7 +196,7 @@ Previously a trainee could only ever have one workout — `getWorkoutWithExercis
 - **`db.ts`:** `getWorkoutWithExercises` now takes a **`workoutId`**, not a `traineeId` — it fetches one specific workout, since "the latest one" is no longer a meaningful concept. `getWorkoutsForTrainee(traineeId)` returns *all* of a trainee's workouts (active + inactive), newest first. `setWorkoutActive(workoutId, active)` toggles the flag. `createWorkout` always inserts with `active: true`.
 - **`CoachTrainees.tsx` (coach side):** the trainee-detail modal's "Program" tab is now a list of every workout ever assigned, each an expandable row (tap to load its exercises on demand) with an **Edit** button and an **Active/Inactive `Switch`**. "Assign New Workout" in the status row is always available and always *adds* — there's no more "Switch Program" replace semantics. The roster card shows each trainee's active-workout count (`traineeActiveCounts`, batch-fetched in `loadData`) instead of a single program name.
 - **`WorkoutScreen.tsx` (trainee side):** the tab's landing view is now a workout picker — "Active" workouts (tappable, start logging) and "Past" workouts (tappable, opens a read-only exercise list — no effort inputs, no Finish button, since only active workouts can be completed). Selecting a workout shows a "‹ All Workouts" back row to return to the picker. `submitted`/exercise-log state resets per selected workout via a `useEffect` keyed on `selectedWorkoutId`.
-- **`TrainerDashboard.tsx` (Home):** the workout preview card fetches `getWorkoutsForTrainee`, previews the most recent *active* one (`primaryWorkout`), and the whole card is now tappable (`navigation.navigate('Workout')`) — previously the "+N more exercises" line was a bare `<Text>` with no `onPress`, a dead link. If more than one active workout exists, a "+N more active workouts — tap to view all" row appears. `navigation` is threaded in via `TrainerTabs.tsx`.
+- **`TrainerDashboard.tsx` (Home):** the workout preview card fetches `getWorkoutsForTrainee` and previews the most recent *active* one (`primaryWorkout`) — top 3 exercises, no overflow count. **Deliberately non-interactive** — an earlier version of this card made the whole thing (plus a "+N more exercises"/"+N more active workouts" line) tappable to jump to the Workout tab, but that read as misleading ("I thought it just showed me what exercises were there") since tapping it silently launched the workout-picker flow. Reverted to a plain preview; picking/starting a workout only happens via the bottom Workout tab button.
 
 ---
 
@@ -210,11 +210,15 @@ Previously a trainee could only ever have one workout — `getWorkoutWithExercis
 
 ---
 
-## Nutrition Plans
+## Nutrition Plans & Food Log
 
-- `nutrition_plans` table + public `nutrition-plans` Storage bucket.
-- Coach uploads a scanned PDF via the trainee-detail modal's "Nutrition" tab in `CoachTrainees.tsx` (`expo-document-picker`, restricted to `application/pdf`).
-- Trainee views/opens their plan(s) on `ProfileScreen.tsx`, directly below the Body Weight chart. Tapping opens the file via `Linking.openURL`.
+A "Diet Plan" feature was briefly built as a separate table/tab from the existing PDF-based "Nutrition Plan" feature, then **merged into one concept** per explicit feedback — a diet plan and a nutrition plan are the same thing, and "nutrition" is the preferred term throughout the UI. Not third-party synced data, so it doesn't fall under the root `CLAUDE.md`'s "Admin-only third-party sync" restriction; it follows the same coach-assigns/trainee-logs pattern already established for workouts.
+
+- **Schema:** `nutrition_plans` now carries both the original PDF fields (`file_name`/`file_url`/`storage_path`, all nullable — not every plan has a document) and the structured fields absorbed from the short-lived `diet_plans` table (`title` not null, `notes`, optional `target_calories`/`target_protein`/`target_carbs`/`target_fat`, `active` boolean default true). **A trainee can have several nutrition plans** — some active, some inactive — mirroring the `workouts.active` model exactly (a coach retires one via a toggle rather than deleting it). Migration: `/private/tmp/scratch/merge_nutrition_diet_plans.sql` (already run; the old `diet_plans` table was dropped, it never held real data).
+- **`db.ts`:** `getNutritionPlans` (all plans for a trainee, unchanged signature), `uploadNutritionPlan` (PDF-only quick add, sets `title` to the filename), `createNutritionPlan` (structured-only, no PDF), `updateNutritionPlan`, `setNutritionPlanActive`, `deleteNutritionPlan` (storage removal is now conditional on `storage_path` being present, since structured-only plans have none).
+- **Coach side (`CoachTrainees.tsx`):** single "Nutrition" tab in the trainee-detail modal — same expandable-list-with-`Switch`-toggle pattern as the Program tab's workout list (exercises fetched on demand → here, everything's already loaded, so expand is just local state). Two buttons up top: "Upload PDF" (quick, unchanged flow) and "New Plan" (structured editor: title, target macros, notes — inline in the tab, not a separate modal). Each row can be edited, toggled active/inactive, or deleted; if a plan has an attached PDF it shows a tappable file row inside the expanded view.
+- **Trainee side:** no new bottom tab was added (6 tabs was already the ceiling) — the existing **Log tab is a segmented control** (`LogScreen.tsx`): "Exercises" (`ExerciseLogScreen.tsx`, read-only — see Workout Completion Flow) and "Nutrition" (`FoodLogScreen.tsx`) — shows Active/Past nutrition plan cards (target macro chips, notes, tappable PDF link if attached) plus the day-by-day food log below (grouped "Today"/"Yesterday"/weekday, add/delete entries). If any active plan has `target_calories` set, shows a "today's calories / target" progress bar. `LogScreen.tsx` owns the single `SafeAreaView` for the tab; `ExerciseLogScreen.tsx`/`FoodLogScreen.tsx` use plain `View` so insets aren't applied twice (neither is ever rendered standalone).
+- **`ProfileScreen.tsx`:** its old "Nutrition Plan" PDF list is now titled "Nutrition Documents", only renders when at least one plan has a `file_url`, and is a quick-access shortcut — full plan management (targets, notes, active state) lives on the Log tab's Nutrition segment instead.
 
 ---
 
@@ -262,8 +266,8 @@ No push notifications — in-app only, built on the existing `messages` table:
 
 ## Program Assignment & Lifecycle
 
-- **Switching a trainee's program:** `CoachTrainees.tsx`'s trainee-detail modal used to only offer "Assign Program" when a trainee had *no* workout yet, and "Edit Program" (edit exercises within the current workout) once one existed — there was no way to move a trainee onto a *different* program template after the first assignment. Now both actions are available once a program exists: "Edit" (exercises) and "Switch Program" (re-run the assign flow against a different template). `createWorkout` always inserts a new `workouts` row, and `getWorkoutWithExercises` picks the most recent by `created_at`, so switching naturally supersedes the old one without deleting session history tied to it.
-- **Roster visibility:** the trainee list in `CoachTrainees.tsx` now shows each trainee's actual assigned program name (or "No program assigned") instead of a static "Active" badge that gave no real signal. `loadData` batch-fetches every trainee's current workout via `Promise.all` into a `traineeProgramNames` map.
+Program *templates* (as opposed to a trainee's assigned *workouts* — see Multiple Workouts Per Trainee above, which is the current model for assignment/switching/roster display).
+
 - **Deleting a program:** `deleteProgram(programId)` in `db.ts` — refuses (throws a friendly error, caught by `CoachPrograms.tsx` and shown via `Alert`) if any `workouts` row still references the program, since that would silently orphan a trainee's program link. Deletes the program's own `program_exercises` rows first, then the `programs` row. UI: trash icon on each program card, confirm via `Alert.alert`.
 
 ---
@@ -325,6 +329,7 @@ const [newlyEarnedMedalIds, setNewlyEarnedMedalIds] = useState<string[]>([]);
 1. **Never gate `setLoading(false)` behind a `try` with no `catch`.** `CoachPrograms.tsx` and `CoachTrainees.tsx` both originally had a load effect where any Supabase error (flaky network, RLS hiccup) left the screen stuck on a full-screen spinner forever — including hiding action buttons like "Add Program" that had nothing to do with the failing query. Fix pattern: always `try { ... } catch { setLoadError(true) } finally { setLoading(false) }`, and don't gate primary actions behind a data-load spinner if they don't actually depend on that data.
 2. **Hooks must never sit after an early `return`.** `WorkoutScreen.tsx` had a `useMemo` positioned after two conditional early returns (`if (loadingWorkout) return...`, `if (isPending) return...`), so the hook only ran once loading finished — a different hook count between the first and second render, which crashes with "Rendered more hooks than during the previous render." Always put every hook call before any conditional return, no exceptions.
 3. **Every `<Modal>` needs `onRequestClose`.** None of the ~18 `Modal`s in the app passed it — on Android, the hardware/gesture back button does nothing while a `Modal` is open unless `onRequestClose` is wired up, which reads as "stuck" (reported first via the coach↔trainee chat modal, but it was universal). Fix pattern: `onRequestClose` should call the exact same handler as the modal's own visible close/X button, so both paths behave identically.
+4. **A `flex: 1` child needs a bounded ancestor, not just any ancestor.** `CoachTrainees.tsx`'s trainee-detail modal was a bottom sheet (`maxHeight: '90%'`, no `flex`) containing a `ScrollView` styled `flex: 1` — since the sheet itself only sizes to its content (bounded by `maxHeight`, not stretched to fill), the `ScrollView` had no resolved height to flex into and collapsed to ~0, so the tab content was there in the tree but invisible on screen. Reported as "menu comes up but you can't see the information." Fixed by making the modal genuinely full-screen (`SafeAreaView` + `flex: 1` sheet) instead of patching around it — a `flex: 1` descendant only works if every ancestor up the chain is itself flexed/bounded, not auto-sized.
 
 ---
 
@@ -368,9 +373,6 @@ const [newlyEarnedMedalIds, setNewlyEarnedMedalIds] = useState<string[]>([]);
 
 **`CoachRankings.tsx`**
 - `sorted` array wrapped in `useMemo([trainees])`.
-
-**`ExerciseLogScreen.tsx`**
-- `handleAddEntry`: reduced from 2 fetches to 1 — single `getExerciseWeightLogs` call after save, then derives both `logs` and `selected` from the result.
 
 ---
 
