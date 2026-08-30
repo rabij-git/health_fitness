@@ -62,6 +62,10 @@ export interface DBWorkout {
   duration: string;
   difficulty: string;
   active: boolean;
+  end_date: string | null;
+  // Weekday numbers (0=Sunday..6=Saturday, matching JS Date.getDay()) this
+  // workout can be done on. Null/empty = no restriction, any day.
+  scheduled_days: number[] | null;
   created_at: string;
 }
 
@@ -127,6 +131,7 @@ export interface DBNutritionPlan {
   id: string;
   trainee_id: string;
   coach_id: string;
+  template_id: string | null;
   title: string;
   notes: string | null;
   target_calories: number | null;
@@ -137,6 +142,21 @@ export interface DBNutritionPlan {
   file_name: string | null;
   file_url: string | null;
   storage_path: string | null;
+  created_at: string;
+}
+
+// Reusable, coach-owned nutrition plan template — mirrors DBProgram's
+// relationship to DBWorkout. Assigning one to a trainee copies its current
+// values into a new DBNutritionPlan row (template_id kept for provenance).
+export interface DBNutritionPlanTemplate {
+  id: string;
+  coach_id: string;
+  title: string;
+  notes: string | null;
+  target_calories: number | null;
+  target_protein: number | null;
+  target_carbs: number | null;
+  target_fat: number | null;
   created_at: string;
 }
 

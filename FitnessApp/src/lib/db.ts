@@ -1,4 +1,4 @@
-import { supabase, DBUser, DBProgram, DBWorkout, DBExercise, DBWeightLog, DBExerciseWeightLog, DBMessage, DBWorkoutSession, DBGym, DBFriendship, DBNutritionPlan, DBCoachRequest, DBProgramExercise, DBLibraryExercise, DBUserMedal, DBFoodLogEntry } from './supabase';
+import { supabase, DBUser, DBProgram, DBWorkout, DBExercise, DBWeightLog, DBExerciseWeightLog, DBMessage, DBWorkoutSession, DBGym, DBFriendship, DBNutritionPlan, DBNutritionPlanTemplate, DBCoachRequest, DBProgramExercise, DBLibraryExercise, DBUserMedal, DBFoodLogEntry } from './supabase';
 
 // ── Auth ──────────────────────────────────────────────────────────────────────
 
@@ -251,12 +251,12 @@ export async function deleteLibraryExercise(id: string) {
 // ── Workouts ──────────────────────────────────────────────────────────────────
 
 export async function createWorkout(
-  workout: Omit<DBWorkout, 'id' | 'created_at' | 'active'>,
+  workout: Omit<DBWorkout, 'id' | 'created_at' | 'active' | 'end_date' | 'scheduled_days'> & { scheduled_days?: number[] | null },
   exercises: ExercisePayloadEntry[]
 ): Promise<DBWorkout> {
   const { data: wData, error: wError } = await supabase
     .from('workouts')
-    .insert({ ...workout, active: true })
+    .insert({ scheduled_days: null, ...workout, active: true, end_date: null })
     .select()
     .single();
   if (wError) throw wError;
@@ -268,6 +268,14 @@ export async function createWorkout(
     if (exError) throw exError;
   }
   return wData;
+}
+
+export async function updateWorkoutScheduledDays(workoutId: string, days: number[]) {
+  const { error } = await supabase
+    .from('workouts')
+    .update({ scheduled_days: days.length > 0 ? days : null })
+    .eq('id', workoutId);
+  if (error) throw error;
 }
 
 // All workouts ever assigned to a trainee (active + inactive), newest first —
@@ -284,9 +292,48 @@ export async function getWorkoutsForTrainee(traineeId: string): Promise<DBWorkou
   return data ?? [];
 }
 
+// Deactivating stamps today as the end date (so a coach can see how long the
+// workout actually ran); reactivating clears it since it's back in use.
 export async function setWorkoutActive(workoutId: string, active: boolean) {
-  const { error } = await supabase.from('workouts').update({ active }).eq('id', workoutId);
+  const end_date = active ? null : new Date().toISOString().split('T')[0];
+  const { error } = await supabase.from('workouts').update({ active, end_date }).eq('id', workoutId);
   if (error) throw error;
+}
+
+// Refuses if any session was ever logged against this workout, since that
+// would silently orphan the trainee's completion history for it.
+export async function deleteWorkout(workoutId: string) {
+  const { count, error: countError } = await supabase
+    .from('workout_sessions')
+    .select('id', { count: 'exact', head: true })
+    .eq('workout_id', workoutId);
+  if (countError) throw countError;
+  if ((count ?? 0) > 0) {
+    throw new Error('This workout has completed sessions logged against it and can\'t be deleted.');
+  }
+
+  const { error: exError } = await supabase.from('exercises').delete().eq('workout_id', workoutId);
+  if (exError) throw exError;
+
+  const { error } = await supabase.from('workouts').delete().eq('id', workoutId);
+  if (error) throw error;
+}
+
+// Ids of every workout the trainee has ever completed at least one session
+// for — used to lock a workout from being started a second time.
+// A workout locks for the rest of today once completed, but resets and can
+// be done again tomorrow — so "already done" is scoped to today only, using
+// the device's local midnight as the boundary.
+export async function getWorkoutIdsCompletedToday(traineeId: string): Promise<Set<string>> {
+  const startOfToday = new Date();
+  startOfToday.setHours(0, 0, 0, 0);
+  const { data, error } = await supabase
+    .from('workout_sessions')
+    .select('workout_id')
+    .eq('trainee_id', traineeId)
+    .gte('completed_at', startOfToday.toISOString());
+  if (error) return new Set();
+  return new Set((data ?? []).map(r => r.workout_id));
 }
 
 export async function getWorkoutWithExercises(workoutId: string) {
@@ -424,16 +471,73 @@ export async function uploadNutritionPlan(
   return data;
 }
 
-// Structured plan with no PDF attachment — a coach can add one later via
-// updateNutritionPlan if they also want to attach a document.
-export async function createNutritionPlan(
+// ── Nutrition plan templates (reusable, coach-owned — mirrors programs) ───────
+
+export async function getNutritionTemplates(coachId: string): Promise<DBNutritionPlanTemplate[]> {
+  const { data, error } = await supabase
+    .from('nutrition_plan_templates')
+    .select('*')
+    .eq('coach_id', coachId)
+    .order('created_at', { ascending: false });
+  if (error) return [];
+  return data ?? [];
+}
+
+export async function createNutritionTemplate(
+  coachId: string,
+  fields: Pick<DBNutritionPlanTemplate, 'title' | 'notes' | 'target_calories' | 'target_protein' | 'target_carbs' | 'target_fat'>
+): Promise<DBNutritionPlanTemplate> {
+  const { data, error } = await supabase
+    .from('nutrition_plan_templates')
+    .insert({ coach_id: coachId, ...fields })
+    .select()
+    .single();
+  if (error) throw error;
+  return data;
+}
+
+export async function updateNutritionTemplate(
+  templateId: string,
+  fields: Partial<Pick<DBNutritionPlanTemplate, 'title' | 'notes' | 'target_calories' | 'target_protein' | 'target_carbs' | 'target_fat'>>
+): Promise<DBNutritionPlanTemplate> {
+  const { data, error } = await supabase
+    .from('nutrition_plan_templates')
+    .update(fields)
+    .eq('id', templateId)
+    .select()
+    .single();
+  if (error) throw error;
+  return data;
+}
+
+export async function deleteNutritionTemplate(templateId: string) {
+  const { error } = await supabase.from('nutrition_plan_templates').delete().eq('id', templateId);
+  if (error) throw error;
+}
+
+// Assigning copies the template's current values into a new nutrition_plans
+// row (same snapshot pattern as assigning a program copies its exercises) —
+// later edits to the template don't retroactively change plans already given
+// out. template_id is kept only for provenance.
+export async function assignNutritionTemplate(
   traineeId: string,
   coachId: string,
-  fields: Pick<DBNutritionPlan, 'title' | 'notes' | 'target_calories' | 'target_protein' | 'target_carbs' | 'target_fat'>
+  template: DBNutritionPlanTemplate
 ): Promise<DBNutritionPlan> {
   const { data, error } = await supabase
     .from('nutrition_plans')
-    .insert({ trainee_id: traineeId, coach_id: coachId, active: true, ...fields })
+    .insert({
+      trainee_id: traineeId,
+      coach_id: coachId,
+      template_id: template.id,
+      active: true,
+      title: template.title,
+      notes: template.notes,
+      target_calories: template.target_calories,
+      target_protein: template.target_protein,
+      target_carbs: template.target_carbs,
+      target_fat: template.target_fat,
+    })
     .select()
     .single();
   if (error) throw error;

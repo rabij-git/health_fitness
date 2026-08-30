@@ -12,6 +12,7 @@ import {
   ActivityIndicator,
   Switch,
   Linking,
+  Alert,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
@@ -33,18 +34,21 @@ import {
   getWorkoutsForTrainee,
   getWorkoutWithExercises,
   setWorkoutActive,
+  updateWorkoutScheduledDays,
+  deleteWorkout,
   getTraineeHistory,
   getWeightLogs,
   getNutritionPlans,
   uploadNutritionPlan,
-  createNutritionPlan,
+  getNutritionTemplates,
+  assignNutritionTemplate,
   updateNutritionPlan,
   setNutritionPlanActive,
   deleteNutritionPlan,
   getMessages,
   sendMessage,
 } from '../../lib/db';
-import { DBProgram, DBUser, DBWorkout, DBExercise, DBWeightLog, DBNutritionPlan, DBCoachRequest, DBLibraryExercise, DBMessage } from '../../lib/supabase';
+import { DBProgram, DBUser, DBWorkout, DBExercise, DBWeightLog, DBNutritionPlan, DBNutritionPlanTemplate, DBCoachRequest, DBLibraryExercise, DBMessage } from '../../lib/supabase';
 import { sanitizeCount, sanitizeWeightInput, stripKg, withKg } from '../../lib/exerciseInput';
 
 interface ExerciseEntry {
@@ -70,6 +74,17 @@ const CATEGORY_ICONS: Record<string, string> = {
   Legs: 'fitness',
   Core: 'body',
 };
+
+const DAY_ABBR = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+
+function toggleDay(days: number[], day: number): number[] {
+  return days.includes(day) ? days.filter(d => d !== day) : [...days, day];
+}
+
+function scheduledDaysLabel(days: number[] | null): string {
+  if (!days || days.length === 0) return 'Any day';
+  return [...days].sort((a, b) => a - b).map(d => DAY_ABBR[d]).join(', ');
+}
 
 function formatDate(iso: string) {
   const d = new Date(iso);
@@ -103,6 +118,7 @@ export default function CoachTrainees({ coachId }: Props) {
   const [loadingExpandedWorkout, setLoadingExpandedWorkout] = useState(false);
   const [togglingWorkoutId, setTogglingWorkoutId] = useState<string | null>(null);
   const [openingEditWorkoutId, setOpeningEditWorkoutId] = useState<string | null>(null);
+  const [deletingWorkoutId, setDeletingWorkoutId] = useState<string | null>(null);
   const [selectedTraineeHistory, setSelectedTraineeHistory] = useState<any[]>([]);
   const [selectedTraineeWeights, setSelectedTraineeWeights] = useState<DBWeightLog[]>([]);
   // A trainee can have several nutrition plans — some active, some retired —
@@ -115,8 +131,9 @@ export default function CoachTrainees({ coachId }: Props) {
   const [loadingDetail, setLoadingDetail] = useState(false);
   const [uploadingNutrition, setUploadingNutrition] = useState(false);
 
-  // ── Nutrition plan editor (inline within the "Nutrition" tab) ──
-  const [editingPlanId, setEditingPlanId] = useState<string | null | 'new'>(null);
+  // ── Nutrition plan editor (inline within the "Nutrition" tab — editing an
+  // already-assigned plan's copied values, not creating a new one) ──
+  const [editingPlanId, setEditingPlanId] = useState<string | null>(null);
   const [planTitle, setPlanTitle] = useState('');
   const [planNotes, setPlanNotes] = useState('');
   const [planCalories, setPlanCalories] = useState('');
@@ -124,6 +141,11 @@ export default function CoachTrainees({ coachId }: Props) {
   const [planCarbs, setPlanCarbs] = useState('');
   const [planFat, setPlanFat] = useState('');
   const [savingPlan, setSavingPlan] = useState(false);
+
+  // ── Assign nutrition plan (picks from the coach's reusable templates) ──
+  const [nutritionTemplates, setNutritionTemplates] = useState<DBNutritionPlanTemplate[]>([]);
+  const [showAssignPlanPicker, setShowAssignPlanPicker] = useState(false);
+  const [assigningPlanId, setAssigningPlanId] = useState<string | null>(null);
 
   // ── Assign workout modal (3-step: program → workout → success) ──
   const [showAssignModal, setShowAssignModal] = useState(false);
@@ -133,6 +155,8 @@ export default function CoachTrainees({ coachId }: Props) {
   const [workoutName, setWorkoutName] = useState('Day 1 Workout');
   const [exercises, setExercises] = useState<ExerciseEntry[]>([buildEmptyExercise()]);
   const [activeCategory, setActiveCategory] = useState('Push');
+  // Weekday numbers (0=Sun..6=Sat) this workout can be done on — empty = any day.
+  const [scheduledDays, setScheduledDays] = useState<number[]>([]);
 
   // ── Edit workout modal ──
   const [showEditModal, setShowEditModal] = useState(false);
@@ -141,6 +165,7 @@ export default function CoachTrainees({ coachId }: Props) {
   const [editWorkoutName, setEditWorkoutName] = useState('');
   const [editExercises, setEditExercises] = useState<ExerciseEntry[]>([]);
   const [editActiveCategory, setEditActiveCategory] = useState('Push');
+  const [editScheduledDays, setEditScheduledDays] = useState<number[]>([]);
 
   // ── Shared exercise library ──
   const [library, setLibrary] = useState<DBLibraryExercise[]>([]);
@@ -184,7 +209,8 @@ export default function CoachTrainees({ coachId }: Props) {
   useEffect(() => {
     loadData();
     getExerciseLibrary().then(setLibrary);
-  }, [loadData]);
+    getNutritionTemplates(coachId).then(setNutritionTemplates);
+  }, [loadData, coachId]);
 
   // Load detail data when a trainee is selected
   useEffect(() => {
@@ -240,17 +266,47 @@ export default function CoachTrainees({ coachId }: Props) {
 
   const handleToggleWorkoutActive = useCallback(async (workout: DBWorkout) => {
     const nextActive = !workout.active;
+    const today = new Date().toISOString().split('T')[0];
     setTogglingWorkoutId(workout.id);
-    setSelectedTraineeWorkouts(prev => prev.map(w => w.id === workout.id ? { ...w, active: nextActive } : w));
+    setSelectedTraineeWorkouts(prev => prev.map(w => w.id === workout.id ? { ...w, active: nextActive, end_date: nextActive ? null : today } : w));
     try {
       await setWorkoutActive(workout.id, nextActive);
     } catch (e) {
       console.warn('setWorkoutActive error', e);
-      setSelectedTraineeWorkouts(prev => prev.map(w => w.id === workout.id ? { ...w, active: workout.active } : w));
+      setSelectedTraineeWorkouts(prev => prev.map(w => w.id === workout.id ? { ...w, active: workout.active, end_date: workout.end_date } : w));
     } finally {
       setTogglingWorkoutId(null);
     }
   }, []);
+
+  const handleDeleteWorkout = useCallback((workout: DBWorkout) => {
+    Alert.alert(
+      'Delete Workout',
+      `Delete "${workout.name}"? This can't be undone.`,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Delete',
+          style: 'destructive',
+          onPress: async () => {
+            setDeletingWorkoutId(workout.id);
+            try {
+              await deleteWorkout(workout.id);
+              setSelectedTraineeWorkouts(prev => prev.filter(w => w.id !== workout.id));
+              if (expandedWorkoutId === workout.id) {
+                setExpandedWorkoutId(null);
+                setExpandedWorkoutExercises([]);
+              }
+            } catch (e: any) {
+              Alert.alert('Can\'t Delete Workout', e?.message ?? 'Something went wrong — try again.');
+            } finally {
+              setDeletingWorkoutId(null);
+            }
+          },
+        },
+      ]
+    );
+  }, [expandedWorkoutId]);
 
   const handleSendToTrainee = useCallback(async () => {
     if (!chatInput.trim() || !selectedTrainee) return;
@@ -308,15 +364,19 @@ export default function CoachTrainees({ coachId }: Props) {
     }
   }, []);
 
-  const openNewPlanEditor = useCallback(() => {
-    setPlanTitle('');
-    setPlanNotes('');
-    setPlanCalories('');
-    setPlanProtein('');
-    setPlanCarbs('');
-    setPlanFat('');
-    setEditingPlanId('new');
-  }, []);
+  const handleAssignPlan = useCallback(async (template: DBNutritionPlanTemplate) => {
+    if (!selectedTrainee || assigningPlanId) return;
+    setAssigningPlanId(template.id);
+    try {
+      const plan = await assignNutritionTemplate(selectedTrainee.id, coachId, template);
+      setSelectedTraineeNutrition(prev => [plan, ...prev]);
+      setShowAssignPlanPicker(false);
+    } catch (e) {
+      console.warn('assignNutritionTemplate error', e);
+    } finally {
+      setAssigningPlanId(null);
+    }
+  }, [selectedTrainee, coachId, assigningPlanId]);
 
   const openEditPlanEditor = useCallback((plan: DBNutritionPlan) => {
     setPlanTitle(plan.title);
@@ -340,20 +400,15 @@ export default function CoachTrainees({ coachId }: Props) {
       target_fat: planFat ? parseInt(planFat, 10) : null,
     };
     try {
-      if (editingPlanId === 'new') {
-        const plan = await createNutritionPlan(selectedTrainee.id, coachId, fields);
-        setSelectedTraineeNutrition(prev => [plan, ...prev]);
-      } else {
-        const plan = await updateNutritionPlan(editingPlanId, fields);
-        setSelectedTraineeNutrition(prev => prev.map(p => p.id === plan.id ? plan : p));
-      }
+      const plan = await updateNutritionPlan(editingPlanId, fields);
+      setSelectedTraineeNutrition(prev => prev.map(p => p.id === plan.id ? plan : p));
       setEditingPlanId(null);
     } catch (e) {
       console.warn('saveNutritionPlan error', e);
     } finally {
       setSavingPlan(false);
     }
-  }, [selectedTrainee, coachId, editingPlanId, planTitle, planNotes, planCalories, planProtein, planCarbs, planFat, savingPlan]);
+  }, [selectedTrainee, editingPlanId, planTitle, planNotes, planCalories, planProtein, planCarbs, planFat, savingPlan]);
 
   // ── Requests ──
   const handleSearchTrainees = useCallback(async (query: string) => {
@@ -412,6 +467,7 @@ export default function CoachTrainees({ coachId }: Props) {
     setWorkoutName('Day 1 Workout');
     setExercises([buildEmptyExercise()]);
     setActiveCategory('Push');
+    setScheduledDays([]);
     setShowAssignModal(true);
   };
 
@@ -487,6 +543,7 @@ export default function CoachTrainees({ coachId }: Props) {
           description: 'Assigned by coach',
           duration: '60 min',
           difficulty: selProgram.difficulty,
+          scheduled_days: scheduledDays.length > 0 ? scheduledDays : null,
         }, exs);
         setAssignStep(3);
         setTraineeActiveCounts(prev => ({ ...prev, [assigningTrainee!.id]: (prev[assigningTrainee!.id] ?? 0) + 1 }));
@@ -517,6 +574,7 @@ export default function CoachTrainees({ coachId }: Props) {
         }))
       );
       setEditActiveCategory('Push');
+      setEditScheduledDays(workout.scheduled_days ?? []);
       setShowEditModal(true);
     } finally {
       setOpeningEditWorkoutId(null);
@@ -544,7 +602,12 @@ export default function CoachTrainees({ coachId }: Props) {
     }));
     setSaving(true);
     try {
-      await updateWorkoutExercises(editingWorkoutId, exs);
+      const scheduledDaysValue = editScheduledDays.length > 0 ? editScheduledDays : null;
+      await Promise.all([
+        updateWorkoutExercises(editingWorkoutId, exs),
+        updateWorkoutScheduledDays(editingWorkoutId, editScheduledDays),
+      ]);
+      setSelectedTraineeWorkouts(prev => prev.map(w => w.id === editingWorkoutId ? { ...w, scheduled_days: scheduledDaysValue } : w));
       // Collapse the workout row if it was expanded — re-expanding fetches
       // the freshly-saved exercises instead of showing stale ones.
       if (expandedWorkoutId === editingWorkoutId) {
@@ -890,7 +953,10 @@ export default function CoachTrainees({ coachId }: Props) {
                                       </View>
                                     )}
                                   </View>
-                                  <Text style={styles.workoutBlockMeta}>{w.duration} · {w.difficulty}</Text>
+                                  <Text style={styles.workoutBlockMeta}>
+                                    {w.duration} · {w.difficulty} · {scheduledDaysLabel(w.scheduled_days)}
+                                    {!w.active && w.end_date ? ` · Ended ${formatDate(w.end_date)}` : ''}
+                                  </Text>
                                 </View>
                                 <Ionicons
                                   name={isExpanded ? 'chevron-up' : 'chevron-down'}
@@ -943,6 +1009,17 @@ export default function CoachTrainees({ coachId }: Props) {
                                         />
                                       )}
                                     </View>
+                                    <TouchableOpacity
+                                      onPress={() => handleDeleteWorkout(w)}
+                                      disabled={deletingWorkoutId === w.id}
+                                      hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                                    >
+                                      {deletingWorkoutId === w.id ? (
+                                        <ActivityIndicator size="small" color={colors.primary} />
+                                      ) : (
+                                        <Ionicons name="trash-outline" size={18} color={colors.primary} />
+                                      )}
+                                    </TouchableOpacity>
                                   </View>
                                 </View>
                               )}
@@ -1138,10 +1215,10 @@ export default function CoachTrainees({ coachId }: Props) {
                           </TouchableOpacity>
                           <TouchableOpacity
                             style={[styles.workoutActionBtn, { flex: 1 }]}
-                            onPress={openNewPlanEditor}
+                            onPress={() => setShowAssignPlanPicker(true)}
                           >
                             <Ionicons name="add-circle-outline" size={16} color={colors.xpBar} />
-                            <Text style={styles.workoutActionBtnText}>New Plan</Text>
+                            <Text style={styles.workoutActionBtnText}>Assign Plan</Text>
                           </TouchableOpacity>
                         </View>
 
@@ -1258,6 +1335,60 @@ export default function CoachTrainees({ coachId }: Props) {
         </SafeAreaView>
       </Modal>
 
+      {/* ── Assign Nutrition Plan Picker ── */}
+      <Modal
+        visible={showAssignPlanPicker}
+        transparent
+        animationType="slide"
+        onRequestClose={() => setShowAssignPlanPicker(false)}
+      >
+        <View style={styles.namePickerOverlay}>
+          <View style={styles.namePickerSheet}>
+            <View style={styles.modalHeader}>
+              <Text style={styles.modalTitle}>Assign Nutrition Plan</Text>
+              <TouchableOpacity style={styles.closeBtn} onPress={() => setShowAssignPlanPicker(false)}>
+                <Ionicons name="close" size={22} color={colors.textSecondary} />
+              </TouchableOpacity>
+            </View>
+            {nutritionTemplates.length === 0 ? (
+              <View style={styles.pendingBlock}>
+                <Ionicons name="restaurant-outline" size={40} color={colors.textSecondary} />
+                <Text style={styles.pendingTitle}>No Nutrition Plans Yet</Text>
+                <Text style={styles.pendingSubtitle}>Create one first in the Nutrition tab, then come back to assign it.</Text>
+              </View>
+            ) : (
+              <ScrollView style={{ maxHeight: 420 }} showsVerticalScrollIndicator={false}>
+                {nutritionTemplates.map(template => {
+                  const hasTargets = template.target_calories || template.target_protein || template.target_carbs || template.target_fat;
+                  return (
+                    <TouchableOpacity
+                      key={template.id}
+                      style={styles.namePickerRow}
+                      onPress={() => handleAssignPlan(template)}
+                      disabled={assigningPlanId === template.id}
+                    >
+                      <Ionicons name="restaurant-outline" size={16} color={colors.textSecondary} />
+                      <View style={{ flex: 1 }}>
+                        <Text style={styles.namePickerRowText}>{template.title}</Text>
+                        {hasTargets && (
+                          <Text style={styles.templatePickerMeta}>
+                            {[
+                              template.target_calories != null && `${template.target_calories} kcal`,
+                              template.target_protein != null && `${template.target_protein}g protein`,
+                            ].filter(Boolean).join(' · ')}
+                          </Text>
+                        )}
+                      </View>
+                      {assigningPlanId === template.id && <ActivityIndicator size="small" color={colors.xpBar} />}
+                    </TouchableOpacity>
+                  );
+                })}
+              </ScrollView>
+            )}
+          </View>
+        </View>
+      </Modal>
+
       {/* ── Assign Workout Modal (3-step) ── */}
       <Modal
         visible={showAssignModal}
@@ -1333,6 +1464,22 @@ export default function CoachTrainees({ coachId }: Props) {
                   <Text style={styles.readOnlyFieldText}>{workoutName}</Text>
                 </View>
                 <Text style={styles.readOnlyHint}>Set from the program template — edit it in the Programs tab.</Text>
+
+                <Text style={[styles.fieldLabel, { marginTop: 20 }]}>SCHEDULED DAYS (OPTIONAL)</Text>
+                <View style={styles.dayRow}>
+                  {DAY_ABBR.map((label, i) => (
+                    <TouchableOpacity
+                      key={i}
+                      style={[styles.dayChip, scheduledDays.includes(i) && styles.dayChipActive]}
+                      onPress={() => setScheduledDays(prev => toggleDay(prev, i))}
+                    >
+                      <Text style={[styles.dayChipText, scheduledDays.includes(i) && styles.dayChipTextActive]}>{label}</Text>
+                    </TouchableOpacity>
+                  ))}
+                </View>
+                <Text style={styles.readOnlyHint}>
+                  {scheduledDays.length === 0 ? 'No days selected — this workout can be done any day.' : `Only doable on: ${scheduledDaysLabel(scheduledDays)}.`}
+                </Text>
 
                 <Text style={[styles.fieldLabel, { marginTop: 20 }]}>SUGGESTED EXERCISES</Text>
                 <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.categoryRow}>
@@ -1554,6 +1701,22 @@ export default function CoachTrainees({ coachId }: Props) {
                 <Text style={styles.readOnlyFieldText}>{editWorkoutName}</Text>
               </View>
               <Text style={styles.readOnlyHint}>Set from the program template — edit it in the Programs tab.</Text>
+
+              <Text style={[styles.fieldLabel, { marginTop: 20 }]}>SCHEDULED DAYS (OPTIONAL)</Text>
+              <View style={styles.dayRow}>
+                {DAY_ABBR.map((label, i) => (
+                  <TouchableOpacity
+                    key={i}
+                    style={[styles.dayChip, editScheduledDays.includes(i) && styles.dayChipActive]}
+                    onPress={() => setEditScheduledDays(prev => toggleDay(prev, i))}
+                  >
+                    <Text style={[styles.dayChipText, editScheduledDays.includes(i) && styles.dayChipTextActive]}>{label}</Text>
+                  </TouchableOpacity>
+                ))}
+              </View>
+              <Text style={styles.readOnlyHint}>
+                {editScheduledDays.length === 0 ? 'No days selected — this workout can be done any day.' : `Only doable on: ${scheduledDaysLabel(editScheduledDays)}.`}
+              </Text>
 
               <Text style={[styles.fieldLabel, { marginTop: 20 }]}>ADD EXERCISES</Text>
               <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.categoryRow}>
@@ -1822,7 +1985,7 @@ const styles = StyleSheet.create({
   // was effectively invisible. Filling the whole screen fixes that and gives
   // the tab content real room.
   fullScreenContainer: { flex: 1, backgroundColor: colors.background },
-  fullScreenSheet: { flex: 1, padding: 24 },
+  fullScreenSheet: { flex: 1, paddingHorizontal: 20, paddingTop: 14, paddingBottom: 20 },
   modalHeader: {
     flexDirection: 'row', justifyContent: 'space-between',
     alignItems: 'flex-start', marginBottom: 20,
@@ -1833,6 +1996,17 @@ const styles = StyleSheet.create({
     width: 36, height: 36, borderRadius: 10,
     backgroundColor: colors.secondary, alignItems: 'center', justifyContent: 'center',
   },
+  namePickerOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.75)', justifyContent: 'flex-end' },
+  namePickerSheet: {
+    backgroundColor: colors.card, borderTopLeftRadius: 28,
+    borderTopRightRadius: 28, padding: 24, maxHeight: '85%',
+  },
+  namePickerRow: {
+    flexDirection: 'row', alignItems: 'center', gap: 10,
+    paddingVertical: 14, borderBottomWidth: 1, borderBottomColor: colors.border,
+  },
+  namePickerRowText: { fontSize: 15, color: colors.text, fontWeight: '600' },
+  templatePickerMeta: { fontSize: 12, color: colors.xpBar, marginTop: 2 },
   stepRow: { flexDirection: 'row', gap: 8, marginBottom: 24 },
   stepDot: { flex: 1, height: 4, borderRadius: 2, backgroundColor: colors.border },
   stepDotActive: { backgroundColor: colors.xpBar },
@@ -1867,6 +2041,14 @@ const styles = StyleSheet.create({
   categoryChipActive: { backgroundColor: colors.primary, borderColor: colors.primary },
   categoryChipText: { fontSize: 13, fontWeight: '600', color: colors.textSecondary },
   categoryChipTextActive: { color: colors.text },
+  dayRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginBottom: 6 },
+  dayChip: {
+    width: 46, paddingVertical: 9, borderRadius: 10, alignItems: 'center',
+    backgroundColor: colors.secondary, borderWidth: 1, borderColor: colors.border,
+  },
+  dayChipActive: { backgroundColor: colors.primary, borderColor: colors.primary },
+  dayChipText: { fontSize: 12, fontWeight: '700', color: colors.textSecondary },
+  dayChipTextActive: { color: colors.text },
   suggestedGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginBottom: 8 },
   suggestedChip: {
     flexDirection: 'row', alignItems: 'center', gap: 4,
@@ -1932,39 +2114,39 @@ const styles = StyleSheet.create({
   nextBtnText: { fontSize: 15, fontWeight: '700', color: colors.text },
 
   // Trainee detail modal
-  detailHeader: { flexDirection: 'row', alignItems: 'center', gap: 14, marginBottom: 14 },
+  detailHeader: { flexDirection: 'row', alignItems: 'center', gap: 12, marginBottom: 10 },
   detailAvatar: {
-    width: 54, height: 54, borderRadius: 27,
+    width: 40, height: 40, borderRadius: 20,
     backgroundColor: colors.secondary, alignItems: 'center',
     justifyContent: 'center', borderWidth: 2, borderColor: colors.border,
   },
   detailAvatarAssigned: { backgroundColor: colors.xpBar + '22', borderColor: colors.xpBar },
-  detailAvatarText: { fontSize: 17, fontWeight: '800', color: colors.text },
-  detailName: { fontSize: 19, fontWeight: '800', color: colors.text },
-  detailEmail: { fontSize: 13, color: colors.textSecondary, marginTop: 2 },
-  statusRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 18, flexWrap: 'wrap', gap: 8 },
+  detailAvatarText: { fontSize: 14, fontWeight: '800', color: colors.text },
+  detailName: { fontSize: 17, fontWeight: '800', color: colors.text },
+  detailEmail: { fontSize: 12, color: colors.textSecondary, marginTop: 1 },
+  statusRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10, flexWrap: 'wrap', gap: 8 },
   statusBadge: {
     flexDirection: 'row', alignItems: 'center', gap: 6,
-    paddingHorizontal: 10, paddingVertical: 5, borderRadius: 8,
+    paddingHorizontal: 8, paddingVertical: 4, borderRadius: 8,
   },
   statusBadgeActive: { backgroundColor: colors.success + '22' },
   statusBadgeEmpty: { backgroundColor: colors.warning + '22' },
   statusDot: { width: 6, height: 6, borderRadius: 3 },
-  statusText: { fontSize: 12, fontWeight: '700' },
+  statusText: { fontSize: 11, fontWeight: '700' },
   editProgramBtn: {
-    flexDirection: 'row', alignItems: 'center', gap: 6,
-    backgroundColor: colors.xpBar + '22', paddingHorizontal: 12,
-    paddingVertical: 7, borderRadius: 10,
+    flexDirection: 'row', alignItems: 'center', gap: 5,
+    backgroundColor: colors.xpBar + '22', paddingHorizontal: 10,
+    paddingVertical: 6, borderRadius: 10,
   },
-  editProgramBtnText: { fontSize: 13, fontWeight: '700', color: colors.xpBar },
+  editProgramBtnText: { fontSize: 12, fontWeight: '700', color: colors.xpBar },
   tabRow: {
     flexDirection: 'row', backgroundColor: colors.secondary,
-    borderRadius: 12, padding: 4, marginBottom: 18,
+    borderRadius: 10, padding: 3, marginBottom: 10,
     borderWidth: 1, borderColor: colors.border,
   },
-  tab: { minWidth: 76, paddingVertical: 9, paddingHorizontal: 10, borderRadius: 8, alignItems: 'center' },
+  tab: { minWidth: 62, paddingVertical: 6, paddingHorizontal: 8, borderRadius: 7, alignItems: 'center' },
   tabActive: { backgroundColor: colors.primary },
-  tabText: { fontSize: 13, fontWeight: '600', color: colors.textSecondary },
+  tabText: { fontSize: 12, fontWeight: '600', color: colors.textSecondary },
   tabTextActive: { color: colors.text },
 
   // Chat tab

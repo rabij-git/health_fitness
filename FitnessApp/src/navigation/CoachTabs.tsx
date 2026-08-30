@@ -5,6 +5,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { colors } from '../theme/colors';
 import CoachDashboard from '../screens/coach/CoachDashboard';
 import CoachPrograms from '../screens/coach/CoachPrograms';
+import CoachNutritionTemplates from '../screens/coach/CoachNutritionTemplates';
 import CoachTrainees from '../screens/coach/CoachTrainees';
 import CoachRankings from '../screens/coach/CoachRankings';
 import CoachSettings from '../screens/coach/CoachSettings';
@@ -37,6 +38,7 @@ export default function CoachTabs({ onLogout, userId }: Props) {
           const icons: Record<string, { focused: string; unfocused: string }> = {
             Dashboard: { focused: 'home', unfocused: 'home-outline' },
             Programs: { focused: 'barbell', unfocused: 'barbell-outline' },
+            Nutrition: { focused: 'restaurant', unfocused: 'restaurant-outline' },
             Trainees: { focused: 'people', unfocused: 'people-outline' },
             Rankings: { focused: 'trophy', unfocused: 'trophy-outline' },
             Settings: { focused: 'settings', unfocused: 'settings-outline' },
@@ -52,6 +54,9 @@ export default function CoachTabs({ onLogout, userId }: Props) {
       </Tab.Screen>
       <Tab.Screen name="Programs">
         {() => <CoachPrograms coachId={userId} />}
+      </Tab.Screen>
+      <Tab.Screen name="Nutrition">
+        {() => <CoachNutritionTemplates coachId={userId} />}
       </Tab.Screen>
       <Tab.Screen name="Trainees">
         {() => <CoachTrainees coachId={userId} />}
