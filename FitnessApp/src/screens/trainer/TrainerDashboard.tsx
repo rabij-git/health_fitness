@@ -24,17 +24,15 @@ const DAY_LABELS = ['M', 'T', 'W', 'T', 'F', 'S', 'S'];
 interface Props {
   onLogout: () => void;
   userId: string;
-  navigation?: { navigate: (screen: string) => void };
 }
 
-export default function TrainerDashboard({ onLogout, userId, navigation }: Props) {
+export default function TrainerDashboard({ onLogout, userId }: Props) {
   const [profile, setProfile] = useState<DBUser | null>(null);
   const [coachProfile, setCoachProfile] = useState<DBUser | null>(null);
   const [weightLogs, setWeightLogs] = useState<DBWeightLog[]>([]);
   const [dbMessages, setDbMessages] = useState<DBMessage[]>([]);
-  // A trainee can have several active workouts now; the Home card previews
-  // the most recent one and links out to the Workout tab to see/pick others.
-  const [activeWorkouts, setActiveWorkouts] = useState<DBWorkout[]>([]);
+  // Informational preview of the trainee's most recent active workout —
+  // just a preview; picking/starting a workout happens on the Workout tab.
   const [primaryWorkout, setPrimaryWorkout] = useState<{ workout: DBWorkout; exercises: DBExercise[] } | null>(null);
   const [sessionHistory, setSessionHistory] = useState<any[]>([]);
   const [coachId, setCoachId] = useState<string | null>(null);
@@ -59,9 +57,8 @@ export default function TrainerDashboard({ onLogout, userId, navigation }: Props
     setSessionHistory(history);
     setLoadingProfile(false);
 
-    const active = workouts.filter(w => w.active);
-    setActiveWorkouts(active);
-    setPrimaryWorkout(active.length > 0 ? await getWorkoutWithExercises(active[0].id) : null);
+    const active = workouts.find(w => w.active);
+    setPrimaryWorkout(active ? await getWorkoutWithExercises(active.id) : null);
   }, [userId]);
 
   // Refetch every time the Home tab regains focus (not just on first mount) —
@@ -307,12 +304,8 @@ export default function TrainerDashboard({ onLogout, userId, navigation }: Props
           </View>
         </View>
 
-        {/* Workout Card — tap through to the Workout tab to view/pick/log */}
-        <TouchableOpacity
-          style={styles.workoutCard}
-          onPress={() => navigation?.navigate('Workout')}
-          activeOpacity={navigation ? 0.8 : 1}
-        >
+        {/* Workout Card — informational preview only; use the Workout tab below to pick/start one */}
+        <View style={styles.workoutCard}>
           {primaryWorkout ? (
             <>
               <View style={styles.workoutHeader}>
@@ -333,17 +326,6 @@ export default function TrainerDashboard({ onLogout, userId, navigation }: Props
                   <Text style={styles.exerciseMeta}>{ex.sets}×{ex.reps}</Text>
                 </View>
               ))}
-              {primaryWorkout.exercises.length > 3 && (
-                <Text style={styles.moreText}>+{primaryWorkout.exercises.length - 3} more exercises</Text>
-              )}
-              {activeWorkouts.length > 1 && (
-                <View style={styles.moreWorkoutsRow}>
-                  <Ionicons name="layers-outline" size={14} color={colors.xpBar} />
-                  <Text style={styles.moreWorkoutsText}>
-                    +{activeWorkouts.length - 1} more active workout{activeWorkouts.length - 1 === 1 ? '' : 's'} — tap to view all
-                  </Text>
-                </View>
-              )}
             </>
           ) : (
             <View style={{ alignItems: 'center', paddingVertical: 20, gap: 8 }}>
@@ -352,7 +334,7 @@ export default function TrainerDashboard({ onLogout, userId, navigation }: Props
               <Text style={styles.workoutSub}>Your coach will assign your program soon.</Text>
             </View>
           )}
-        </TouchableOpacity>
+        </View>
 
         {/* Biometrics Logger */}
         <View style={styles.biometricsCard}>
@@ -663,12 +645,6 @@ const styles = StyleSheet.create({
   exerciseDot: { width: 8, height: 8, borderRadius: 4, backgroundColor: colors.primary },
   exerciseName: { flex: 1, fontSize: 14, color: colors.text, fontWeight: '500' },
   exerciseMeta: { fontSize: 13, color: colors.textSecondary, fontWeight: '600' },
-  moreText: { fontSize: 12, color: colors.textSecondary, marginTop: 10, textAlign: 'center' },
-  moreWorkoutsRow: {
-    flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6,
-    marginTop: 12, paddingTop: 12, borderTopWidth: 1, borderTopColor: colors.border,
-  },
-  moreWorkoutsText: { fontSize: 12, color: colors.xpBar, fontWeight: '600' },
 
   // Biometrics
   biometricsCard: {
