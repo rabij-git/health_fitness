@@ -226,7 +226,7 @@ export default function ExerciseLibraryManager({ visible, coachId, onClose, onCh
 
               <View style={styles.exMetaRow}>
                 <View style={styles.exMetaField}>
-                  <Text style={styles.fieldLabel}>SETS (1-6)</Text>
+                  <Text style={styles.fieldLabel} numberOfLines={1}>SETS (1-6)</Text>
                   <TextInput
                     style={styles.metaInput}
                     value={formSets}
@@ -236,7 +236,7 @@ export default function ExerciseLibraryManager({ visible, coachId, onClose, onCh
                   />
                 </View>
                 <View style={styles.exMetaField}>
-                  <Text style={styles.fieldLabel}>REPS (1-30)</Text>
+                  <Text style={styles.fieldLabel} numberOfLines={1}>REPS (1-30)</Text>
                   <TextInput
                     style={styles.metaInput}
                     value={formReps}
@@ -247,7 +247,7 @@ export default function ExerciseLibraryManager({ visible, coachId, onClose, onCh
                   />
                 </View>
                 <View style={styles.exMetaField}>
-                  <Text style={styles.fieldLabel}>WEIGHT (KG)</Text>
+                  <Text style={styles.fieldLabel} numberOfLines={1}>WEIGHT</Text>
                   <TextInput
                     style={styles.metaInput}
                     value={formWeight}
@@ -258,7 +258,7 @@ export default function ExerciseLibraryManager({ visible, coachId, onClose, onCh
                   />
                 </View>
                 <View style={styles.exMetaField}>
-                  <Text style={styles.fieldLabel}>TIME (S/M)</Text>
+                  <Text style={styles.fieldLabel} numberOfLines={1}>TIME (S/M)</Text>
                   <TextInput
                     style={styles.metaInput}
                     value={formTime}

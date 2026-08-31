@@ -534,7 +534,7 @@ export default function CoachPrograms({ coachId }: Props) {
                     </TouchableOpacity>
                     <View style={styles.exMetaRow}>
                       <View style={styles.exMetaField}>
-                        <Text style={styles.exMetaLabel}>SETS (1-6)</Text>
+                        <Text style={styles.exMetaLabel} numberOfLines={1}>SETS (1-6)</Text>
                         <TextInput
                           style={styles.exMetaInput}
                           value={ex.sets}
@@ -544,7 +544,7 @@ export default function CoachPrograms({ coachId }: Props) {
                         />
                       </View>
                       <View style={styles.exMetaField}>
-                        <Text style={styles.exMetaLabel}>REPS (1-30)</Text>
+                        <Text style={styles.exMetaLabel} numberOfLines={1}>REPS (1-30)</Text>
                         <TextInput
                           style={styles.exMetaInput}
                           value={ex.reps}
@@ -554,7 +554,7 @@ export default function CoachPrograms({ coachId }: Props) {
                         />
                       </View>
                       <View style={styles.exMetaField}>
-                        <Text style={styles.exMetaLabel}>WEIGHT (KG)</Text>
+                        <Text style={styles.exMetaLabel} numberOfLines={1}>WEIGHT</Text>
                         <TextInput
                           style={styles.exMetaInput}
                           value={ex.weight}
@@ -565,7 +565,7 @@ export default function CoachPrograms({ coachId }: Props) {
                         />
                       </View>
                       <View style={styles.exMetaField}>
-                        <Text style={styles.exMetaLabel}>TIME (S/M)</Text>
+                        <Text style={styles.exMetaLabel} numberOfLines={1}>TIME (S/M)</Text>
                         <TextInput
                           style={styles.exMetaInput}
                           value={ex.time}
@@ -757,7 +757,7 @@ export default function CoachPrograms({ coachId }: Props) {
                       </TouchableOpacity>
                       <View style={styles.exMetaRow}>
                         <View style={styles.exMetaField}>
-                          <Text style={styles.exMetaLabel}>SETS (1-6)</Text>
+                          <Text style={styles.exMetaLabel} numberOfLines={1}>SETS (1-6)</Text>
                           <TextInput
                             style={styles.exMetaInput}
                             value={ex.sets}
@@ -767,7 +767,7 @@ export default function CoachPrograms({ coachId }: Props) {
                           />
                         </View>
                         <View style={styles.exMetaField}>
-                          <Text style={styles.exMetaLabel}>REPS (1-30)</Text>
+                          <Text style={styles.exMetaLabel} numberOfLines={1}>REPS (1-30)</Text>
                           <TextInput
                             style={styles.exMetaInput}
                             value={ex.reps}
@@ -777,7 +777,7 @@ export default function CoachPrograms({ coachId }: Props) {
                           />
                         </View>
                         <View style={styles.exMetaField}>
-                          <Text style={styles.exMetaLabel}>WEIGHT (KG)</Text>
+                          <Text style={styles.exMetaLabel} numberOfLines={1}>WEIGHT</Text>
                           <TextInput
                             style={styles.exMetaInput}
                             value={ex.weight}
@@ -788,7 +788,7 @@ export default function CoachPrograms({ coachId }: Props) {
                           />
                         </View>
                         <View style={styles.exMetaField}>
-                          <Text style={styles.exMetaLabel}>TIME (S/M)</Text>
+                          <Text style={styles.exMetaLabel} numberOfLines={1}>TIME (S/M)</Text>
                           <TextInput
                             style={styles.exMetaInput}
                             value={ex.time}
