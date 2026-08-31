@@ -211,11 +211,6 @@ export default function CoachDashboard({ onLogout, coachId, navigation }: Props)
             />
           ))
         )}
-
-        <TouchableOpacity style={styles.logoutButton} onPress={onLogout}>
-          <Ionicons name="log-out-outline" size={20} color={colors.primary} />
-          <Text style={styles.logoutText}>Logout</Text>
-        </TouchableOpacity>
       </ScrollView>
 
       {/* Notifications Modal */}
@@ -492,16 +487,4 @@ const styles = StyleSheet.create({
     borderRadius: 10,
   },
   trainerLevelNum: { color: colors.xpBar, fontSize: 13, fontWeight: '700' },
-  logoutButton: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 8,
-    paddingVertical: 16,
-    borderRadius: 14,
-    borderWidth: 1,
-    borderColor: colors.primary,
-    marginTop: 8,
-  },
-  logoutText: { fontSize: 16, fontWeight: '600', color: colors.primary },
 });
