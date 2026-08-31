@@ -105,6 +105,7 @@ export interface ExercisePayloadEntry {
   sets: number;
   reps: string;
   weight?: string;
+  time?: string; // duration like "30s"/"5m" — program_exercises only; omitted entirely for workout exercises
 }
 
 // Diffs an edited exercise list against what's currently in the DB for a given

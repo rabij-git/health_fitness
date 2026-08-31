@@ -86,6 +86,7 @@ export interface DBProgramExercise {
   sets: number;
   reps: string;
   weight?: string;
+  time: string; // duration like "30s" or "5m"; plain number or "0" = not timed
   sort_order: number;
 }
 
@@ -176,6 +177,7 @@ export interface DBLibraryExercise {
   default_sets: number;
   default_reps: string;
   default_weight?: string;
+  default_time: string; // duration like "30s" or "5m"; plain number or "0" = not timed
   created_by?: string;
   created_at: string;
 }

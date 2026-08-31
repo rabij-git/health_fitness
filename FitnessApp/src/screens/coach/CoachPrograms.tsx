@@ -18,7 +18,7 @@ import { colors } from '../../theme/colors';
 import { getPrograms, createProgram, updateProgram, deleteProgram, getProgramExercises, updateProgramExercises, getExerciseLibrary, createLibraryExercise } from '../../lib/db';
 import { DBProgram, DBLibraryExercise } from '../../lib/supabase';
 import ExerciseLibraryManager from './ExerciseLibraryManager';
-import { sanitizeCount, sanitizeWeightInput, stripKg, withKg } from '../../lib/exerciseInput';
+import { sanitizeCount, sanitizeWeightInput, sanitizeTimeInput, stripKg, withKg } from '../../lib/exerciseInput';
 
 interface Props {
   coachId: string;
@@ -31,10 +31,11 @@ interface ExerciseEntry {
   sets: string;
   reps: string;
   weight: string;
+  time: string; // minutes, default '0'
 }
 
 function buildEmptyExercise(): ExerciseEntry {
-  return { id: String(Date.now() + Math.random()), name: '', sets: '3', reps: '10', weight: '' };
+  return { id: String(Date.now() + Math.random()), name: '', sets: '3', reps: '10', weight: '', time: '0' };
 }
 
 const CATEGORY_ICONS: Record<string, string> = {
@@ -42,6 +43,8 @@ const CATEGORY_ICONS: Record<string, string> = {
   Pull: 'arrow-down-circle',
   Legs: 'fitness',
   Core: 'body',
+  Cardio: 'heart',
+  Stretch: 'accessibility-outline',
 };
 
 function formatDate(iso: string) {
@@ -56,6 +59,7 @@ function exercisesPayload(exercises: ExerciseEntry[]) {
     sets: parseInt(e.sets) || 3,
     reps: e.reps || '10',
     weight: withKg(e.weight),
+    time: e.time.trim() || '0',
   }));
 }
 
@@ -138,7 +142,7 @@ export default function CoachPrograms({ coachId }: Props) {
   }, [loadPrograms, loadLibrary]);
 
   const categories = useMemo(() => {
-    const known = ['Push', 'Pull', 'Legs', 'Core'];
+    const known = ['Push', 'Pull', 'Legs', 'Core', 'Cardio', 'Stretch'];
     return Array.from(new Set([...known, ...library.map(e => e.category)]));
   }, [library]);
 
@@ -147,11 +151,13 @@ export default function CoachPrograms({ coachId }: Props) {
   const [namePickerQuery, setNamePickerQuery] = useState('');
   const [savingNewName, setSavingNewName] = useState(false);
   const namePickerOnSelectRef = useRef<((name: string) => void) | null>(null);
-  const namePickerCategoryRef = useRef('Push');
+  const [namePickerCategory, setNamePickerCategory] = useState('Push');
 
   const uniqueLibraryNames = useMemo(
-    () => Array.from(new Set(library.map(e => e.name))).sort((a, b) => a.localeCompare(b)),
-    [library]
+    () => Array.from(new Set(
+      library.filter(e => e.category === namePickerCategory).map(e => e.name)
+    )).sort((a, b) => a.localeCompare(b)),
+    [library, namePickerCategory]
   );
 
   const filteredLibraryNames = useMemo(() => {
@@ -166,7 +172,7 @@ export default function CoachPrograms({ coachId }: Props) {
 
   const openNamePicker = useCallback((onSelect: (name: string) => void, category: string) => {
     namePickerOnSelectRef.current = onSelect;
-    namePickerCategoryRef.current = category;
+    setNamePickerCategory(category);
     setNamePickerQuery('');
     setShowNamePicker(true);
   }, []);
@@ -183,9 +189,10 @@ export default function CoachPrograms({ coachId }: Props) {
     try {
       await createLibraryExercise({
         name,
-        category: namePickerCategoryRef.current,
+        category: namePickerCategory,
         default_sets: 3,
         default_reps: '10',
+        default_time: '0',
         created_by: coachId,
       });
       await loadLibrary();
@@ -196,7 +203,7 @@ export default function CoachPrograms({ coachId }: Props) {
     } finally {
       setSavingNewName(false);
     }
-  }, [namePickerQuery, savingNewName, coachId, loadLibrary]);
+  }, [namePickerQuery, savingNewName, coachId, loadLibrary, namePickerCategory]);
 
   // ── Add Program ──
   const openAddModal = () => {
@@ -209,7 +216,7 @@ export default function CoachPrograms({ coachId }: Props) {
     setShowAddProgram(true);
   };
 
-  const addSuggestedExercise = useCallback((item: { name: string; sets: string; reps: string; weight: string }) => {
+  const addSuggestedExercise = useCallback((item: { name: string; sets: string; reps: string; weight: string; time: string }) => {
     setExercises(prev => {
       const lastIdx = prev.length - 1;
       if (prev[lastIdx] && !prev[lastIdx].name.trim()) {
@@ -259,13 +266,14 @@ export default function CoachPrograms({ coachId }: Props) {
             sets: String(ex.sets),
             reps: ex.reps,
             weight: stripKg(ex.weight),
+            time: sanitizeTimeInput(ex.time ?? '0'),
           }))
         : [buildEmptyExercise()]
     );
     setLoadingEditExercises(false);
   };
 
-  const addEditSuggestedExercise = useCallback((item: { name: string; sets: string; reps: string; weight: string }) => {
+  const addEditSuggestedExercise = useCallback((item: { name: string; sets: string; reps: string; weight: string; time: string }) => {
     setEditExercises(prev => {
       const lastIdx = prev.length - 1;
       if (prev[lastIdx] && !prev[lastIdx].name.trim()) {
@@ -314,6 +322,13 @@ export default function CoachPrograms({ coachId }: Props) {
         <View style={styles.header}>
           <Text style={styles.title}>Programs</Text>
         </View>
+
+        {/* Second access point to the same exercise library manager used inside
+            the program editor — lets a coach curate it without opening a program. */}
+        <TouchableOpacity style={styles.manageLibraryTopBtn} onPress={() => setShowLibraryManager(true)} activeOpacity={0.85}>
+          <Ionicons name="library-outline" size={18} color={colors.xpBar} />
+          <Text style={styles.manageLibraryTopBtnText}>Manage Exercise Library</Text>
+        </TouchableOpacity>
 
         {/* Add Program button — top, prominent. Always reachable, even if the list below is still loading or failed. */}
         <TouchableOpacity style={styles.addProgramBtn} onPress={openAddModal} activeOpacity={0.85}>
@@ -480,6 +495,7 @@ export default function CoachPrograms({ coachId }: Props) {
                         sets: sanitizeCount(String(item.default_sets), 1, 6),
                         reps: sanitizeCount(item.default_reps, 1, 30),
                         weight: stripKg(item.default_weight),
+                        time: sanitizeTimeInput(item.default_time ?? '0'),
                       })}
                       activeOpacity={alreadyAdded ? 1 : 0.7}
                     >
@@ -545,6 +561,17 @@ export default function CoachPrograms({ coachId }: Props) {
                           onChangeText={v => setExercises(prev => prev.map(e => e.id === ex.id ? { ...e, weight: sanitizeWeightInput(v) } : e))}
                           placeholder="0"
                           keyboardType="decimal-pad"
+                          placeholderTextColor={colors.textSecondary}
+                        />
+                      </View>
+                      <View style={styles.exMetaField}>
+                        <Text style={styles.exMetaLabel}>TIME (S/M)</Text>
+                        <TextInput
+                          style={styles.exMetaInput}
+                          value={ex.time}
+                          onChangeText={v => setExercises(prev => prev.map(e => e.id === ex.id ? { ...e, time: sanitizeTimeInput(v) } : e))}
+                          placeholder="e.g. 30s"
+                          keyboardType="default"
                           placeholderTextColor={colors.textSecondary}
                         />
                       </View>
@@ -689,6 +716,7 @@ export default function CoachPrograms({ coachId }: Props) {
                           sets: sanitizeCount(String(item.default_sets), 1, 6),
                           reps: sanitizeCount(item.default_reps, 1, 30),
                           weight: stripKg(item.default_weight),
+                          time: sanitizeTimeInput(item.default_time ?? '0'),
                         })}
                         activeOpacity={alreadyAdded ? 1 : 0.7}
                       >
@@ -759,6 +787,17 @@ export default function CoachPrograms({ coachId }: Props) {
                             placeholderTextColor={colors.textSecondary}
                           />
                         </View>
+                        <View style={styles.exMetaField}>
+                          <Text style={styles.exMetaLabel}>TIME (S/M)</Text>
+                          <TextInput
+                            style={styles.exMetaInput}
+                            value={ex.time}
+                            onChangeText={v => setEditExercises(prev => prev.map(e => e.id === ex.id ? { ...e, time: sanitizeTimeInput(v) } : e))}
+                            placeholder="e.g. 30s"
+                            keyboardType="default"
+                            placeholderTextColor={colors.textSecondary}
+                          />
+                        </View>
                         <TouchableOpacity
                           onPress={() => setEditExercises(prev => prev.filter(e => e.id !== ex.id))}
                           style={styles.removeBtn}
@@ -820,7 +859,7 @@ export default function CoachPrograms({ coachId }: Props) {
         <View style={styles.namePickerOverlay}>
           <View style={styles.namePickerSheet}>
             <View style={styles.modalHeader}>
-              <Text style={styles.modalTitle}>Select Exercise</Text>
+              <Text style={styles.modalTitle}>Select {namePickerCategory} Exercise</Text>
               <TouchableOpacity style={styles.closeBtn} onPress={() => setShowNamePicker(false)}>
                 <Ionicons name="close" size={22} color={colors.textSecondary} />
               </TouchableOpacity>
@@ -856,7 +895,7 @@ export default function CoachPrograms({ coachId }: Props) {
               )}
               {filteredLibraryNames.length === 0 && namePickerQuery.trim().length === 0 && (
                 <Text style={{ color: colors.textSecondary, textAlign: 'center', paddingVertical: 20 }}>
-                  No exercises in the library yet — type a name above to add one.
+                  No {namePickerCategory} exercises in the library yet — type a name above to add one.
                 </Text>
               )}
             </ScrollView>
@@ -881,6 +920,12 @@ const styles = StyleSheet.create({
     backgroundColor: '#FF8C00', borderRadius: 12, paddingVertical: 14, marginBottom: 20,
   },
   addProgramBtnText: { fontSize: 15, fontWeight: '700', color: colors.text },
+  manageLibraryTopBtn: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8,
+    backgroundColor: colors.card, borderRadius: 12, paddingVertical: 12, marginBottom: 20,
+    borderWidth: 1, borderColor: colors.border,
+  },
+  manageLibraryTopBtnText: { fontSize: 14, fontWeight: '700', color: colors.xpBar },
 
   // Program cards
   programCard: {

@@ -74,6 +74,8 @@ const CATEGORY_ICONS: Record<string, string> = {
   Pull: 'arrow-down-circle',
   Legs: 'fitness',
   Core: 'body',
+  Cardio: 'heart',
+  Stretch: 'accessibility-outline',
 };
 
 const DAY_ABBR = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
@@ -173,7 +175,7 @@ export default function CoachTrainees({ coachId }: Props) {
   // ── Shared exercise library ──
   const [library, setLibrary] = useState<DBLibraryExercise[]>([]);
   const categories = useMemo(() => {
-    const known = ['Push', 'Pull', 'Legs', 'Core'];
+    const known = ['Push', 'Pull', 'Legs', 'Core', 'Cardio', 'Stretch'];
     return Array.from(new Set([...known, ...library.map(e => e.category)]));
   }, [library]);
 
@@ -868,16 +870,6 @@ export default function CoachTrainees({ coachId }: Props) {
                       {activeCount > 0 ? `${activeCount} Active Workout${activeCount === 1 ? '' : 's'}` : 'No Workouts'}
                     </Text>
                   </View>
-                  <TouchableOpacity
-                    style={styles.editProgramBtn}
-                    onPress={() => {
-                      setSelectedTrainee(null);
-                      openAssignModal(selectedTrainee!);
-                    }}
-                  >
-                    <Ionicons name="add-circle-outline" size={16} color={colors.xpBar} />
-                    <Text style={styles.editProgramBtnText}>Assign New Workout</Text>
-                  </TouchableOpacity>
                 </View>
               );
             })()}
@@ -947,6 +939,19 @@ export default function CoachTrainees({ coachId }: Props) {
                 {/* Program tab */}
                 {detailTab === 'program' && (
                   <View>
+                    <View style={styles.programTabHeaderRow}>
+                      <TouchableOpacity
+                        style={[styles.workoutActionBtn, { flex: 1 }]}
+                        onPress={() => {
+                          setSelectedTrainee(null);
+                          openAssignModal(selectedTrainee!);
+                        }}
+                      >
+                        <Ionicons name="add-circle-outline" size={16} color={colors.xpBar} />
+                        <Text style={styles.workoutActionBtnText}>Assign New Workout</Text>
+                      </TouchableOpacity>
+                    </View>
+
                     {selectedTraineeWorkouts.length === 0 ? (
                       <View style={styles.pendingBlock}>
                         <Ionicons name="barbell-outline" size={40} color={colors.textSecondary} />
@@ -2154,12 +2159,6 @@ const styles = StyleSheet.create({
   statusBadgeEmpty: { backgroundColor: colors.warning + '22' },
   statusDot: { width: 6, height: 6, borderRadius: 3 },
   statusText: { fontSize: 11, fontWeight: '700' },
-  editProgramBtn: {
-    flexDirection: 'row', alignItems: 'center', gap: 5,
-    backgroundColor: colors.xpBar + '22', paddingHorizontal: 10,
-    paddingVertical: 6, borderRadius: 10,
-  },
-  editProgramBtnText: { fontSize: 12, fontWeight: '700', color: colors.xpBar },
   // Underline menu, not buttons — sized to the text, not a card.
   tabRow: {
     flexGrow: 0, flexShrink: 0, height: 34,

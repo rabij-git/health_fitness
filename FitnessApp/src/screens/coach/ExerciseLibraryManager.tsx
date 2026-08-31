@@ -15,7 +15,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { colors } from '../../theme/colors';
 import { getExerciseLibrary, createLibraryExercise, updateLibraryExercise, deleteLibraryExercise } from '../../lib/db';
 import { DBLibraryExercise } from '../../lib/supabase';
-import { sanitizeCount, sanitizeWeightInput, stripKg, withKg } from '../../lib/exerciseInput';
+import { sanitizeCount, sanitizeWeightInput, sanitizeTimeInput, stripKg, withKg } from '../../lib/exerciseInput';
 
 interface Props {
   visible: boolean;
@@ -29,6 +29,8 @@ const CATEGORY_ICONS: Record<string, string> = {
   Pull: 'arrow-down-circle',
   Legs: 'fitness',
   Core: 'body',
+  Cardio: 'heart',
+  Stretch: 'accessibility-outline',
 };
 
 export default function ExerciseLibraryManager({ visible, coachId, onClose, onChange }: Props) {
@@ -43,6 +45,7 @@ export default function ExerciseLibraryManager({ visible, coachId, onClose, onCh
   const [formSets, setFormSets] = useState('3');
   const [formReps, setFormReps] = useState('10');
   const [formWeight, setFormWeight] = useState('');
+  const [formTime, setFormTime] = useState('0');
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -56,7 +59,7 @@ export default function ExerciseLibraryManager({ visible, coachId, onClose, onCh
   }, [visible, load]);
 
   const categories = useMemo(() => {
-    const known = ['Push', 'Pull', 'Legs', 'Core'];
+    const known = ['Push', 'Pull', 'Legs', 'Core', 'Cardio', 'Stretch'];
     const fromLibrary = Array.from(new Set(library.map(e => e.category)));
     return Array.from(new Set([...known, ...fromLibrary]));
   }, [library]);
@@ -70,13 +73,14 @@ export default function ExerciseLibraryManager({ visible, coachId, onClose, onCh
     return groups;
   }, [library]);
 
-  const openAddForm = () => {
+  const openAddForm = (category?: string) => {
     setEditingId(null);
     setFormName('');
-    setFormCategory(categories[0] ?? 'Push');
+    setFormCategory(category ?? categories[0] ?? 'Push');
     setFormSets('3');
     setFormReps('10');
     setFormWeight('');
+    setFormTime('0');
     setShowForm(true);
   };
 
@@ -87,6 +91,7 @@ export default function ExerciseLibraryManager({ visible, coachId, onClose, onCh
     setFormSets(sanitizeCount(String(ex.default_sets), 1, 6));
     setFormReps(sanitizeCount(ex.default_reps, 1, 30));
     setFormWeight(stripKg(ex.default_weight));
+    setFormTime(sanitizeTimeInput(ex.default_time ?? '0'));
     setShowForm(true);
   };
 
@@ -110,6 +115,7 @@ export default function ExerciseLibraryManager({ visible, coachId, onClose, onCh
         default_sets: parseInt(formSets) || 3,
         default_reps: formReps.trim() || '10',
         default_weight: withKg(formWeight),
+        default_time: formTime.trim() || '0',
       };
       if (editingId) {
         await updateLibraryExercise(editingId, payload);
@@ -145,7 +151,7 @@ export default function ExerciseLibraryManager({ visible, coachId, onClose, onCh
           {!showForm ? (
             <>
               <Text style={styles.subtitle}>Shared across all coaches — used when building any program.</Text>
-              <TouchableOpacity style={styles.addBtn} onPress={openAddForm} activeOpacity={0.85}>
+              <TouchableOpacity style={styles.addBtn} onPress={() => openAddForm()} activeOpacity={0.85}>
                 <Ionicons name="add-circle" size={18} color={colors.text} />
                 <Text style={styles.addBtnText}>Add Exercise</Text>
               </TouchableOpacity>
@@ -154,35 +160,35 @@ export default function ExerciseLibraryManager({ visible, coachId, onClose, onCh
                 <View style={{ paddingVertical: 40, alignItems: 'center' }}>
                   <ActivityIndicator size="large" color={colors.primary} />
                 </View>
-              ) : library.length === 0 ? (
-                <View style={{ alignItems: 'center', paddingVertical: 32, gap: 8 }}>
-                  <Ionicons name="barbell-outline" size={36} color={colors.textSecondary} />
-                  <Text style={{ color: colors.textSecondary }}>No exercises yet</Text>
-                </View>
               ) : (
                 <ScrollView showsVerticalScrollIndicator={false}>
-                  {Object.keys(grouped).map(category => (
+                  {categories.map(category => (
                     <View key={category} style={{ marginBottom: 18 }}>
-                      <View style={styles.categoryHeaderRow}>
+                      <TouchableOpacity style={styles.categoryHeaderRow} onPress={() => openAddForm(category)} activeOpacity={0.7}>
                         <Ionicons name={(CATEGORY_ICONS[category] ?? 'ellipse') as any} size={16} color={colors.xpBar} />
                         <Text style={styles.categoryHeaderText}>{category}</Text>
-                      </View>
-                      {grouped[category].map(ex => (
-                        <View key={ex.id} style={styles.exRow}>
-                          <View style={{ flex: 1 }}>
-                            <Text style={styles.exName}>{ex.name}</Text>
-                            <Text style={styles.exMeta}>
-                              {ex.default_sets} sets × {ex.default_reps}{ex.default_weight ? ` · ${ex.default_weight}` : ''}
-                            </Text>
+                        <Ionicons name="add-circle-outline" size={16} color={colors.xpBar} style={{ marginLeft: 'auto' }} />
+                      </TouchableOpacity>
+                      {(grouped[category] ?? []).length === 0 ? (
+                        <Text style={styles.emptyCategoryText}>No exercises yet</Text>
+                      ) : (
+                        grouped[category].map(ex => (
+                          <View key={ex.id} style={styles.exRow}>
+                            <View style={{ flex: 1 }}>
+                              <Text style={styles.exName}>{ex.name}</Text>
+                              <Text style={styles.exMeta}>
+                                {ex.default_sets} sets × {ex.default_reps}{ex.default_weight ? ` · ${ex.default_weight}` : ''}{ex.default_time && ex.default_time !== '0' ? ` · ${ex.default_time}` : ''}
+                              </Text>
+                            </View>
+                            <TouchableOpacity onPress={() => openEditForm(ex)} style={styles.iconBtn}>
+                              <Ionicons name="create-outline" size={18} color={colors.xpBar} />
+                            </TouchableOpacity>
+                            <TouchableOpacity onPress={() => handleDelete(ex)} style={styles.iconBtn}>
+                              <Ionicons name="trash-outline" size={18} color={colors.primary} />
+                            </TouchableOpacity>
                           </View>
-                          <TouchableOpacity onPress={() => openEditForm(ex)} style={styles.iconBtn}>
-                            <Ionicons name="create-outline" size={18} color={colors.xpBar} />
-                          </TouchableOpacity>
-                          <TouchableOpacity onPress={() => handleDelete(ex)} style={styles.iconBtn}>
-                            <Ionicons name="trash-outline" size={18} color={colors.primary} />
-                          </TouchableOpacity>
-                        </View>
-                      ))}
+                        ))
+                      )}
                     </View>
                   ))}
                 </ScrollView>
@@ -201,24 +207,22 @@ export default function ExerciseLibraryManager({ visible, coachId, onClose, onCh
               />
 
               <Text style={styles.fieldLabel}>CATEGORY</Text>
-              <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.categoryRow}>
+              <ScrollView horizontal showsHorizontalScrollIndicator={false} style={[styles.categoryRow, { marginBottom: 16 }]}>
                 {categories.map(cat => (
                   <TouchableOpacity
                     key={cat}
-                    style={[styles.categoryChip, formCategory === cat && styles.categoryChipActive]}
+                    style={[styles.categoryChip, formCategory === cat && styles.categoryChipActive, { flexDirection: 'row', alignItems: 'center', gap: 6 }]}
                     onPress={() => setFormCategory(cat)}
                   >
+                    <Ionicons
+                      name={(CATEGORY_ICONS[cat] ?? 'ellipse') as any}
+                      size={14}
+                      color={formCategory === cat ? colors.text : colors.textSecondary}
+                    />
                     <Text style={[styles.categoryChipText, formCategory === cat && styles.categoryChipTextActive]}>{cat}</Text>
                   </TouchableOpacity>
                 ))}
               </ScrollView>
-              <TextInput
-                style={styles.textInput}
-                placeholder="Or type a new category"
-                placeholderTextColor={colors.textSecondary}
-                value={formCategory}
-                onChangeText={setFormCategory}
-              />
 
               <View style={styles.exMetaRow}>
                 <View style={styles.exMetaField}>
@@ -250,6 +254,17 @@ export default function ExerciseLibraryManager({ visible, coachId, onClose, onCh
                     onChangeText={v => setFormWeight(sanitizeWeightInput(v))}
                     placeholder="0"
                     keyboardType="decimal-pad"
+                    placeholderTextColor={colors.textSecondary}
+                  />
+                </View>
+                <View style={styles.exMetaField}>
+                  <Text style={styles.fieldLabel}>TIME (S/M)</Text>
+                  <TextInput
+                    style={styles.metaInput}
+                    value={formTime}
+                    onChangeText={v => setFormTime(sanitizeTimeInput(v))}
+                    placeholder="e.g. 30s"
+                    keyboardType="default"
                     placeholderTextColor={colors.textSecondary}
                   />
                 </View>
@@ -309,6 +324,7 @@ const styles = StyleSheet.create({
   },
   exName: { fontSize: 14, fontWeight: '700', color: colors.text },
   exMeta: { fontSize: 12, color: colors.textSecondary, marginTop: 2 },
+  emptyCategoryText: { fontSize: 13, color: colors.textSecondary, fontStyle: 'italic' },
   iconBtn: { padding: 6 },
 
   fieldLabel: { fontSize: 11, fontWeight: '700', color: colors.textSecondary, letterSpacing: 1.5, marginBottom: 8 },
