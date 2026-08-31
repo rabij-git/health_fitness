@@ -554,7 +554,7 @@ export default function CoachPrograms({ coachId }: Props) {
                         />
                       </View>
                       <View style={styles.exMetaField}>
-                        <Text style={styles.exMetaLabel} numberOfLines={1}>WEIGHT</Text>
+                        <Text style={styles.exMetaLabel} numberOfLines={1}>WEIGHT (KG)</Text>
                         <TextInput
                           style={styles.exMetaInput}
                           value={ex.weight}
@@ -777,7 +777,7 @@ export default function CoachPrograms({ coachId }: Props) {
                           />
                         </View>
                         <View style={styles.exMetaField}>
-                          <Text style={styles.exMetaLabel} numberOfLines={1}>WEIGHT</Text>
+                          <Text style={styles.exMetaLabel} numberOfLines={1}>WEIGHT (KG)</Text>
                           <TextInput
                             style={styles.exMetaInput}
                             value={ex.weight}

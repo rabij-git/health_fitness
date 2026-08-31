@@ -71,6 +71,7 @@ interface ExerciseLog {
   coachSets: number;
   coachReps: string;
   coachWeight?: string;
+  coachTime?: string;
   completed: boolean;
   sets: SetLog[];
 }
@@ -86,6 +87,7 @@ function buildInitialExercises(workout: Workout): ExerciseLog[] {
     coachSets: ex.sets,
     coachReps: ex.reps,
     coachWeight: ex.weight,
+    coachTime: ex.time,
     completed: false,
     sets: Array.from({ length: ex.sets }, () => ({
       reps: ex.reps,
@@ -181,6 +183,7 @@ export default function WorkoutScreen({ userId }: Props) {
             sets: ex.sets,
             reps: ex.reps,
             weight: ex.weight ?? undefined,
+            time: ex.time ?? undefined,
             completed: false,
           })),
         };
@@ -518,6 +521,7 @@ export default function WorkoutScreen({ userId }: Props) {
               <Text style={styles.readOnlyExerciseName}>{ex.name}</Text>
               <Text style={styles.readOnlyExerciseMeta}>{ex.sets}×{ex.reps}</Text>
               {ex.weight ? <Text style={styles.readOnlyExerciseWeight}>{ex.weight}</Text> : null}
+              {ex.time && ex.time !== '0' ? <Text style={styles.readOnlyExerciseWeight}>{ex.time}</Text> : null}
             </View>
           ))}
         </ScrollView>
@@ -568,6 +572,12 @@ export default function WorkoutScreen({ userId }: Props) {
               <Text style={[styles.exerciseName, exercise.completed && styles.exerciseNameDone]}>
                 {exercise.name}
               </Text>
+              {exercise.coachTime && exercise.coachTime !== '0' && (
+                <View style={styles.exerciseTimeBadge}>
+                  <Ionicons name="time-outline" size={12} color={colors.xpBar} />
+                  <Text style={styles.exerciseTimeBadgeText}>{exercise.coachTime}</Text>
+                </View>
+              )}
               <TouchableOpacity
                 style={[styles.checkbox, exercise.completed && styles.checkboxDone]}
                 onPress={() => toggleExercise(exercise.id)}
@@ -814,6 +824,11 @@ const styles = StyleSheet.create({
   exerciseCardDone: { borderColor: colors.xpBar + '66', backgroundColor: '#0a1f1d' },
 
   exerciseHeaderRow: { flexDirection: 'row', alignItems: 'center', gap: 12, marginBottom: 14 },
+  exerciseTimeBadge: {
+    flexDirection: 'row', alignItems: 'center', gap: 3,
+    backgroundColor: colors.xpBar + '22', paddingHorizontal: 8, paddingVertical: 4, borderRadius: 8,
+  },
+  exerciseTimeBadgeText: { fontSize: 12, fontWeight: '700', color: colors.xpBar },
   exerciseNumber: {
     width: 32, height: 32, borderRadius: 10,
     backgroundColor: colors.accent, alignItems: 'center', justifyContent: 'center',

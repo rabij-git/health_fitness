@@ -660,6 +660,7 @@ const styles = StyleSheet.create({
     alignItems: 'center', justifyContent: 'center',
   },
 
+
   menuCard: {
     backgroundColor: colors.card,
     borderRadius: 16,

@@ -14,6 +14,10 @@ export default function RootNavigator() {
   const [userRole, setUserRole] = useState<UserRole | null>(null);
   const [userId, setUserId] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  // While set, an admin is browsing the app as this coach — the real admin
+  // session underneath is untouched; "Logout" from that view just exits
+  // back to Admin instead of signing out for real.
+  const [viewAsCoachId, setViewAsCoachId] = useState<string | null>(null);
 
   // Restore session on app launch
   useEffect(() => {
@@ -50,6 +54,7 @@ export default function RootNavigator() {
     await supabase.auth.signOut();
     setUserRole(null);
     setUserId(null);
+    setViewAsCoachId(null);
   };
 
   if (loading) {
@@ -69,9 +74,16 @@ export default function RootNavigator() {
   }
 
   if (userRole === 'admin') {
+    if (viewAsCoachId) {
+      return (
+        <NavigationContainer>
+          <CoachTabs onLogout={() => setViewAsCoachId(null)} userId={viewAsCoachId} />
+        </NavigationContainer>
+      );
+    }
     return (
       <NavigationContainer>
-        <AdminTabs onLogout={handleLogout} />
+        <AdminTabs onLogout={handleLogout} userId={userId} onViewAsCoach={setViewAsCoachId} />
       </NavigationContainer>
     );
   }

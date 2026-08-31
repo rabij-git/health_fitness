@@ -1,4 +1,4 @@
-import { supabase, DBUser, DBProgram, DBWorkout, DBExercise, DBWeightLog, DBExerciseWeightLog, DBMessage, DBWorkoutSession, DBGym, DBFriendship, DBNutritionPlan, DBNutritionPlanTemplate, DBCoachRequest, DBProgramExercise, DBLibraryExercise, DBUserMedal, DBFoodLogEntry } from './supabase';
+import { supabase, DBUser, DBProgram, DBWorkout, DBExercise, DBWeightLog, DBExerciseWeightLog, DBMessage, DBWorkoutSession, DBGym, DBFriendship, DBNutritionPlan, DBNutritionPlanTemplate, DBCoachRequest, DBCoachInvite, DBVital, DBProgramExercise, DBLibraryExercise, DBUserMedal, DBFoodLogEntry } from './supabase';
 
 // ── Auth ──────────────────────────────────────────────────────────────────────
 
@@ -30,6 +30,31 @@ export async function signUp(email: string, password: string, name: string, role
     if (profileError) throw profileError;
   }
   return data;
+}
+
+// Coach signup requires a valid, unused invite code from an admin — this is
+// the only path that's allowed to create a coach-role account, so a trainee
+// can't accidentally self-assign the coach role at signup.
+export async function signUpCoach(email: string, password: string, name: string, inviteCode: string) {
+  const code = inviteCode.trim().toUpperCase();
+  const { data: invite, error: inviteError } = await supabase
+    .from('coach_invites')
+    .select('id')
+    .eq('code', code)
+    .is('used_by', null)
+    .maybeSingle();
+  if (inviteError) throw inviteError;
+  if (!invite) throw new Error('That invite code is invalid or has already been used.');
+
+  const result = await signUp(email, password, name, 'coach');
+  if (result.user) {
+    const { error: redeemError } = await supabase
+      .from('coach_invites')
+      .update({ used_by: result.user.id, used_at: new Date().toISOString() })
+      .eq('id', invite.id);
+    if (redeemError) throw redeemError;
+  }
+  return result;
 }
 
 export async function signIn(email: string, password: string) {
@@ -377,27 +402,100 @@ export async function getTraineeHistory(traineeId: string): Promise<(DBWorkoutSe
   return (data ?? []).map((s: any) => ({ ...s, workout_name: s.workouts?.name ?? '' }));
 }
 
-// ── Weight logs ───────────────────────────────────────────────────────────────
+// ── Vitals (generic metric log: weight, steps, water, heart rate, ...) ────────
+// One row per (trainee, metric_name, day). Adding a new metric never needs a
+// schema change — just a new metric_name. Different metrics use different
+// write patterns (overwrite the day's value vs. accumulate), handled here.
 
-export async function logBodyWeight(traineeId: string, weightKg: number) {
-  const today = new Date().toISOString().split('T')[0];
-  // Upsert — one entry per day
-  const { error } = await supabase.from('weight_logs').upsert(
-    { trainee_id: traineeId, weight_kg: weightKg, logged_at: today },
-    { onConflict: 'trainee_id,logged_at' }
+function todayDateString(): string {
+  const d = new Date();
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
+}
+
+async function upsertVital(traineeId: string, metricName: string, value: number, uom: string | null) {
+  const { error } = await supabase.from('vitals').upsert(
+    { trainee_id: traineeId, metric_name: metricName, metric_value: value, metric_uom: uom, created_date: todayDateString() },
+    { onConflict: 'trainee_id,metric_name,created_date' }
   );
   if (error) throw error;
 }
 
-export async function getWeightLogs(traineeId: string): Promise<DBWeightLog[]> {
+async function getTodayVital(traineeId: string, metricName: string): Promise<DBVital | null> {
   const { data, error } = await supabase
-    .from('weight_logs')
+    .from('vitals')
     .select('*')
     .eq('trainee_id', traineeId)
-    .order('logged_at', { ascending: false })
-    .limit(30);
+    .eq('metric_name', metricName)
+    .eq('created_date', todayDateString())
+    .maybeSingle();
+  if (error) return null;
+  return data;
+}
+
+export async function getVitalsHistory(traineeId: string, metricName: string, limit: number = 30): Promise<DBVital[]> {
+  const { data, error } = await supabase
+    .from('vitals')
+    .select('*')
+    .eq('trainee_id', traineeId)
+    .eq('metric_name', metricName)
+    .order('created_date', { ascending: false })
+    .limit(limit);
   if (error) return [];
   return data ?? [];
+}
+
+// ── Weight (backed by vitals; keeps the DBWeightLog shape everything else
+// in the app already expects) ──────────────────────────────────────────────
+
+export async function logBodyWeight(traineeId: string, weightKg: number) {
+  await upsertVital(traineeId, 'weight', weightKg, 'kg');
+}
+
+export async function getWeightLogs(traineeId: string): Promise<DBWeightLog[]> {
+  const rows = await getVitalsHistory(traineeId, 'weight', 30);
+  return rows.map(r => ({ id: r.id, trainee_id: r.trainee_id, weight_kg: r.metric_value, logged_at: r.created_date }));
+}
+
+// ── Steps / water / heart rate ─────────────────────────────────────────────
+
+export interface TodayVitals {
+  steps: number;
+  water_ml: number;
+  heart_rate: number | null;
+}
+
+export async function getTodayMetrics(traineeId: string): Promise<TodayVitals> {
+  const [steps, water, hr] = await Promise.all([
+    getTodayVital(traineeId, 'steps'),
+    getTodayVital(traineeId, 'water'),
+    getTodayVital(traineeId, 'heart_rate'),
+  ]);
+  return {
+    steps: steps?.metric_value ?? 0,
+    water_ml: water?.metric_value ?? 0,
+    heart_rate: hr?.metric_value ?? null,
+  };
+}
+
+// Overwrites today's step count — the phone's pedometer already reports the
+// running total for the day, so there's nothing to accumulate here.
+export async function setTodaySteps(traineeId: string, steps: number) {
+  await upsertVital(traineeId, 'steps', steps, 'steps');
+}
+
+// Adds to today's running water total (each log is a top-up, e.g. "+250ml").
+export async function addTodayWater(traineeId: string, amountMl: number): Promise<{ water_ml: number }> {
+  const existing = await getTodayVital(traineeId, 'water');
+  const water_ml = Math.max(0, (existing?.metric_value ?? 0) + amountMl);
+  await upsertVital(traineeId, 'water', water_ml, 'ml');
+  return { water_ml };
+}
+
+export async function setTodayHeartRate(traineeId: string, heartRate: number) {
+  await upsertVital(traineeId, 'heart_rate', heartRate, 'bpm');
 }
 
 // ── Exercise weight logs ──────────────────────────────────────────────────────
@@ -614,11 +712,13 @@ export async function deleteFoodLogEntry(id: string) {
 
 // ── Coach ↔ Trainee requests ────────────────────────────────────────────────
 
+// Admins can also act as coaches (via "Switch to Coach View"), so they're
+// discoverable here too, not just role='coach' accounts.
 export async function searchCoaches(query: string, excludeId: string): Promise<DBUser[]> {
   const { data, error } = await supabase
     .from('users')
     .select('*')
-    .eq('role', 'coach')
+    .in('role', ['coach', 'admin'])
     .neq('id', excludeId)
     .or(`name.ilike.%${query}%,email.ilike.%${query}%`)
     .limit(10);
@@ -972,3 +1072,53 @@ export async function removeFromGym(userId: string) {
     .eq('id', userId);
   if (error) throw error;
 }
+
+// ── Admin ────────────────────────────────────────────────────────────────────
+
+export async function getAllUsers(): Promise<DBUser[]> {
+  const { data, error } = await supabase
+    .from('users')
+    .select('*')
+    .order('created_at', { ascending: false });
+  if (error) return [];
+  return data ?? [];
+}
+
+function generateInviteCode(): string {
+  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; // no 0/O/1/I — easy to read aloud/type
+  let code = '';
+  for (let i = 0; i < 8; i++) code += chars[Math.floor(Math.random() * chars.length)];
+  return code;
+}
+
+export async function createCoachInvite(adminId: string): Promise<DBCoachInvite> {
+  const { data, error } = await supabase
+    .from('coach_invites')
+    .insert({ code: generateInviteCode(), created_by: adminId })
+    .select()
+    .single();
+  if (error) throw error;
+  return data;
+}
+
+export async function getCoachInvites(): Promise<DBCoachInvite[]> {
+  const { data, error } = await supabase
+    .from('coach_invites')
+    .select('*')
+    .order('created_at', { ascending: false });
+  if (error) return [];
+  return data ?? [];
+}
+
+// Refuses to revoke an invite that's already been redeemed — that coach
+// account was already created, revoking the code after the fact wouldn't
+// undo anything, it would just make the invite's history disappear.
+export async function revokeCoachInvite(inviteId: string) {
+  const { error } = await supabase
+    .from('coach_invites')
+    .delete()
+    .eq('id', inviteId)
+    .is('used_by', null);
+  if (error) throw error;
+}
+

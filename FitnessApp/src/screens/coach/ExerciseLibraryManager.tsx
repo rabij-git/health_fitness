@@ -247,7 +247,7 @@ export default function ExerciseLibraryManager({ visible, coachId, onClose, onCh
                   />
                 </View>
                 <View style={styles.exMetaField}>
-                  <Text style={styles.fieldLabel} numberOfLines={1}>WEIGHT</Text>
+                  <Text style={styles.fieldLabel} numberOfLines={1}>WEIGHT (KG)</Text>
                   <TextInput
                     style={styles.metaInput}
                     value={formWeight}

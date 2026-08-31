@@ -14,9 +14,25 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useFocusEffect } from '@react-navigation/native';
 import { Ionicons } from '@expo/vector-icons';
+import { Pedometer } from 'expo-sensors';
 import { colors } from '../../theme/colors';
 import { getXpForNextLevel, getCurrentLevelXp } from '../../data/mockData';
-import { getProfile, logBodyWeight, getWeightLogs, getMessages, sendMessage, markMessagesRead, getWorkoutsForTrainee, getWorkoutWithExercises, getTraineeHistory } from '../../lib/db';
+import {
+  getProfile,
+  logBodyWeight,
+  getWeightLogs,
+  getMessages,
+  sendMessage,
+  markMessagesRead,
+  getWorkoutsForTrainee,
+  getWorkoutWithExercises,
+  getTraineeHistory,
+  getTodayMetrics,
+  setTodaySteps,
+  addTodayWater,
+  setTodayHeartRate,
+  TodayVitals,
+} from '../../lib/db';
 import { DBUser, DBWeightLog, DBMessage, DBWorkout, DBExercise } from '../../lib/supabase';
 
 const DAY_LABELS = ['M', 'T', 'W', 'T', 'F', 'S', 'S'];
@@ -44,22 +60,83 @@ export default function TrainerDashboard({ onLogout, userId }: Props) {
   const [msgInput, setMsgInput] = useState('');
   const [dismissedNotifs, setDismissedNotifs] = useState<string[]>([]);
 
+  const [dailyMetrics, setDailyMetrics] = useState<TodayVitals>({ steps: 0, water_ml: 0, heart_rate: null });
+  const [pedometerAvailable, setPedometerAvailable] = useState(false);
+  const [hrInput, setHrInput] = useState('');
+  const [savingHr, setSavingHr] = useState(false);
+  const [loggingWaterAmount, setLoggingWaterAmount] = useState<number | null>(null);
+
   const loadHome = useCallback(async () => {
-    const [p, weights, workouts, history] = await Promise.all([
+    const [p, weights, workouts, history, metrics] = await Promise.all([
       getProfile(userId),
       getWeightLogs(userId),
       getWorkoutsForTrainee(userId),
       getTraineeHistory(userId),
+      getTodayMetrics(userId),
     ]);
     setProfile(p);
     setCoachId(p?.coach_id ?? null);
     setWeightLogs(weights);
     setSessionHistory(history);
+    setDailyMetrics(metrics);
     setLoadingProfile(false);
 
     const active = workouts.find(w => w.active);
     setPrimaryWorkout(active ? await getWorkoutWithExercises(active.id) : null);
   }, [userId]);
+
+  // Steps come straight from the phone's own motion sensor — read today's
+  // running total on mount, then again whenever it changes during the
+  // session (watchStepCount only signals a change, not a day total, so we
+  // just re-fetch the historical count each time rather than track deltas).
+  useEffect(() => {
+    let subscription: { remove: () => void } | undefined;
+    Pedometer.isAvailableAsync().then(available => {
+      setPedometerAvailable(available);
+      if (!available || Platform.OS !== 'ios') return;
+      const syncSteps = () => {
+        const start = new Date();
+        start.setHours(0, 0, 0, 0);
+        Pedometer.getStepCountAsync(start, new Date())
+          .then(result => {
+            setTodaySteps(userId, result.steps).catch(() => {});
+            setDailyMetrics(prev => ({ ...prev, steps: result.steps }));
+          })
+          .catch(() => {});
+      };
+      syncSteps();
+      subscription = Pedometer.watchStepCount(syncSteps);
+    });
+    return () => subscription?.remove();
+  }, [userId]);
+
+  const handleAddWater = useCallback(async (ml: number) => {
+    if (loggingWaterAmount !== null) return;
+    setLoggingWaterAmount(ml);
+    try {
+      const updated = await addTodayWater(userId, ml);
+      setDailyMetrics(prev => ({ ...prev, water_ml: updated.water_ml }));
+    } catch (e) {
+      console.warn('addTodayWater error', e);
+    } finally {
+      setLoggingWaterAmount(null);
+    }
+  }, [userId, loggingWaterAmount]);
+
+  const handleSaveHeartRate = useCallback(async () => {
+    const bpm = parseInt(hrInput, 10);
+    if (!bpm || savingHr) return;
+    setSavingHr(true);
+    try {
+      await setTodayHeartRate(userId, bpm);
+      setDailyMetrics(prev => ({ ...prev, heart_rate: bpm }));
+      setHrInput('');
+    } catch (e) {
+      console.warn('setTodayHeartRate error', e);
+    } finally {
+      setSavingHr(false);
+    }
+  }, [userId, hrInput, savingHr]);
 
   // Refetch every time the Home tab regains focus (not just on first mount) —
   // otherwise finishing a workout on the Workout tab (which updates xp/level/streak)
@@ -336,11 +413,40 @@ export default function TrainerDashboard({ onLogout, userId }: Props) {
           )}
         </View>
 
-        {/* Biometrics Logger */}
+        {/* Today's Activity — steps auto-sync from the phone; weight, water,
+            and heart rate are logged manually right here. */}
         <View style={styles.biometricsCard}>
-          <Text style={styles.biometricsTitle}>Log Today's Weight</Text>
-          <Text style={styles.biometricsSubtitle}>Keep track of your body composition</Text>
-          <View style={styles.weightInputRow}>
+          <Text style={styles.biometricsTitle}>Today's Activity</Text>
+          <Text style={styles.biometricsSubtitle}>Steps, weight, water & heart rate</Text>
+
+          <View style={styles.activityStatsRow}>
+            <View style={styles.activityStat}>
+              <Ionicons name="walk-outline" size={20} color={colors.xpBar} />
+              <Text style={styles.activityStatValue}>{dailyMetrics.steps.toLocaleString()}</Text>
+              <Text style={styles.activityStatLabel}>Steps</Text>
+            </View>
+            <View style={styles.activityStat}>
+              <Ionicons name="scale-outline" size={20} color={colors.primary} />
+              <Text style={styles.activityStatValue}>{lastWeight ? `${lastWeight.weight_kg}kg` : '—'}</Text>
+              <Text style={styles.activityStatLabel}>Weight</Text>
+            </View>
+            <View style={styles.activityStat}>
+              <Ionicons name="water-outline" size={20} color={colors.accent} />
+              <Text style={styles.activityStatValue}>{dailyMetrics.water_ml}ml</Text>
+              <Text style={styles.activityStatLabel}>Water</Text>
+            </View>
+            <View style={styles.activityStat}>
+              <Ionicons name="heart-outline" size={20} color={colors.streak} />
+              <Text style={styles.activityStatValue}>{dailyMetrics.heart_rate ?? '—'}</Text>
+              <Text style={styles.activityStatLabel}>BPM</Text>
+            </View>
+          </View>
+          {!pedometerAvailable && (
+            <Text style={styles.activityHint}>Step counting isn't available on this device.</Text>
+          )}
+
+          <View style={[styles.weightInputRow, styles.logRow]}>
+            <Text style={styles.logRowLabel} numberOfLines={1}>LOG WEIGHT</Text>
             <TextInput
               style={styles.weightInput}
               value={weight}
@@ -356,8 +462,7 @@ export default function TrainerDashboard({ onLogout, userId }: Props) {
               disabled={!weight || parseFloat(weight) <= 0 || parseFloat(weight) > 250}
               activeOpacity={0.8}
             >
-              <Ionicons name={weightSaved ? 'checkmark' : 'save'} size={18} color={colors.text} />
-              <Text style={styles.saveButtonText}>{weightSaved ? 'Saved!' : 'Save'}</Text>
+              <Ionicons name="checkmark" size={15} color={colors.text} />
             </TouchableOpacity>
           </View>
           {lastWeight && (
@@ -366,6 +471,48 @@ export default function TrainerDashboard({ onLogout, userId }: Props) {
               <Text style={styles.lastWeightText}>Last recorded: {lastWeight.weight_kg} kg ({lastWeight.logged_at})</Text>
             </View>
           )}
+
+          <View style={[styles.waterBtnRow, styles.logRow, { marginTop: 16 }]}>
+            <Text style={styles.logRowLabel} numberOfLines={1}>LOG WATER</Text>
+            {[250, 500].map(ml => (
+              <TouchableOpacity
+                key={ml}
+                style={styles.waterBtn}
+                onPress={() => handleAddWater(ml)}
+                disabled={loggingWaterAmount !== null}
+              >
+                {loggingWaterAmount === ml ? (
+                  <ActivityIndicator size="small" color={colors.primary} />
+                ) : (
+                  <Text style={styles.waterBtnText}>+{ml}ml</Text>
+                )}
+              </TouchableOpacity>
+            ))}
+          </View>
+
+          <View style={[styles.hrRow, styles.logRow, { marginTop: 16 }]}>
+            <Text style={styles.logRowLabel} numberOfLines={1}>LOG HEART RATE</Text>
+            <TextInput
+              style={styles.hrInput}
+              value={hrInput}
+              onChangeText={v => setHrInput(v.replace(/[^0-9]/g, ''))}
+              placeholder="0"
+              placeholderTextColor={colors.textSecondary}
+              keyboardType="number-pad"
+            />
+            <Text style={styles.weightUnit}>bpm</Text>
+            <TouchableOpacity
+              style={[styles.hrSaveBtn, (!hrInput || savingHr) && { opacity: 0.5 }]}
+              onPress={handleSaveHeartRate}
+              disabled={!hrInput || savingHr}
+            >
+              {savingHr ? (
+                <ActivityIndicator size="small" color={colors.text} />
+              ) : (
+                <Ionicons name="checkmark" size={15} color={colors.text} />
+              )}
+            </TouchableOpacity>
+          </View>
         </View>
 
         {/* Quick Stats */}
@@ -657,31 +804,56 @@ const styles = StyleSheet.create({
   },
   biometricsTitle: { fontSize: 17, fontWeight: '700', color: colors.text, marginBottom: 4 },
   biometricsSubtitle: { fontSize: 12, color: colors.textSecondary, marginBottom: 16 },
-  weightInputRow: { flexDirection: 'row', alignItems: 'center', gap: 12, marginBottom: 12 },
+  activityStatsRow: { flexDirection: 'row', justifyContent: 'space-around', marginBottom: 10 },
+  activityStat: { alignItems: 'center', gap: 4 },
+  activityStatValue: { fontSize: 15, fontWeight: '800', color: colors.text },
+  activityStatLabel: { fontSize: 10, color: colors.textSecondary },
+  activityHint: { fontSize: 12, color: colors.textSecondary, textAlign: 'center', marginBottom: 8 },
+  activitySectionLabel: {
+    fontSize: 10, fontWeight: '700', color: colors.textSecondary,
+    letterSpacing: 1.2, marginBottom: 8, borderTopWidth: 1, borderTopColor: colors.border, paddingTop: 14,
+  },
+  logRow: { borderTopWidth: 1, borderTopColor: colors.border, paddingTop: 14 },
+  logRowLabel: { fontSize: 10, fontWeight: '700', color: colors.textSecondary, letterSpacing: 1 },
+  waterBtnRow: { flexDirection: 'row', alignItems: 'center', gap: 10 },
+  waterBtn: {
+    height: 34, paddingHorizontal: 12, alignItems: 'center', justifyContent: 'center',
+    backgroundColor: colors.secondary, borderRadius: 10,
+    borderWidth: 1, borderColor: colors.border,
+  },
+  waterBtnText: { fontSize: 12, fontWeight: '700', color: colors.primary },
+  hrRow: { flexDirection: 'row', alignItems: 'center', gap: 10 },
+  hrInput: {
+    width: 72, height: 44, backgroundColor: colors.secondary, borderRadius: 12, padding: 10,
+    color: colors.text, fontSize: 14, borderWidth: 1, borderColor: colors.border,
+  },
+  hrSaveBtn: {
+    width: 34, height: 34, borderRadius: 10, backgroundColor: colors.primary,
+    alignItems: 'center', justifyContent: 'center',
+  },
+  weightInputRow: { flexDirection: 'row', alignItems: 'center', gap: 10, marginBottom: 12 },
   weightInput: {
-    flex: 1,
+    width: 72,
+    height: 44,
     backgroundColor: colors.secondary,
     borderRadius: 12,
-    padding: 14,
-    fontSize: 24,
+    padding: 10,
+    fontSize: 14,
     fontWeight: '700',
     color: colors.text,
     borderWidth: 1,
     borderColor: colors.border,
-    textAlign: 'center',
   },
-  weightUnit: { fontSize: 18, fontWeight: '600', color: colors.textSecondary },
+  weightUnit: { fontSize: 13, fontWeight: '600', color: colors.textSecondary },
   saveButton: {
-    backgroundColor: colors.accent,
-    borderRadius: 12,
-    paddingHorizontal: 20,
-    paddingVertical: 14,
-    flexDirection: 'row',
+    width: 34,
+    height: 34,
+    borderRadius: 10,
+    backgroundColor: colors.primary,
     alignItems: 'center',
-    gap: 6,
+    justifyContent: 'center',
   },
   saveButtonSuccess: { backgroundColor: colors.success },
-  saveButtonText: { color: colors.text, fontSize: 14, fontWeight: '700' },
   lastWeightRow: { flexDirection: 'row', alignItems: 'center', gap: 6 },
   lastWeightText: { fontSize: 12, color: colors.textSecondary },
 

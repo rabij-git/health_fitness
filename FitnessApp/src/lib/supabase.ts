@@ -76,6 +76,7 @@ export interface DBExercise {
   sets: number;
   reps: string;
   weight?: string;
+  time: string; // duration like "30s" or "5m"; plain number or "0" = not timed
   sort_order: number;
 }
 
@@ -195,5 +196,29 @@ export interface DBCoachRequest {
   trainee_id: string;
   initiated_by: 'coach' | 'trainee';
   status: 'pending' | 'accepted' | 'declined';
+  created_at: string;
+}
+
+// Generic metric row — one per (trainee, metric_name, day). Covers weight,
+// steps, water intake, heart rate, and any future metric without a schema
+// change. metric_name examples: 'weight', 'steps', 'water', 'heart_rate'.
+export interface DBVital {
+  id: string;
+  trainee_id: string;
+  metric_name: string;
+  metric_value: number;
+  metric_uom: string | null;
+  created_date: string; // YYYY-MM-DD
+  created_at: string;
+}
+
+// Admin-generated code required to sign up as a coach — prevents a trainee
+// from accidentally (or deliberately) self-assigning the coach role.
+export interface DBCoachInvite {
+  id: string;
+  code: string;
+  created_by: string;
+  used_by: string | null;
+  used_at: string | null;
   created_at: string;
 }

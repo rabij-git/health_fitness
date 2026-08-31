@@ -11,9 +11,11 @@ const Tab = createBottomTabNavigator();
 
 interface Props {
   onLogout: () => void;
+  userId: string;
+  onViewAsCoach: (coachId: string) => void;
 }
 
-export default function AdminTabs({ onLogout }: Props) {
+export default function AdminTabs({ onLogout, userId, onViewAsCoach }: Props) {
   const insets = useSafeAreaInsets();
   return (
     <Tab.Navigator
@@ -46,9 +48,11 @@ export default function AdminTabs({ onLogout }: Props) {
       })}
     >
       <Tab.Screen name="Dashboard">
-        {() => <AdminDashboard onLogout={onLogout} />}
+        {() => <AdminDashboard onLogout={onLogout} onSwitchToCoach={() => onViewAsCoach(userId)} />}
       </Tab.Screen>
-      <Tab.Screen name="Users" component={AdminUsers} />
+      <Tab.Screen name="Users">
+        {() => <AdminUsers adminId={userId} onViewAsCoach={onViewAsCoach} />}
+      </Tab.Screen>
       <Tab.Screen name="Settings">
         {() => <AdminSettings onLogout={onLogout} />}
       </Tab.Screen>

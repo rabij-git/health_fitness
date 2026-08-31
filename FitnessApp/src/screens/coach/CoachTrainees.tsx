@@ -48,9 +48,10 @@ import {
   deleteNutritionPlan,
   getMessages,
   sendMessage,
+  getVitalsHistory,
 } from '../../lib/db';
-import { DBProgram, DBUser, DBWorkout, DBExercise, DBWeightLog, DBNutritionPlan, DBNutritionPlanTemplate, DBCoachRequest, DBLibraryExercise, DBMessage } from '../../lib/supabase';
-import { sanitizeCount, sanitizeWeightInput, stripKg, withKg } from '../../lib/exerciseInput';
+import { DBProgram, DBUser, DBWorkout, DBExercise, DBWeightLog, DBNutritionPlan, DBNutritionPlanTemplate, DBCoachRequest, DBLibraryExercise, DBMessage, DBVital } from '../../lib/supabase';
+import { sanitizeCount, sanitizeWeightInput, sanitizeTimeInput, stripKg, withKg } from '../../lib/exerciseInput';
 
 interface ExerciseEntry {
   id: string;
@@ -59,6 +60,7 @@ interface ExerciseEntry {
   sets: string;
   reps: string;
   weight: string;
+  time: string; // duration like "30s" or "5m", default '0'
 }
 
 interface Props {
@@ -66,7 +68,7 @@ interface Props {
 }
 
 function buildEmptyExercise(): ExerciseEntry {
-  return { id: String(Date.now() + Math.random()), name: '', sets: '3', reps: '10', weight: '' };
+  return { id: String(Date.now() + Math.random()), name: '', sets: '3', reps: '10', weight: '', time: '0' };
 }
 
 const CATEGORY_ICONS: Record<string, string> = {
@@ -114,7 +116,7 @@ export default function CoachTrainees({ coachId }: Props) {
 
   // ── Trainee detail modal ──
   const [selectedTrainee, setSelectedTrainee] = useState<DBUser | null>(null);
-  const [detailTab, setDetailTab] = useState<'program' | 'history' | 'weight' | 'nutrition' | 'chat'>('program');
+  const [detailTab, setDetailTab] = useState<'program' | 'history' | 'weight' | 'steps' | 'nutrition' | 'chat'>('program');
   // All workouts (active + inactive) assigned to the selected trainee — a trainee
   // can now have several at once, unlike the old single-latest-workout model.
   const [selectedTraineeWorkouts, setSelectedTraineeWorkouts] = useState<DBWorkout[]>([]);
@@ -126,6 +128,8 @@ export default function CoachTrainees({ coachId }: Props) {
   const [deletingWorkoutId, setDeletingWorkoutId] = useState<string | null>(null);
   const [selectedTraineeHistory, setSelectedTraineeHistory] = useState<any[]>([]);
   const [selectedTraineeWeights, setSelectedTraineeWeights] = useState<DBWeightLog[]>([]);
+  const [selectedTraineeSteps, setSelectedTraineeSteps] = useState<DBVital[]>([]);
+  const [selectedTraineeWater, setSelectedTraineeWater] = useState<DBVital[]>([]);
   // A trainee can have several nutrition plans — some active, some retired —
   // each optionally carrying macro targets, notes, and/or an uploaded PDF.
   const [selectedTraineeNutrition, setSelectedTraineeNutrition] = useState<DBNutritionPlan[]>([]);
@@ -238,6 +242,8 @@ export default function CoachTrainees({ coachId }: Props) {
       setExpandedWorkoutExercises([]);
       setSelectedTraineeHistory([]);
       setSelectedTraineeWeights([]);
+      setSelectedTraineeSteps([]);
+      setSelectedTraineeWater([]);
       setSelectedTraineeNutrition([]);
       setExpandedPlanId(null);
       setSelectedTraineeMessages([]);
@@ -249,12 +255,16 @@ export default function CoachTrainees({ coachId }: Props) {
       getWorkoutsForTrainee(selectedTrainee.id),
       getTraineeHistory(selectedTrainee.id),
       getWeightLogs(selectedTrainee.id),
+      getVitalsHistory(selectedTrainee.id, 'steps'),
+      getVitalsHistory(selectedTrainee.id, 'water'),
       getNutritionPlans(selectedTrainee.id),
       getMessages(coachId, selectedTrainee.id),
-    ]).then(([workouts, history, weights, nutrition, messages]) => {
+    ]).then(([workouts, history, weights, steps, water, nutrition, messages]) => {
       setSelectedTraineeWorkouts(workouts);
       setSelectedTraineeHistory(history);
       setSelectedTraineeWeights(weights);
+      setSelectedTraineeSteps(steps);
+      setSelectedTraineeWater(water);
       setSelectedTraineeNutrition(nutrition);
       setSelectedTraineeMessages(messages);
       setLoadingDetail(false);
@@ -504,12 +514,13 @@ export default function CoachTrainees({ coachId }: Props) {
             sets: String(ex.sets),
             reps: ex.reps,
             weight: stripKg(ex.weight),
+            time: sanitizeTimeInput(ex.time ?? '0'),
           }))
         : [buildEmptyExercise()]
     );
   }, []);
 
-  const addSuggestedExercise = useCallback((item: { name: string; sets: string; reps: string; weight: string }) => {
+  const addSuggestedExercise = useCallback((item: { name: string; sets: string; reps: string; weight: string; time: string }) => {
     setExercises(prev => {
       const lastIdx = prev.length - 1;
       if (prev[lastIdx] && !prev[lastIdx].name.trim()) {
@@ -551,6 +562,7 @@ export default function CoachTrainees({ coachId }: Props) {
         sets: parseInt(e.sets) || 3,
         reps: e.reps || '10',
         weight: withKg(e.weight),
+        time: e.time.trim() || '0',
       }));
       setSaving(true);
       try {
@@ -589,6 +601,7 @@ export default function CoachTrainees({ coachId }: Props) {
           sets: String(ex.sets),
           reps: ex.reps,
           weight: stripKg(ex.weight),
+          time: sanitizeTimeInput(ex.time ?? '0'),
         }))
       );
       setEditActiveCategory('Push');
@@ -599,7 +612,7 @@ export default function CoachTrainees({ coachId }: Props) {
     }
   }, []);
 
-  const addEditSuggestedExercise = useCallback((item: { name: string; sets: string; reps: string; weight: string }) => {
+  const addEditSuggestedExercise = useCallback((item: { name: string; sets: string; reps: string; weight: string; time: string }) => {
     setEditExercises(prev => {
       const lastIdx = prev.length - 1;
       if (prev[lastIdx] && !prev[lastIdx].name.trim()) {
@@ -617,6 +630,7 @@ export default function CoachTrainees({ coachId }: Props) {
       sets: parseInt(e.sets) || 3,
       reps: e.reps || '10',
       weight: withKg(e.weight),
+      time: e.time.trim() || '0',
     }));
     setSaving(true);
     try {
@@ -881,7 +895,7 @@ export default function CoachTrainees({ coachId }: Props) {
               style={styles.tabRow}
               contentContainerStyle={{ flexDirection: 'row', alignItems: 'center' }}
             >
-              {(['program', 'history', 'weight', 'nutrition', 'chat'] as const).map(tab => (
+              {(['program', 'history', 'weight', 'steps', 'nutrition', 'chat'] as const).map(tab => (
                 <TouchableOpacity
                   key={tab}
                   style={[styles.tab, detailTab === tab && styles.tabActive]}
@@ -889,7 +903,7 @@ export default function CoachTrainees({ coachId }: Props) {
                   hitSlop={{ top: 8, bottom: 8 }}
                 >
                   <Text style={[styles.tabText, detailTab === tab && styles.tabTextActive]} numberOfLines={1}>
-                    {tab === 'program' ? 'Program' : tab === 'history' ? 'History' : tab === 'weight' ? 'Weight' : tab === 'nutrition' ? 'Nutrition' : 'Chat'}
+                    {tab === 'program' ? 'Program' : tab === 'history' ? 'History' : tab === 'weight' ? 'Weight' : tab === 'steps' ? 'Steps' : tab === 'nutrition' ? 'Nutrition' : 'Chat'}
                   </Text>
                 </TouchableOpacity>
               ))}
@@ -1004,6 +1018,7 @@ export default function CoachTrainees({ coachId }: Props) {
                                         <Text style={styles.exDetailName}>{ex.name}</Text>
                                         <Text style={styles.exDetailMeta}>{ex.sets}×{ex.reps}</Text>
                                         {ex.weight && <Text style={styles.exDetailWeight}>{ex.weight}</Text>}
+                                        {ex.time && ex.time !== '0' && <Text style={styles.exDetailWeight}>{ex.time}</Text>}
                                       </View>
                                     ))
                                   )}
@@ -1125,9 +1140,49 @@ export default function CoachTrainees({ coachId }: Props) {
                   </View>
                 )}
 
+                {/* Steps tab — auto-synced from the trainee's phone */}
+                {detailTab === 'steps' && (
+                  <View>
+                    <Text style={styles.fieldLabel}>STEP COUNT</Text>
+                    {selectedTraineeSteps.length === 0 && (
+                      <Text style={{ color: colors.textSecondary, textAlign: 'center', paddingVertical: 20 }}>No steps synced yet</Text>
+                    )}
+                    {selectedTraineeSteps.map((entry, i) => (
+                      <View key={entry.id} style={styles.weightRow}>
+                        <Ionicons name="walk-outline" size={16} color={colors.xpBar} />
+                        <Text style={styles.weightDate}>{formatDate(entry.created_date)}</Text>
+                        <Text style={styles.weightVal}>{entry.metric_value.toLocaleString()} steps</Text>
+                        {i === 0 && (
+                          <View style={styles.latestTag}>
+                            <Text style={styles.latestTagText}>Today</Text>
+                          </View>
+                        )}
+                      </View>
+                    ))}
+                  </View>
+                )}
+
                 {/* Nutrition tab */}
                 {detailTab === 'nutrition' && (
                   <View>
+                    <Text style={styles.fieldLabel}>WATER INTAKE</Text>
+                    {selectedTraineeWater.length === 0 ? (
+                      <Text style={{ color: colors.textSecondary, textAlign: 'center', paddingVertical: 12 }}>No water logged yet</Text>
+                    ) : (
+                      selectedTraineeWater.slice(0, 7).map((entry, i) => (
+                        <View key={entry.id} style={styles.weightRow}>
+                          <Ionicons name="water-outline" size={16} color={colors.primary} />
+                          <Text style={styles.weightDate}>{formatDate(entry.created_date)}</Text>
+                          <Text style={styles.weightVal}>{entry.metric_value}ml</Text>
+                          {i === 0 && (
+                            <View style={styles.latestTag}>
+                              <Text style={styles.latestTagText}>Today</Text>
+                            </View>
+                          )}
+                        </View>
+                      ))
+                    )}
+                    <View style={{ height: 16 }} />
                     {editingPlanId ? (
                       <>
                         <Text style={styles.fieldLabel}>PLAN TITLE</Text>
@@ -1539,6 +1594,7 @@ export default function CoachTrainees({ coachId }: Props) {
                           sets: sanitizeCount(String(item.default_sets), 1, 6),
                           reps: sanitizeCount(item.default_reps, 1, 30),
                           weight: stripKg(item.default_weight),
+                          time: sanitizeTimeInput(item.default_time ?? '0'),
                         })}
                         activeOpacity={alreadyAdded ? 1 : 0.7}
                       >
@@ -1558,16 +1614,18 @@ export default function CoachTrainees({ coachId }: Props) {
                 <Text style={[styles.fieldLabel, { marginTop: 20 }]}>YOUR EXERCISES</Text>
                 {exercises.map((ex, i) => (
                   <View key={ex.id} style={styles.exerciseRow}>
-                    <View style={styles.exNumBadge}>
-                      <Text style={styles.exNumText}>{i + 1}</Text>
-                    </View>
-                    <View style={styles.reorderCol}>
-                      <TouchableOpacity disabled={i === 0} onPress={() => moveExercise(ex.id, -1)} style={styles.reorderBtn}>
-                        <Ionicons name="chevron-up" size={16} color={i === 0 ? colors.border : colors.textSecondary} />
-                      </TouchableOpacity>
-                      <TouchableOpacity disabled={i === exercises.length - 1} onPress={() => moveExercise(ex.id, 1)} style={styles.reorderBtn}>
-                        <Ionicons name="chevron-down" size={16} color={i === exercises.length - 1 ? colors.border : colors.textSecondary} />
-                      </TouchableOpacity>
+                    <View style={styles.exSideCol}>
+                      <View style={styles.exNumBadge}>
+                        <Text style={styles.exNumText}>{i + 1}</Text>
+                      </View>
+                      <View style={styles.reorderRow}>
+                        <TouchableOpacity disabled={i === 0} onPress={() => moveExercise(ex.id, -1)} style={styles.reorderBtn}>
+                          <Ionicons name="chevron-up" size={14} color={i === 0 ? colors.border : colors.textSecondary} />
+                        </TouchableOpacity>
+                        <TouchableOpacity disabled={i === exercises.length - 1} onPress={() => moveExercise(ex.id, 1)} style={styles.reorderBtn}>
+                          <Ionicons name="chevron-down" size={14} color={i === exercises.length - 1 ? colors.border : colors.textSecondary} />
+                        </TouchableOpacity>
+                      </View>
                     </View>
                     <View style={styles.exFields}>
                       <TextInput
@@ -1579,7 +1637,7 @@ export default function CoachTrainees({ coachId }: Props) {
                       />
                       <View style={styles.exMetaRow}>
                         <View style={styles.exMetaField}>
-                          <Text style={styles.exMetaLabel}>SETS (1-6)</Text>
+                          <Text style={styles.exMetaLabel} numberOfLines={1}>SETS (1-6)</Text>
                           <TextInput
                             style={styles.exMetaInput}
                             value={ex.sets}
@@ -1589,7 +1647,7 @@ export default function CoachTrainees({ coachId }: Props) {
                           />
                         </View>
                         <View style={styles.exMetaField}>
-                          <Text style={styles.exMetaLabel}>REPS (1-30)</Text>
+                          <Text style={styles.exMetaLabel} numberOfLines={1}>REPS (1-30)</Text>
                           <TextInput
                             style={styles.exMetaInput}
                             value={ex.reps}
@@ -1599,13 +1657,24 @@ export default function CoachTrainees({ coachId }: Props) {
                           />
                         </View>
                         <View style={styles.exMetaField}>
-                          <Text style={styles.exMetaLabel}>WEIGHT (KG)</Text>
+                          <Text style={styles.exMetaLabel} numberOfLines={1}>WEIGHT (KG)</Text>
                           <TextInput
                             style={styles.exMetaInput}
                             value={ex.weight}
                             onChangeText={v => setExercises(prev => prev.map(e => e.id === ex.id ? { ...e, weight: sanitizeWeightInput(v) } : e))}
                             placeholder="0"
                             keyboardType="decimal-pad"
+                            placeholderTextColor={colors.textSecondary}
+                          />
+                        </View>
+                        <View style={styles.exMetaField}>
+                          <Text style={styles.exMetaLabel} numberOfLines={1}>TIME (S/M)</Text>
+                          <TextInput
+                            style={styles.exMetaInput}
+                            value={ex.time}
+                            onChangeText={v => setExercises(prev => prev.map(e => e.id === ex.id ? { ...e, time: sanitizeTimeInput(v) } : e))}
+                            placeholder="e.g. 30s"
+                            keyboardType="default"
                             placeholderTextColor={colors.textSecondary}
                           />
                         </View>
@@ -1776,6 +1845,7 @@ export default function CoachTrainees({ coachId }: Props) {
                         sets: sanitizeCount(String(item.default_sets), 1, 6),
                         reps: sanitizeCount(item.default_reps, 1, 30),
                         weight: stripKg(item.default_weight),
+                        time: sanitizeTimeInput(item.default_time ?? '0'),
                       })}
                       activeOpacity={alreadyAdded ? 1 : 0.7}
                     >
@@ -1797,16 +1867,18 @@ export default function CoachTrainees({ coachId }: Props) {
               </Text>
               {editExercises.map((ex, i) => (
                 <View key={ex.id} style={styles.exerciseRow}>
-                  <View style={styles.exNumBadge}>
-                    <Text style={styles.exNumText}>{i + 1}</Text>
-                  </View>
-                  <View style={styles.reorderCol}>
-                    <TouchableOpacity disabled={i === 0} onPress={() => moveEditExercise(ex.id, -1)} style={styles.reorderBtn}>
-                      <Ionicons name="chevron-up" size={16} color={i === 0 ? colors.border : colors.textSecondary} />
-                    </TouchableOpacity>
-                    <TouchableOpacity disabled={i === editExercises.length - 1} onPress={() => moveEditExercise(ex.id, 1)} style={styles.reorderBtn}>
-                      <Ionicons name="chevron-down" size={16} color={i === editExercises.length - 1 ? colors.border : colors.textSecondary} />
-                    </TouchableOpacity>
+                  <View style={styles.exSideCol}>
+                    <View style={styles.exNumBadge}>
+                      <Text style={styles.exNumText}>{i + 1}</Text>
+                    </View>
+                    <View style={styles.reorderRow}>
+                      <TouchableOpacity disabled={i === 0} onPress={() => moveEditExercise(ex.id, -1)} style={styles.reorderBtn}>
+                        <Ionicons name="chevron-up" size={14} color={i === 0 ? colors.border : colors.textSecondary} />
+                      </TouchableOpacity>
+                      <TouchableOpacity disabled={i === editExercises.length - 1} onPress={() => moveEditExercise(ex.id, 1)} style={styles.reorderBtn}>
+                        <Ionicons name="chevron-down" size={14} color={i === editExercises.length - 1 ? colors.border : colors.textSecondary} />
+                      </TouchableOpacity>
+                    </View>
                   </View>
                   <View style={styles.exFields}>
                     <TextInput
@@ -1818,7 +1890,7 @@ export default function CoachTrainees({ coachId }: Props) {
                     />
                     <View style={styles.exMetaRow}>
                       <View style={styles.exMetaField}>
-                        <Text style={styles.exMetaLabel}>SETS (1-6)</Text>
+                        <Text style={styles.exMetaLabel} numberOfLines={1}>SETS (1-6)</Text>
                         <TextInput
                           style={styles.exMetaInput}
                           value={ex.sets}
@@ -1828,7 +1900,7 @@ export default function CoachTrainees({ coachId }: Props) {
                         />
                       </View>
                       <View style={styles.exMetaField}>
-                        <Text style={styles.exMetaLabel}>REPS (1-30)</Text>
+                        <Text style={styles.exMetaLabel} numberOfLines={1}>REPS (1-30)</Text>
                         <TextInput
                           style={styles.exMetaInput}
                           value={ex.reps}
@@ -1838,13 +1910,24 @@ export default function CoachTrainees({ coachId }: Props) {
                         />
                       </View>
                       <View style={styles.exMetaField}>
-                        <Text style={styles.exMetaLabel}>WEIGHT (KG)</Text>
+                        <Text style={styles.exMetaLabel} numberOfLines={1}>WEIGHT (KG)</Text>
                         <TextInput
                           style={styles.exMetaInput}
                           value={ex.weight}
                           onChangeText={v => setEditExercises(prev => prev.map(e => e.id === ex.id ? { ...e, weight: sanitizeWeightInput(v) } : e))}
                           placeholder="0"
                           keyboardType="decimal-pad"
+                          placeholderTextColor={colors.textSecondary}
+                        />
+                      </View>
+                      <View style={styles.exMetaField}>
+                        <Text style={styles.exMetaLabel} numberOfLines={1}>TIME (S/M)</Text>
+                        <TextInput
+                          style={styles.exMetaInput}
+                          value={ex.time}
+                          onChangeText={v => setEditExercises(prev => prev.map(e => e.id === ex.id ? { ...e, time: sanitizeTimeInput(v) } : e))}
+                          placeholder="e.g. 30s"
+                          keyboardType="default"
                           placeholderTextColor={colors.textSecondary}
                         />
                       </View>
@@ -2067,13 +2150,13 @@ const styles = StyleSheet.create({
   categoryChipActive: { backgroundColor: colors.primary, borderColor: colors.primary },
   categoryChipText: { fontSize: 13, fontWeight: '600', color: colors.textSecondary },
   categoryChipTextActive: { color: colors.text },
-  dayRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginBottom: 6 },
+  dayRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 5, marginBottom: 6 },
   dayChip: {
-    width: 46, paddingVertical: 9, borderRadius: 10, alignItems: 'center',
+    width: 40, paddingVertical: 9, borderRadius: 10, alignItems: 'center',
     backgroundColor: colors.secondary, borderWidth: 1, borderColor: colors.border,
   },
   dayChipActive: { backgroundColor: colors.primary, borderColor: colors.primary },
-  dayChipText: { fontSize: 12, fontWeight: '700', color: colors.textSecondary },
+  dayChipText: { fontSize: 11, fontWeight: '700', color: colors.textSecondary },
   dayChipTextActive: { color: colors.text },
   suggestedGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginBottom: 8 },
   suggestedChip: {
@@ -2084,13 +2167,14 @@ const styles = StyleSheet.create({
   suggestedChipAdded: { borderColor: colors.xpBar, backgroundColor: colors.xpBar + '22' },
   suggestedChipText: { fontSize: 12, color: colors.textSecondary, fontWeight: '500' },
   suggestedChipTextAdded: { color: colors.xpBar },
-  exerciseRow: { flexDirection: 'row', gap: 10, marginBottom: 14 },
+  exerciseRow: { flexDirection: 'row', gap: 6, marginBottom: 14 },
+  exSideCol: { alignItems: 'center', width: 28, marginTop: 10, gap: 4 },
   exNumBadge: {
-    width: 28, height: 28, borderRadius: 8, marginTop: 14,
+    width: 24, height: 24, borderRadius: 7,
     backgroundColor: colors.accent, alignItems: 'center', justifyContent: 'center',
   },
-  exNumText: { fontSize: 13, fontWeight: '700', color: colors.xpBar },
-  reorderCol: { justifyContent: 'center', marginTop: 8 },
+  exNumText: { fontSize: 12, fontWeight: '700', color: colors.xpBar },
+  reorderRow: { flexDirection: 'row', gap: 2 },
   reorderBtn: { padding: 2 },
   readOnlyField: {
     backgroundColor: colors.secondary, borderRadius: 12, padding: 14,

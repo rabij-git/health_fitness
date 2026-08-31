@@ -16,7 +16,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { colors } from '../theme/colors';
 import { UserRole } from '../data/mockData';
-import { signIn, signUp, getProfile } from '../lib/db';
+import { signIn, signUp, signUpCoach, getProfile } from '../lib/db';
 
 interface Props {
   onLogin: (role: UserRole, userId: string) => void;
@@ -41,6 +41,7 @@ export default function LoginScreen({ onLogin }: Props) {
   const [suPassword, setSuPassword] = useState('');
   const [suConfirm, setSuConfirm] = useState('');
   const [suRole, setSuRole] = useState<SignUpRole>('trainee');
+  const [suInviteCode, setSuInviteCode] = useState('');
   const [showSuPass, setShowSuPass] = useState(false);
   const [signedUpMsg, setSignedUpMsg] = useState('');
 
@@ -68,10 +69,15 @@ export default function LoginScreen({ onLogin }: Props) {
     if (!suEmail.trim()) { setError('Please enter your email.'); return; }
     if (suPassword.length < 6) { setError('Password must be at least 6 characters.'); return; }
     if (suPassword !== suConfirm) { setError('Passwords do not match.'); return; }
+    if (suRole === 'coach' && !suInviteCode.trim()) { setError('Please enter your coach invite code.'); return; }
     setLoading(true);
     setError('');
     try {
-      await signUp(suEmail.trim().toLowerCase(), suPassword, suName.trim(), suRole);
+      if (suRole === 'coach') {
+        await signUpCoach(suEmail.trim().toLowerCase(), suPassword, suName.trim(), suInviteCode.trim());
+      } else {
+        await signUp(suEmail.trim().toLowerCase(), suPassword, suName.trim(), suRole);
+      }
       setSignedUpMsg(
         suRole === 'trainee'
           ? 'Account created! Check your email to confirm, then sign in. Your coach will assign your program.'
@@ -269,6 +275,27 @@ export default function LoginScreen({ onLogin }: Props) {
                     Your coach will find and assign your program once you sign up.
                   </Text>
                 </View>
+              )}
+
+              {suRole === 'coach' && (
+                <>
+                  <Text style={[styles.fieldLabel, { marginTop: 16 }]}>COACH INVITE CODE</Text>
+                  <TextInput
+                    style={styles.input}
+                    value={suInviteCode}
+                    onChangeText={v => { setSuInviteCode(v.toUpperCase()); clearError(); }}
+                    placeholder="e.g. AB3D9F2K"
+                    placeholderTextColor={colors.textSecondary}
+                    autoCapitalize="characters"
+                    autoCorrect={false}
+                  />
+                  <View style={styles.note}>
+                    <Ionicons name="information-circle-outline" size={15} color={colors.textSecondary} />
+                    <Text style={styles.noteText}>
+                      Ask your admin for an invite code — coach accounts can't be created without one.
+                    </Text>
+                  </View>
+                </>
               )}
 
               <TouchableOpacity

@@ -7,14 +7,18 @@
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "dark",
     "ios": {
-      "supportsTablet": true
+      "supportsTablet": true,
+      "infoPlist": {
+        "NSMotionUsageDescription": "FitPro reads your step count to show your daily activity."
+      }
     },
     "android": {
       "adaptiveIcon": {
         "backgroundColor": "#0D0D0D",
         "foregroundImage": "./assets/adaptive-icon.png"
       },
-      "package": "com.anonymous.FitnessApp"
+      "package": "com.anonymous.FitnessApp",
+      "permissions": ["ACTIVITY_RECOGNITION"]
     },
     "web": {
       "bundler": "metro",
