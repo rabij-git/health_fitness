@@ -14,8 +14,8 @@ import {
   Linking,
   Alert,
 } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
-import { useRoute, useNavigation } from '@react-navigation/native';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
+import { useRoute, useNavigation, useFocusEffect } from '@react-navigation/native';
 import { Ionicons } from '@expo/vector-icons';
 import * as DocumentPicker from 'expo-document-picker';
 import { colors } from '../../theme/colors';
@@ -50,7 +50,7 @@ import {
   sendMessage,
   getVitalsHistory,
 } from '../../lib/db';
-import { DBProgram, DBUser, DBWorkout, DBExercise, DBWeightLog, DBNutritionPlan, DBNutritionPlanTemplate, DBCoachRequest, DBLibraryExercise, DBMessage, DBVital } from '../../lib/supabase';
+import { DBProgram, DBUser, DBWorkout, DBExercise, DBWeightLog, DBNutritionPlan, DBNutritionPlanTemplate, DBCoachRequest, DBLibraryExercise, DBMessage, DBVital, SessionExerciseDetail, SessionSetDetail } from '../../lib/supabase';
 import { sanitizeCount, sanitizeWeightInput, sanitizeTimeInput, stripKg, withKg } from '../../lib/exerciseInput';
 
 interface ExerciseEntry {
@@ -96,9 +96,20 @@ function formatDate(iso: string) {
   return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
 }
 
+// Matches the effort scale a trainee logs against in WorkoutScreen.tsx
+// (0-4, "reps in reserve" style — lower is easier, higher is closer to failure).
+const EFFORT_LABELS: Record<number, { desc: string; color: string }> = {
+  0: { desc: '4+ reps in reserve', color: '#4CAF50' },
+  1: { desc: '2–3 reps in reserve', color: '#8BC34A' },
+  2: { desc: '1–2 reps in reserve', color: '#FF9800' },
+  3: { desc: '0–1 reps in reserve', color: '#FF5722' },
+  4: { desc: "Couldn't finish", color: '#E94560' },
+};
+
 export default function CoachTrainees({ coachId }: Props) {
   const route = useRoute<any>();
   const navigation = useNavigation<any>();
+  const insets = useSafeAreaInsets();
   const [trainees, setTrainees] = useState<DBUser[]>([]);
   const [programs, setPrograms] = useState<DBProgram[]>([]);
   const [incomingRequests, setIncomingRequests] = useState<(DBCoachRequest & { trainee: DBUser })[]>([]);
@@ -127,6 +138,7 @@ export default function CoachTrainees({ coachId }: Props) {
   const [openingEditWorkoutId, setOpeningEditWorkoutId] = useState<string | null>(null);
   const [deletingWorkoutId, setDeletingWorkoutId] = useState<string | null>(null);
   const [selectedTraineeHistory, setSelectedTraineeHistory] = useState<any[]>([]);
+  const [expandedHistoryId, setExpandedHistoryId] = useState<string | null>(null);
   const [selectedTraineeWeights, setSelectedTraineeWeights] = useState<DBWeightLog[]>([]);
   const [selectedTraineeSteps, setSelectedTraineeSteps] = useState<DBVital[]>([]);
   const [selectedTraineeWater, setSelectedTraineeWater] = useState<DBVital[]>([]);
@@ -184,11 +196,6 @@ export default function CoachTrainees({ coachId }: Props) {
   }, [library]);
 
   // ── Load data ──
-  // Count of currently-active workouts per trainee, shown on the roster card
-  // so a coach can tell at a glance who's on what — without opening every
-  // trainee's detail modal one by one.
-  const [traineeActiveCounts, setTraineeActiveCounts] = useState<Record<string, number>>({});
-
   const loadData = useCallback(async () => {
     try {
       const [assigned, incoming, outgoing, progs] = await Promise.all([
@@ -201,13 +208,6 @@ export default function CoachTrainees({ coachId }: Props) {
       setIncomingRequests(incoming);
       setOutgoingRequests(outgoing);
       setPrograms(progs);
-
-      const workoutLists = await Promise.all(assigned.map(t => getWorkoutsForTrainee(t.id)));
-      const countMap: Record<string, number> = {};
-      assigned.forEach((t, i) => {
-        countMap[t.id] = workoutLists[i].filter(w => w.active).length;
-      });
-      setTraineeActiveCounts(countMap);
     } catch (e) {
       console.warn('CoachTrainees loadData error', e);
     } finally {
@@ -216,10 +216,16 @@ export default function CoachTrainees({ coachId }: Props) {
   }, [coachId]);
 
   useEffect(() => {
-    loadData();
     getExerciseLibrary().then(setLibrary);
     getNutritionTemplates(coachId).then(setNutritionTemplates);
-  }, [loadData, coachId]);
+  }, [coachId]);
+
+  // Refetch every time the Trainees tab regains focus (not just on first
+  // mount) — otherwise workouts assigned in a previous session, or changes
+  // made elsewhere, show up as stale roster counts until a full app reload.
+  useFocusEffect(useCallback(() => {
+    loadData();
+  }, [loadData]));
 
   // Deep-link: another screen (e.g. the Coach Hub dashboard) navigated here
   // asking to open a specific trainee's detail view directly.
@@ -270,14 +276,6 @@ export default function CoachTrainees({ coachId }: Props) {
       setLoadingDetail(false);
     });
   }, [selectedTrainee, coachId]);
-
-  // Keep the roster's active-workout count for the currently-open trainee in
-  // sync as workouts get toggled active/inactive inside the detail modal.
-  useEffect(() => {
-    if (!selectedTrainee) return;
-    const activeCount = selectedTraineeWorkouts.filter(w => w.active).length;
-    setTraineeActiveCounts(prev => ({ ...prev, [selectedTrainee.id]: activeCount }));
-  }, [selectedTraineeWorkouts, selectedTrainee]);
 
   const toggleExpandWorkout = useCallback(async (workout: DBWorkout) => {
     if (expandedWorkoutId === workout.id) {
@@ -576,7 +574,6 @@ export default function CoachTrainees({ coachId }: Props) {
           scheduled_days: scheduledDays.length > 0 ? scheduledDays : null,
         }, exs);
         setAssignStep(3);
-        setTraineeActiveCounts(prev => ({ ...prev, [assigningTrainee!.id]: (prev[assigningTrainee!.id] ?? 0) + 1 }));
       } catch (e) {
         console.warn('assign error', e);
       } finally {
@@ -657,7 +654,7 @@ export default function CoachTrainees({ coachId }: Props) {
   };
 
   const selectedProgram = programs.find(p => p.id === selectedProgramId);
-  const step2Valid = exercises.some(e => e.name.trim());
+  const step2Valid = exercises.some(e => e.name.trim()) && scheduledDays.length > 0;
   const activeCategoryItems = useMemo(
     () => library.filter(e => e.category === activeCategory),
     [library, activeCategory]
@@ -773,19 +770,8 @@ export default function CoachTrainees({ coachId }: Props) {
             <View style={styles.traineeInfo}>
               <Text style={styles.traineeName}>{t.name}</Text>
               <Text style={styles.traineeEmail}>{t.email}</Text>
-              <Text style={traineeActiveCounts[t.id] ? styles.traineeProgramText : styles.traineeProgramTextEmpty}>
-                {traineeActiveCounts[t.id]
-                  ? `${traineeActiveCounts[t.id]} active workout${traineeActiveCounts[t.id] === 1 ? '' : 's'}`
-                  : 'No workouts assigned'}
-              </Text>
             </View>
             <View style={styles.traineeActions}>
-              <View style={[styles.assignedBadge, !traineeActiveCounts[t.id] && styles.assignedBadgeEmpty]}>
-                <View style={[styles.assignedDot, !traineeActiveCounts[t.id] && styles.assignedDotEmpty]} />
-                <Text style={[styles.assignedText, !traineeActiveCounts[t.id] && styles.assignedTextEmpty]}>
-                  {traineeActiveCounts[t.id] ? 'Active' : 'Pending'}
-                </Text>
-              </View>
               <Ionicons name="chevron-forward" size={16} color={colors.textSecondary} />
             </View>
           </TouchableOpacity>
@@ -857,7 +843,7 @@ export default function CoachTrainees({ coachId }: Props) {
         animationType="slide"
         onRequestClose={() => setSelectedTrainee(null)}
       >
-        <SafeAreaView style={styles.fullScreenContainer}>
+        <View style={[styles.fullScreenContainer, { paddingTop: insets.top, paddingBottom: insets.bottom }]}>
           <View style={styles.fullScreenSheet}>
             {/* Header */}
             <View style={styles.detailHeader}>
@@ -1079,28 +1065,72 @@ export default function CoachTrainees({ coachId }: Props) {
                     {selectedTraineeHistory.length === 0 && (
                       <Text style={{ color: colors.textSecondary, textAlign: 'center', paddingVertical: 20 }}>No sessions logged yet</Text>
                     )}
-                    {selectedTraineeHistory.map((entry, i) => (
-                      <View key={i} style={styles.historyRow}>
-                        <View style={styles.historyDate}>
-                          <Text style={styles.historyDateText}>{formatDate(entry.completed_at)}</Text>
+                    {selectedTraineeHistory.map((entry, i) => {
+                      const isExpanded = expandedHistoryId === (entry.id ?? String(i));
+                      const hasDetails = !!entry.details && entry.details.length > 0;
+                      return (
+                        <View key={entry.id ?? i} style={styles.historyBlock}>
+                          <TouchableOpacity
+                            style={styles.historyRow}
+                            activeOpacity={hasDetails ? 0.7 : 1}
+                            onPress={() => hasDetails && setExpandedHistoryId(isExpanded ? null : (entry.id ?? String(i)))}
+                          >
+                            <View style={styles.historyDate}>
+                              <Text style={styles.historyDateText}>{formatDate(entry.completed_at)}</Text>
+                            </View>
+                            <View style={styles.historyInfo}>
+                              <Text style={styles.historyWorkout}>{entry.workout_name}</Text>
+                              <Text style={styles.historyMeta}>
+                                {entry.completion_pct}% complete{!hasDetails ? ' · no detail logged' : ''}
+                              </Text>
+                            </View>
+                            <View style={[
+                              styles.completionBadge,
+                              { backgroundColor: entry.completion_pct >= 100 ? colors.success + '22' : colors.warning + '22' },
+                            ]}>
+                              <Text style={[
+                                styles.completionText,
+                                { color: entry.completion_pct >= 100 ? colors.success : colors.warning },
+                              ]}>
+                                {entry.completion_pct}%
+                              </Text>
+                            </View>
+                            {hasDetails && (
+                              <Ionicons
+                                name={isExpanded ? 'chevron-up' : 'chevron-down'}
+                                size={16}
+                                color={colors.textSecondary}
+                                style={{ marginLeft: 6 }}
+                              />
+                            )}
+                          </TouchableOpacity>
+
+                          {isExpanded && hasDetails && (
+                            <View style={styles.historyDetailBody}>
+                              {entry.details.map((ex: SessionExerciseDetail, exI: number) => (
+                                <View key={exI} style={styles.historyExerciseBlock}>
+                                  <Text style={styles.historyExerciseName}>{ex.name}</Text>
+                                  {ex.sets.map((s: SessionSetDetail, setI: number) => (
+                                    <View key={setI} style={styles.historySetRow}>
+                                      <Text style={styles.historySetLabel}>Set {setI + 1}</Text>
+                                      <Text style={styles.historySetMeta}>{s.reps || '—'} reps{s.weight ? ` · ${s.weight}` : ''}</Text>
+                                      {s.effort !== null ? (
+                                        <View style={styles.effortPill}>
+                                          <View style={[styles.effortPillDot, { backgroundColor: EFFORT_LABELS[s.effort]?.color ?? colors.textSecondary }]} />
+                                          <Text style={styles.effortPillText}>{EFFORT_LABELS[s.effort]?.desc ?? `Effort ${s.effort}`}</Text>
+                                        </View>
+                                      ) : (
+                                        <Text style={styles.historySetSkipped}>Not logged</Text>
+                                      )}
+                                    </View>
+                                  ))}
+                                </View>
+                              ))}
+                            </View>
+                          )}
                         </View>
-                        <View style={styles.historyInfo}>
-                          <Text style={styles.historyWorkout}>{entry.workout_name}</Text>
-                          <Text style={styles.historyMeta}>{entry.completion_pct}% complete</Text>
-                        </View>
-                        <View style={[
-                          styles.completionBadge,
-                          { backgroundColor: entry.completion_pct >= 100 ? colors.success + '22' : colors.warning + '22' },
-                        ]}>
-                          <Text style={[
-                            styles.completionText,
-                            { color: entry.completion_pct >= 100 ? colors.success : colors.warning },
-                          ]}>
-                            {entry.completion_pct}%
-                          </Text>
-                        </View>
-                      </View>
-                    ))}
+                      );
+                    })}
                   </View>
                 )}
 
@@ -1413,7 +1443,7 @@ export default function CoachTrainees({ coachId }: Props) {
               </ScrollView>
             )}
           </View>
-        </SafeAreaView>
+        </View>
       </Modal>
 
       {/* ── Assign Nutrition Plan Picker ── */}
@@ -1546,7 +1576,7 @@ export default function CoachTrainees({ coachId }: Props) {
                 </View>
                 <Text style={styles.readOnlyHint}>Set from the program template — edit it in the Programs tab.</Text>
 
-                <Text style={[styles.fieldLabel, { marginTop: 20 }]}>SCHEDULED DAYS (OPTIONAL)</Text>
+                <Text style={[styles.fieldLabel, { marginTop: 20 }]}>SCHEDULED DAYS</Text>
                 <View style={styles.dayRow}>
                   {DAY_ABBR.map((label, i) => (
                     <TouchableOpacity
@@ -1559,7 +1589,7 @@ export default function CoachTrainees({ coachId }: Props) {
                   ))}
                 </View>
                 <Text style={styles.readOnlyHint}>
-                  {scheduledDays.length === 0 ? 'No days selected — this workout can be done any day.' : `Only doable on: ${scheduledDaysLabel(scheduledDays)}.`}
+                  {scheduledDays.length === 0 ? 'Select at least one day.' : `Doable on: ${scheduledDaysLabel(scheduledDays)}.`}
                 </Text>
 
                 <Text style={[styles.fieldLabel, { marginTop: 20 }]}>SUGGESTED EXERCISES</Text>
@@ -1797,7 +1827,7 @@ export default function CoachTrainees({ coachId }: Props) {
               </View>
               <Text style={styles.readOnlyHint}>Set from the program template — edit it in the Programs tab.</Text>
 
-              <Text style={[styles.fieldLabel, { marginTop: 20 }]}>SCHEDULED DAYS (OPTIONAL)</Text>
+              <Text style={[styles.fieldLabel, { marginTop: 20 }]}>SCHEDULED DAYS</Text>
               <View style={styles.dayRow}>
                 {DAY_ABBR.map((label, i) => (
                   <TouchableOpacity
@@ -1810,7 +1840,7 @@ export default function CoachTrainees({ coachId }: Props) {
                 ))}
               </View>
               <Text style={styles.readOnlyHint}>
-                {editScheduledDays.length === 0 ? 'No days selected — this workout can be done any day.' : `Only doable on: ${scheduledDaysLabel(editScheduledDays)}.`}
+                {editScheduledDays.length === 0 ? 'Select at least one day.' : `Doable on: ${scheduledDaysLabel(editScheduledDays)}.`}
               </Text>
 
               <Text style={[styles.fieldLabel, { marginTop: 20 }]}>ADD EXERCISES</Text>
@@ -1956,9 +1986,9 @@ export default function CoachTrainees({ coachId }: Props) {
                 <Text style={styles.backBtnText}>Cancel</Text>
               </TouchableOpacity>
               <TouchableOpacity
-                style={[styles.nextBtn, (!editExercises.some(e => e.name.trim()) || saving) && styles.nextBtnDisabled]}
+                style={[styles.nextBtn, (!editExercises.some(e => e.name.trim()) || editScheduledDays.length === 0 || saving) && styles.nextBtnDisabled]}
                 onPress={saveEdit}
-                disabled={!editExercises.some(e => e.name.trim()) || saving}
+                disabled={!editExercises.some(e => e.name.trim()) || editScheduledDays.length === 0 || saving}
               >
                 {saving ? (
                   <ActivityIndicator size="small" color={colors.text} />
@@ -2040,19 +2070,7 @@ const styles = StyleSheet.create({
   traineeInfo: { flex: 1 },
   traineeName: { fontSize: 15, fontWeight: '700', color: colors.text },
   traineeEmail: { fontSize: 12, color: colors.textSecondary, marginTop: 1 },
-  traineeProgramText: { fontSize: 12, color: colors.xpBar, fontWeight: '600', marginTop: 3 },
-  traineeProgramTextEmpty: { fontSize: 12, color: colors.textSecondary, fontStyle: 'italic', marginTop: 3 },
   traineeActions: { flexDirection: 'row', alignItems: 'center', gap: 8 },
-  assignedBadge: {
-    flexDirection: 'row', alignItems: 'center', gap: 4,
-    backgroundColor: colors.success + '22',
-    paddingHorizontal: 8, paddingVertical: 4, borderRadius: 8,
-  },
-  assignedBadgeEmpty: { backgroundColor: colors.warning + '22' },
-  assignedDot: { width: 6, height: 6, borderRadius: 3, backgroundColor: colors.success },
-  assignedDotEmpty: { backgroundColor: colors.warning },
-  assignedText: { fontSize: 11, color: colors.success, fontWeight: '600' },
-  assignedTextEmpty: { color: colors.warning },
 
   // Search modal
   overlay: { flex: 1, backgroundColor: '#000000aa', justifyContent: 'flex-end' },
@@ -2344,9 +2362,10 @@ const styles = StyleSheet.create({
   exDetailWeight: { fontSize: 12, color: colors.xpBar, fontWeight: '600' },
 
   // History tab
+  historyBlock: { borderBottomWidth: 1, borderBottomColor: colors.border },
   historyRow: {
     flexDirection: 'row', alignItems: 'center',
-    paddingVertical: 12, borderBottomWidth: 1, borderBottomColor: colors.border, gap: 12,
+    paddingVertical: 12, gap: 12,
   },
   historyDate: {
     width: 44, height: 44, borderRadius: 10,
@@ -2358,6 +2377,16 @@ const styles = StyleSheet.create({
   historyMeta: { fontSize: 12, color: colors.textSecondary, marginTop: 2 },
   completionBadge: { paddingHorizontal: 10, paddingVertical: 5, borderRadius: 8 },
   completionText: { fontSize: 13, fontWeight: '800' },
+  historyDetailBody: { paddingBottom: 14, paddingLeft: 56, gap: 12 },
+  historyExerciseBlock: { gap: 6 },
+  historyExerciseName: { fontSize: 13, fontWeight: '700', color: colors.text },
+  historySetRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  historySetLabel: { fontSize: 11, color: colors.textSecondary, width: 40 },
+  historySetMeta: { fontSize: 12, color: colors.text, fontWeight: '600', width: 90 },
+  historySetSkipped: { fontSize: 11, color: colors.textSecondary, fontStyle: 'italic' },
+  effortPill: { flexDirection: 'row', alignItems: 'center', gap: 5, flex: 1 },
+  effortPillDot: { width: 8, height: 8, borderRadius: 4 },
+  effortPillText: { fontSize: 11, color: colors.textSecondary, flexShrink: 1 },
 
   // Weight tab
   weightRow: {

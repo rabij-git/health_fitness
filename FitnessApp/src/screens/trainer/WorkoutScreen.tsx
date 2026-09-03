@@ -241,11 +241,18 @@ export default function WorkoutScreen({ userId }: Props) {
     }
 
     try {
+      const details = exercises
+        .filter(ex => ex.sets.some(s => s.effort !== null))
+        .map(ex => ({
+          name: ex.name,
+          sets: ex.sets.map(s => ({ reps: s.reps, weight: s.weight, effort: s.effort })),
+        }));
       await saveWorkoutSession({
         trainee_id: userId,
         workout_id: selectedWorkoutId,
         completion_pct: Math.round(progress * 100),
         xp_awarded: workoutXp,
+        details,
       });
       // Locks this workout for the rest of today — it reopens tomorrow.
       setCompletedTodayIds(prev => new Set(prev).add(selectedWorkoutId));

@@ -108,6 +108,20 @@ export interface DBExerciseWeightLog {
   logged_at: string;
 }
 
+// A trainee's actual logged set — reps/weight as entered (may differ from
+// the coach-assigned target) plus effort (0-4, "reps in reserve" scale;
+// null = this set wasn't attempted/logged).
+export interface SessionSetDetail {
+  reps: string;
+  weight: string;
+  effort: number | null;
+}
+
+export interface SessionExerciseDetail {
+  name: string;
+  sets: SessionSetDetail[];
+}
+
 export interface DBWorkoutSession {
   id: string;
   trainee_id: string;
@@ -115,6 +129,9 @@ export interface DBWorkoutSession {
   completion_pct: number;
   xp_awarded: number;
   completed_at: string;
+  // Full per-exercise, per-set breakdown of what was actually done —
+  // null for sessions saved before this field existed.
+  details: SessionExerciseDetail[] | null;
 }
 
 export interface DBMessage {
