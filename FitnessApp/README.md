@@ -7,7 +7,7 @@ A cross-platform fitness and gamification app for coaches, trainers, and admins.
 ## Getting Started
 
 ### Prerequisites
-- [Node.js v20+](https://nodejs.org/) (recommended via [nvm](https://github.com/nvm-sh/nvm))
+- [Node.js v22.13+](https://nodejs.org/) (recommended via [nvm](https://github.com/nvm-sh/nvm) — run `nvm install` in this folder to pick up the version pinned in `.nvmrc`)
 - [Expo Go](https://expo.dev/go) installed on your phone, **or** an Android/iOS emulator/simulator
 
 ### 1. Clone the repo
@@ -48,6 +48,34 @@ Press `i` in the Metro terminal to open on iOS.
 
 > **Note:** Use `--tunnel` mode — it routes traffic via ngrok and avoids local network issues with emulators.
 
+### 5. Stopping the dev server
+
+Don't just close the terminal tab — Metro and its ngrok tunnel can survive that and keep the port/tunnel locked. Kill them properly:
+
+```bash
+pkill -f "expo start"
+lsof -ti:8081 | xargs kill -9 2>/dev/null
+```
+
+**Known gotcha:** `pkill -f "expo start"` sometimes leaves an orphaned `ngrok` process running in the background — the parent `expo start` process dies, but its ngrok child doesn't get cleaned up with it. That orphan keeps your tunnel endpoint "online" on ngrok's side, so the *next* `expo start --tunnel` fails with an error like:
+```
+CommandError: failed to start tunnel
+failed to start tunnel: The endpoint 'https://xxxxx.ngrok-free.dev' is already online...
+ERR_NGROK_334 / ERR_NGROK_3200
+```
+If you hit that, find and kill the leftover ngrok process specifically:
+```bash
+ps aux | grep -i ngrok | grep -v grep
+kill -9 <PID>
+```
+Then retry `npx expo start --tunnel --clear`.
+
+To confirm everything's actually stopped before restarting:
+```bash
+ps aux | grep -iE "expo start|ngrok" | grep -v grep
+```
+This should print nothing.
+
 ---
 
 ## Android Emulator: Start / Stop
@@ -80,7 +108,7 @@ Or just close the emulator window directly.
 **`command not found: npx` or Node not found**
 Load nvm first:
 ```bash
-export NVM_DIR="$HOME/.nvm" && source "$NVM_DIR/nvm.sh" && nvm use 20
+export NVM_DIR="$HOME/.nvm" && source "$NVM_DIR/nvm.sh" && nvm use
 npx expo start --tunnel --clear
 ```
 
@@ -98,7 +126,7 @@ sudo xcode-select -s /Applications/Xcode.app/Contents/Developer
 ---
 
 ## Tech Stack
-- **Framework:** React Native / Expo SDK 56
+- **Framework:** React Native / Expo SDK 57
 - **Backend:** Supabase (PostgreSQL + Auth)
 - **Language:** TypeScript
 
