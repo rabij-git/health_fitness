@@ -8,12 +8,20 @@ interface Props {
   onLogout: () => void;
 }
 
+interface SettingItem {
+  label: string;
+  icon: string;
+  toggle: boolean;
+  value?: boolean;
+  onChange?: (value: boolean) => void;
+}
+
 export default function AdminSettings({ onLogout }: Props) {
   const [notifications, setNotifications] = React.useState(true);
   const [autoSync, setAutoSync] = React.useState(true);
   const [darkMode, setDarkMode] = React.useState(true);
 
-  const settingGroups = [
+  const settingGroups: { title: string; items: SettingItem[] }[] = [
     {
       title: 'Platform',
       items: [
@@ -63,9 +71,9 @@ export default function AdminSettings({ onLogout }: Props) {
                     </View>
                     <Text style={styles.settingLabel}>{item.label}</Text>
                   </View>
-                  {item.toggle ? (
+                  {item.toggle && item.onChange ? (
                     <Switch
-                      value={item.value}
+                      value={item.value ?? false}
                       onValueChange={item.onChange}
                       trackColor={{ false: colors.border, true: colors.primary }}
                       thumbColor={colors.text}

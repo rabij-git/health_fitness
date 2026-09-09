@@ -94,6 +94,26 @@ export default function CoachPrograms({ coachId }: Props) {
   const [library, setLibrary] = useState<DBLibraryExercise[]>([]);
   const [showLibraryManager, setShowLibraryManager] = useState(false);
 
+  // Two separate native <Modal>s can't both be visible at once — iOS won't
+  // reliably show/register touches on the second one stacked over the first
+  // (Android tolerates it fine). "Manage Library" and the exercise name
+  // picker both open a second Modal from inside the still-open Add/Edit
+  // Program modal, so that outer modal is closed first and reopened once the
+  // inner one closes — this just remembers which one to reopen. None of the
+  // Add/Edit form state lives on the modal's visibility flag, so closing and
+  // reopening it doesn't lose anything the coach had already typed.
+  const [reopenAfterModal, setReopenAfterModal] = useState<'add' | 'edit' | null>(null);
+  const closeOuterForInner = useCallback((which: 'add' | 'edit') => {
+    setReopenAfterModal(which);
+    if (which === 'add') setShowAddProgram(false);
+    else setShowEditProgram(false);
+  }, []);
+  const reopenOuterAfterInner = useCallback(() => {
+    if (reopenAfterModal === 'add') setShowAddProgram(true);
+    else if (reopenAfterModal === 'edit') setShowEditProgram(true);
+    setReopenAfterModal(null);
+  }, [reopenAfterModal]);
+
   const loadPrograms = useCallback(async () => {
     setLoadError(false);
     try {
@@ -170,17 +190,23 @@ export default function CoachPrograms({ coachId }: Props) {
     n => n.toLowerCase() === namePickerQuery.trim().toLowerCase()
   );
 
-  const openNamePicker = useCallback((onSelect: (name: string) => void, category: string) => {
+  const openNamePicker = useCallback((onSelect: (name: string) => void, category: string, which: 'add' | 'edit') => {
+    closeOuterForInner(which);
     namePickerOnSelectRef.current = onSelect;
     setNamePickerCategory(category);
     setNamePickerQuery('');
     setShowNamePicker(true);
-  }, []);
+  }, [closeOuterForInner]);
+
+  const closeNamePicker = useCallback(() => {
+    setShowNamePicker(false);
+    reopenOuterAfterInner();
+  }, [reopenOuterAfterInner]);
 
   const handlePickName = useCallback((name: string) => {
     namePickerOnSelectRef.current?.(name);
-    setShowNamePicker(false);
-  }, []);
+    closeNamePicker();
+  }, [closeNamePicker]);
 
   const handleAddNewName = useCallback(async () => {
     const name = namePickerQuery.trim();
@@ -197,13 +223,13 @@ export default function CoachPrograms({ coachId }: Props) {
       });
       await loadLibrary();
       namePickerOnSelectRef.current?.(name);
-      setShowNamePicker(false);
+      closeNamePicker();
     } catch (e) {
       console.warn('createLibraryExercise error', e);
     } finally {
       setSavingNewName(false);
     }
-  }, [namePickerQuery, savingNewName, coachId, loadLibrary, namePickerCategory]);
+  }, [namePickerQuery, savingNewName, coachId, loadLibrary, namePickerCategory, closeNamePicker]);
 
   // ── Add Program ──
   const openAddModal = () => {
@@ -460,7 +486,7 @@ export default function CoachPrograms({ coachId }: Props) {
 
               <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginTop: 8 }}>
                 <Text style={styles.fieldLabel}>SUGGESTED EXERCISES</Text>
-                <TouchableOpacity onPress={() => setShowLibraryManager(true)}>
+                <TouchableOpacity onPress={() => { closeOuterForInner('add'); setShowLibraryManager(true); }}>
                   <Text style={styles.manageLibraryText}>Manage Library</Text>
                 </TouchableOpacity>
               </View>
@@ -523,7 +549,8 @@ export default function CoachPrograms({ coachId }: Props) {
                       style={[styles.textInput, styles.namePickerField, { marginBottom: 8 }]}
                       onPress={() => openNamePicker(
                         name => setExercises(prev => prev.map(e => e.id === ex.id ? { ...e, name } : e)),
-                        activeCategory
+                        activeCategory,
+                        'add'
                       )}
                       activeOpacity={0.7}
                     >
@@ -681,7 +708,7 @@ export default function CoachPrograms({ coachId }: Props) {
 
                 <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginTop: 8 }}>
                   <Text style={styles.fieldLabel}>SUGGESTED EXERCISES</Text>
-                  <TouchableOpacity onPress={() => setShowLibraryManager(true)}>
+                  <TouchableOpacity onPress={() => { closeOuterForInner('edit'); setShowLibraryManager(true); }}>
                     <Text style={styles.manageLibraryText}>Manage Library</Text>
                   </TouchableOpacity>
                 </View>
@@ -746,7 +773,8 @@ export default function CoachPrograms({ coachId }: Props) {
                         style={[styles.textInput, styles.namePickerField, { marginBottom: 8 }]}
                         onPress={() => openNamePicker(
                           name => setEditExercises(prev => prev.map(e => e.id === ex.id ? { ...e, name } : e)),
-                          editActiveCategory
+                          editActiveCategory,
+                          'edit'
                         )}
                         activeOpacity={0.7}
                       >
@@ -845,7 +873,7 @@ export default function CoachPrograms({ coachId }: Props) {
       <ExerciseLibraryManager
         visible={showLibraryManager}
         coachId={coachId}
-        onClose={() => setShowLibraryManager(false)}
+        onClose={() => { setShowLibraryManager(false); reopenOuterAfterInner(); }}
         onChange={loadLibrary}
       />
 
@@ -854,13 +882,13 @@ export default function CoachPrograms({ coachId }: Props) {
         visible={showNamePicker}
         transparent
         animationType="slide"
-        onRequestClose={() => setShowNamePicker(false)}
+        onRequestClose={closeNamePicker}
       >
         <View style={styles.namePickerOverlay}>
           <View style={styles.namePickerSheet}>
             <View style={styles.modalHeader}>
               <Text style={styles.modalTitle}>Select {namePickerCategory} Exercise</Text>
-              <TouchableOpacity style={styles.closeBtn} onPress={() => setShowNamePicker(false)}>
+              <TouchableOpacity style={styles.closeBtn} onPress={closeNamePicker}>
                 <Ionicons name="close" size={22} color={colors.textSecondary} />
               </TouchableOpacity>
             </View>

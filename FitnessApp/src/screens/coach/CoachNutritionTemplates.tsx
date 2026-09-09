@@ -48,6 +48,7 @@ export default function CoachNutritionTemplates({ coachId }: Props) {
   const [protein, setProtein] = useState('');
   const [carbs, setCarbs] = useState('');
   const [fat, setFat] = useState('');
+  const [water, setWater] = useState('');
 
   const loadTemplates = useCallback(async () => {
     setLoadError(false);
@@ -72,6 +73,7 @@ export default function CoachNutritionTemplates({ coachId }: Props) {
     setProtein('');
     setCarbs('');
     setFat('');
+    setWater('');
     setShowForm(true);
   };
 
@@ -83,6 +85,7 @@ export default function CoachNutritionTemplates({ coachId }: Props) {
     setProtein(template.target_protein != null ? String(template.target_protein) : '');
     setCarbs(template.target_carbs != null ? String(template.target_carbs) : '');
     setFat(template.target_fat != null ? String(template.target_fat) : '');
+    setWater(template.target_water_ml != null ? String(template.target_water_ml) : '');
     setShowForm(true);
   };
 
@@ -96,6 +99,7 @@ export default function CoachNutritionTemplates({ coachId }: Props) {
       target_protein: protein ? parseInt(protein, 10) : null,
       target_carbs: carbs ? parseInt(carbs, 10) : null,
       target_fat: fat ? parseInt(fat, 10) : null,
+      target_water_ml: water ? parseInt(water, 10) : null,
     };
     try {
       if (editingTemplate) {
@@ -292,6 +296,20 @@ export default function CoachNutritionTemplates({ coachId }: Props) {
                     placeholderTextColor={colors.textSecondary}
                   />
                 </View>
+              </View>
+              <View style={styles.targetRow}>
+                <View style={styles.targetField}>
+                  <Text style={styles.targetFieldLabel}>WATER (ML)</Text>
+                  <TextInput
+                    style={styles.targetInput}
+                    value={water}
+                    onChangeText={v => setWater(v.replace(/[^0-9]/g, ''))}
+                    keyboardType="number-pad"
+                    placeholder="0"
+                    placeholderTextColor={colors.textSecondary}
+                  />
+                </View>
+                <View style={styles.targetField} />
               </View>
 
               <Text style={[styles.fieldLabel, { marginTop: 16 }]}>NOTES (OPTIONAL)</Text>

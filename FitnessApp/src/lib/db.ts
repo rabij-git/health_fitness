@@ -1,4 +1,27 @@
-import { supabase, DBUser, DBProgram, DBWorkout, DBExercise, DBWeightLog, DBExerciseWeightLog, DBMessage, DBWorkoutSession, DBGym, DBFriendship, DBNutritionPlan, DBNutritionPlanTemplate, DBCoachRequest, DBCoachInvite, DBVital, DBProgramExercise, DBLibraryExercise, DBUserMedal, DBFoodLogEntry } from './supabase';
+import { supabase, SUPABASE_URL, SUPABASE_ANON_KEY, DBUser, DBProgram, DBWorkout, DBExercise, DBWeightLog, DBExerciseWeightLog, DBMessage, DBWorkoutSession, DBGym, DBFriendship, DBNutritionPlan, DBNutritionPlanTemplate, DBCoachRequest, DBCoachInvite, DBVital, DBProgramExercise, DBLibraryExercise, DBUserMedal, DBFoodLogEntry, DBMealCompletion } from './supabase';
+// Reading a just-created expo-print file into JS (as a Blob via fetch(), as
+// an ArrayBuffer via the new File class, or as base64 via the legacy
+// readAsStringAsync) has all three failed with permission/readability
+// errors on some Android + Expo Go combos. uploadAsync uploads straight
+// from disk to the URL natively — it never pulls the bytes into JS at all,
+// which sidesteps that whole class of failure.
+import * as LegacyFileSystem from 'expo-file-system/legacy';
+
+async function uploadFileToStorage(localFileUri: string, bucket: string, storagePath: string, contentType: string) {
+  const uploadUrl = `${SUPABASE_URL}/storage/v1/object/${bucket}/${storagePath}`;
+  const result = await LegacyFileSystem.uploadAsync(uploadUrl, localFileUri, {
+    httpMethod: 'POST',
+    uploadType: LegacyFileSystem.FileSystemUploadType.BINARY_CONTENT,
+    headers: {
+      apikey: SUPABASE_ANON_KEY,
+      Authorization: `Bearer ${SUPABASE_ANON_KEY}`,
+      'Content-Type': contentType,
+    },
+  });
+  if (result.status < 200 || result.status >= 300) {
+    throw new Error(`Storage upload failed (${result.status}): ${result.body}`);
+  }
+}
 
 // ── Auth ──────────────────────────────────────────────────────────────────────
 
@@ -544,12 +567,7 @@ export async function uploadNutritionPlan(
 ): Promise<DBNutritionPlan> {
   const storagePath = `${traineeId}/${Date.now()}-${fileName}`;
 
-  const response = await fetch(fileUri);
-  const blob = await response.blob();
-  const { error: uploadError } = await supabase.storage
-    .from(NUTRITION_BUCKET)
-    .upload(storagePath, blob, { contentType: 'application/pdf' });
-  if (uploadError) throw uploadError;
+  await uploadFileToStorage(fileUri, NUTRITION_BUCKET, storagePath, 'application/pdf');
 
   const { data: urlData } = supabase.storage.from(NUTRITION_BUCKET).getPublicUrl(storagePath);
 
@@ -584,7 +602,7 @@ export async function getNutritionTemplates(coachId: string): Promise<DBNutritio
 
 export async function createNutritionTemplate(
   coachId: string,
-  fields: Pick<DBNutritionPlanTemplate, 'title' | 'notes' | 'target_calories' | 'target_protein' | 'target_carbs' | 'target_fat'>
+  fields: Pick<DBNutritionPlanTemplate, 'title' | 'notes' | 'target_calories' | 'target_protein' | 'target_carbs' | 'target_fat' | 'target_water_ml'>
 ): Promise<DBNutritionPlanTemplate> {
   const { data, error } = await supabase
     .from('nutrition_plan_templates')
@@ -597,7 +615,7 @@ export async function createNutritionTemplate(
 
 export async function updateNutritionTemplate(
   templateId: string,
-  fields: Partial<Pick<DBNutritionPlanTemplate, 'title' | 'notes' | 'target_calories' | 'target_protein' | 'target_carbs' | 'target_fat'>>
+  fields: Partial<Pick<DBNutritionPlanTemplate, 'title' | 'notes' | 'target_calories' | 'target_protein' | 'target_carbs' | 'target_fat' | 'target_water_ml'>>
 ): Promise<DBNutritionPlanTemplate> {
   const { data, error } = await supabase
     .from('nutrition_plan_templates')
@@ -636,6 +654,7 @@ export async function assignNutritionTemplate(
       target_protein: template.target_protein,
       target_carbs: template.target_carbs,
       target_fat: template.target_fat,
+      target_water_ml: template.target_water_ml,
     })
     .select()
     .single();
@@ -645,7 +664,23 @@ export async function assignNutritionTemplate(
 
 export async function updateNutritionPlan(
   planId: string,
-  fields: Partial<Pick<DBNutritionPlan, 'title' | 'notes' | 'target_calories' | 'target_protein' | 'target_carbs' | 'target_fat'>>
+  fields: Partial<
+    Pick<
+      DBNutritionPlan,
+      | 'title'
+      | 'notes'
+      | 'target_calories'
+      | 'target_protein'
+      | 'target_carbs'
+      | 'target_fat'
+      | 'target_water_ml'
+      | 'meal_count'
+      | 'macro_split'
+      | 'meals'
+      | 'calc_inputs'
+      | 'locked'
+    >
+  >
 ): Promise<DBNutritionPlan> {
   const { data, error } = await supabase
     .from('nutrition_plans')
@@ -682,6 +717,38 @@ export async function deleteNutritionPlan(planId: string, storagePath: string | 
   if (error) throw error;
 }
 
+// ── Calculated calorie/macro plans (biometric-driven, generator-built) ────────
+
+// Builds a new custom nutrition_plans row from the calorie calculator flow —
+// not template-based, so no template_id. Starts unlocked; the caller locks
+// it via updateNutritionPlan once the coach finalizes.
+export async function createCalculatedNutritionPlan(
+  traineeId: string,
+  coachId: string,
+  fields: Pick<
+    DBNutritionPlan,
+    | 'title'
+    | 'notes'
+    | 'target_calories'
+    | 'target_protein'
+    | 'target_carbs'
+    | 'target_fat'
+    | 'target_water_ml'
+    | 'meal_count'
+    | 'macro_split'
+    | 'meals'
+    | 'calc_inputs'
+  >
+): Promise<DBNutritionPlan> {
+  const { data, error } = await supabase
+    .from('nutrition_plans')
+    .insert({ trainee_id: traineeId, coach_id: coachId, active: true, locked: false, ...fields })
+    .select()
+    .single();
+  if (error) throw error;
+  return data;
+}
+
 export async function getFoodLogEntries(traineeId: string, limit: number = 200): Promise<DBFoodLogEntry[]> {
   const { data, error } = await supabase
     .from('food_log_entries')
@@ -708,6 +775,53 @@ export async function addFoodLogEntry(traineeId: string, foodName: string, calor
 export async function deleteFoodLogEntry(id: string) {
   const { error } = await supabase.from('food_log_entries').delete().eq('id', id);
   if (error) throw error;
+}
+
+// ── Meal completion tracking (per plan meal slot, per day) ────────────────────
+
+export async function getMealCompletions(
+  traineeId: string,
+  planId: string,
+  limitDays: number = 30
+): Promise<DBMealCompletion[]> {
+  const { data, error } = await supabase
+    .from('meal_completions')
+    .select('*')
+    .eq('trainee_id', traineeId)
+    .eq('nutrition_plan_id', planId)
+    .order('log_date', { ascending: false })
+    .limit(limitDays * 10); // up to ~10 meal slots/day of history
+  if (error) return [];
+  return data ?? [];
+}
+
+// One row per (trainee, plan, meal slot, day) — overwrites if the trainee
+// changes their mind about today's status for that meal.
+export async function upsertMealCompletion(
+  traineeId: string,
+  planId: string,
+  mealSlot: number,
+  logDate: string,
+  status: DBMealCompletion['status'],
+  substituteNote: string | null
+): Promise<DBMealCompletion> {
+  const { data, error } = await supabase
+    .from('meal_completions')
+    .upsert(
+      {
+        trainee_id: traineeId,
+        nutrition_plan_id: planId,
+        meal_slot: mealSlot,
+        log_date: logDate,
+        status,
+        substitute_note: substituteNote,
+      },
+      { onConflict: 'trainee_id,nutrition_plan_id,meal_slot,log_date' }
+    )
+    .select()
+    .single();
+  if (error) throw error;
+  return data;
 }
 
 // ── Coach ↔ Trainee requests ────────────────────────────────────────────────

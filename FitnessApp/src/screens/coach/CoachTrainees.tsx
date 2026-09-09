@@ -46,12 +46,14 @@ import {
   updateNutritionPlan,
   setNutritionPlanActive,
   deleteNutritionPlan,
+  getMealCompletions,
   getMessages,
   sendMessage,
   getVitalsHistory,
 } from '../../lib/db';
-import { DBProgram, DBUser, DBWorkout, DBExercise, DBWeightLog, DBNutritionPlan, DBNutritionPlanTemplate, DBCoachRequest, DBLibraryExercise, DBMessage, DBVital, SessionExerciseDetail, SessionSetDetail } from '../../lib/supabase';
+import { DBProgram, DBUser, DBWorkout, DBExercise, DBWeightLog, DBNutritionPlan, DBNutritionPlanTemplate, DBCoachRequest, DBLibraryExercise, DBMessage, DBVital, DBMealCompletion, SessionExerciseDetail, SessionSetDetail } from '../../lib/supabase';
 import { sanitizeCount, sanitizeWeightInput, sanitizeTimeInput, stripKg, withKg } from '../../lib/exerciseInput';
+import CalorieCalculatorModal from './CalorieCalculatorModal';
 
 interface ExerciseEntry {
   id: string;
@@ -94,6 +96,21 @@ function scheduledDaysLabel(days: number[] | null): string {
 function formatDate(iso: string) {
   const d = new Date(iso);
   return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+}
+
+const MEAL_STATUS_META: Record<DBMealCompletion['status'], { icon: string; color: string; label: string }> = {
+  as_planned: { icon: 'checkmark-circle', color: colors.success, label: 'As Planned' },
+  substituted: { icon: 'swap-horizontal', color: colors.warning, label: 'Substituted' },
+  skipped: { icon: 'close-circle', color: colors.textSecondary, label: 'Skipped' },
+};
+
+function groupCompletionsByDate(completions: DBMealCompletion[]): [string, DBMealCompletion[]][] {
+  const map = new Map<string, DBMealCompletion[]>();
+  for (const c of completions) {
+    if (!map.has(c.log_date)) map.set(c.log_date, []);
+    map.get(c.log_date)!.push(c);
+  }
+  return Array.from(map.entries()).sort((a, b) => (a[0] < b[0] ? 1 : -1)).slice(0, 14);
 }
 
 // Matches the effort scale a trainee logs against in WorkoutScreen.tsx
@@ -146,7 +163,10 @@ export default function CoachTrainees({ coachId }: Props) {
   // each optionally carrying macro targets, notes, and/or an uploaded PDF.
   const [selectedTraineeNutrition, setSelectedTraineeNutrition] = useState<DBNutritionPlan[]>([]);
   const [expandedPlanId, setExpandedPlanId] = useState<string | null>(null);
+  const [expandedMealKey, setExpandedMealKey] = useState<string | null>(null);
   const [togglingPlanId, setTogglingPlanId] = useState<string | null>(null);
+  const [planCompletions, setPlanCompletions] = useState<Record<string, DBMealCompletion[]>>({});
+  const [loadingCompletionsFor, setLoadingCompletionsFor] = useState<string | null>(null);
   const [selectedTraineeMessages, setSelectedTraineeMessages] = useState<DBMessage[]>([]);
   const [chatInput, setChatInput] = useState('');
   const [loadingDetail, setLoadingDetail] = useState(false);
@@ -161,12 +181,23 @@ export default function CoachTrainees({ coachId }: Props) {
   const [planProtein, setPlanProtein] = useState('');
   const [planCarbs, setPlanCarbs] = useState('');
   const [planFat, setPlanFat] = useState('');
+  const [planWater, setPlanWater] = useState('');
   const [savingPlan, setSavingPlan] = useState(false);
 
   // ── Assign nutrition plan (picks from the coach's reusable templates) ──
   const [nutritionTemplates, setNutritionTemplates] = useState<DBNutritionPlanTemplate[]>([]);
   const [showAssignPlanPicker, setShowAssignPlanPicker] = useState(false);
   const [assigningPlanId, setAssigningPlanId] = useState<string | null>(null);
+  // Captured trainee for the assign-plan-picker / calorie-calculator flows —
+  // both open their own separate <Modal>, and iOS (unlike Android) won't
+  // reliably show/register touches on a second native Modal stacked on top
+  // of one that's still visible, so the trainee-detail modal is closed
+  // first; this holds onto who it was for so it can reopen back to them
+  // once the nutrition flow finishes or is cancelled.
+  const [nutritionTrainee, setNutritionTrainee] = useState<DBUser | null>(null);
+
+  // ── Calorie & macro calculator (biometric-driven, generates a locked PDF) ──
+  const [showCalorieCalculator, setShowCalorieCalculator] = useState(false);
 
   // ── Assign workout modal (3-step: program → workout → success) ──
   const [showAssignModal, setShowAssignModal] = useState(false);
@@ -369,12 +400,24 @@ export default function CoachTrainees({ coachId }: Props) {
       await deleteNutritionPlan(plan.id, plan.storage_path);
     } catch (e) {
       console.warn('Nutrition plan delete error', e);
+      // Roll back the optimistic removal — otherwise the plan looks deleted
+      // until the next refresh silently brings it back, with no indication
+      // anything went wrong.
+      setSelectedTraineeNutrition(prev => (prev.some(p => p.id === plan.id) ? prev : [...prev, plan]));
+      Alert.alert('Error', 'Could not delete this plan. Please try again.');
     }
   }, []);
 
   const toggleExpandPlan = useCallback((planId: string) => {
     setExpandedPlanId(prev => (prev === planId ? null : planId));
-  }, []);
+    if (!selectedTrainee || planCompletions[planId]) return;
+    const plan = selectedTraineeNutrition.find(p => p.id === planId);
+    if (!plan?.meals || plan.meals.length === 0) return;
+    setLoadingCompletionsFor(planId);
+    getMealCompletions(selectedTrainee.id, planId)
+      .then(rows => setPlanCompletions(prev => ({ ...prev, [planId]: rows })))
+      .finally(() => setLoadingCompletionsFor(null));
+  }, [selectedTrainee, selectedTraineeNutrition, planCompletions]);
 
   const handleToggleNutritionActive = useCallback(async (plan: DBNutritionPlan) => {
     const nextActive = !plan.active;
@@ -391,18 +434,36 @@ export default function CoachTrainees({ coachId }: Props) {
   }, []);
 
   const handleAssignPlan = useCallback(async (template: DBNutritionPlanTemplate) => {
-    if (!selectedTrainee || assigningPlanId) return;
+    if (!nutritionTrainee || assigningPlanId) return;
     setAssigningPlanId(template.id);
     try {
-      const plan = await assignNutritionTemplate(selectedTrainee.id, coachId, template);
+      const plan = await assignNutritionTemplate(nutritionTrainee.id, coachId, template);
       setSelectedTraineeNutrition(prev => [plan, ...prev]);
       setShowAssignPlanPicker(false);
+      setSelectedTrainee(nutritionTrainee);
+      setNutritionTrainee(null);
     } catch (e) {
       console.warn('assignNutritionTemplate error', e);
     } finally {
       setAssigningPlanId(null);
     }
-  }, [selectedTrainee, coachId, assigningPlanId]);
+  }, [nutritionTrainee, coachId, assigningPlanId]);
+
+  const closeAssignPlanPicker = useCallback(() => {
+    setShowAssignPlanPicker(false);
+    setSelectedTrainee(nutritionTrainee);
+    setNutritionTrainee(null);
+  }, [nutritionTrainee]);
+
+  const handlePlanCreatedByCalculator = useCallback((plan: DBNutritionPlan) => {
+    setSelectedTraineeNutrition(prev => [plan, ...prev]);
+  }, []);
+
+  const closeCalorieCalculator = useCallback(() => {
+    setShowCalorieCalculator(false);
+    setSelectedTrainee(nutritionTrainee);
+    setNutritionTrainee(null);
+  }, [nutritionTrainee]);
 
   const openEditPlanEditor = useCallback((plan: DBNutritionPlan) => {
     setPlanTitle(plan.title);
@@ -411,6 +472,7 @@ export default function CoachTrainees({ coachId }: Props) {
     setPlanProtein(plan.target_protein != null ? String(plan.target_protein) : '');
     setPlanCarbs(plan.target_carbs != null ? String(plan.target_carbs) : '');
     setPlanFat(plan.target_fat != null ? String(plan.target_fat) : '');
+    setPlanWater(plan.target_water_ml != null ? String(plan.target_water_ml) : '');
     setEditingPlanId(plan.id);
   }, []);
 
@@ -424,6 +486,11 @@ export default function CoachTrainees({ coachId }: Props) {
       target_protein: planProtein ? parseInt(planProtein, 10) : null,
       target_carbs: planCarbs ? parseInt(planCarbs, 10) : null,
       target_fat: planFat ? parseInt(planFat, 10) : null,
+      target_water_ml: planWater ? parseInt(planWater, 10) : null,
+      // Saving an edit — from either the plain "Edit" or "Unlock" entry
+      // point — always leaves the plan unlocked; only Finalize (in the
+      // calculator) re-locks it with a fresh PDF.
+      locked: false,
     };
     try {
       const plan = await updateNutritionPlan(editingPlanId, fields);
@@ -434,7 +501,7 @@ export default function CoachTrainees({ coachId }: Props) {
     } finally {
       setSavingPlan(false);
     }
-  }, [selectedTrainee, editingPlanId, planTitle, planNotes, planCalories, planProtein, planCarbs, planFat, savingPlan]);
+  }, [selectedTrainee, editingPlanId, planTitle, planNotes, planCalories, planProtein, planCarbs, planFat, planWater, savingPlan]);
 
   // ── Requests ──
   const handleSearchTrainees = useCallback(async (query: string) => {
@@ -1195,6 +1262,20 @@ export default function CoachTrainees({ coachId }: Props) {
                 {/* Nutrition tab */}
                 {detailTab === 'nutrition' && (
                   <View>
+                    {(() => {
+                      const waterTarget = selectedTraineeNutrition.find(p => p.active && p.target_water_ml != null)?.target_water_ml;
+                      if (waterTarget == null) return null;
+                      const today = new Date().toISOString().split('T')[0];
+                      const todayWater = selectedTraineeWater[0]?.created_date === today ? selectedTraineeWater[0].metric_value : 0;
+                      return (
+                        <View style={styles.dietTargetsDisplay}>
+                          <View style={styles.dietTargetChip}>
+                            <Text style={styles.dietTargetChipVal}>{todayWater} / {waterTarget}ml</Text>
+                            <Text style={styles.dietTargetChipLabel}>water today</Text>
+                          </View>
+                        </View>
+                      );
+                    })()}
                     <Text style={styles.fieldLabel}>WATER INTAKE</Text>
                     {selectedTraineeWater.length === 0 ? (
                       <Text style={{ color: colors.textSecondary, textAlign: 'center', paddingVertical: 12 }}>No water logged yet</Text>
@@ -1215,6 +1296,11 @@ export default function CoachTrainees({ coachId }: Props) {
                     <View style={{ height: 16 }} />
                     {editingPlanId ? (
                       <>
+                        {selectedTraineeNutrition.find(p => p.id === editingPlanId)?.locked && (
+                          <Text style={styles.unlockHint}>
+                            This plan is locked. Saving will unlock it — the trainee's PDF stays available until you finalize a new one.
+                          </Text>
+                        )}
                         <Text style={styles.fieldLabel}>PLAN TITLE</Text>
                         <TextInput
                           style={styles.textInput}
@@ -1273,6 +1359,20 @@ export default function CoachTrainees({ coachId }: Props) {
                             />
                           </View>
                         </View>
+                        <View style={styles.dietTargetRow}>
+                          <View style={styles.dietTargetField}>
+                            <Text style={styles.exMetaLabel}>WATER (ML)</Text>
+                            <TextInput
+                              style={styles.exMetaInput}
+                              value={planWater}
+                              onChangeText={v => setPlanWater(v.replace(/[^0-9]/g, ''))}
+                              keyboardType="number-pad"
+                              placeholder="0"
+                              placeholderTextColor={colors.textSecondary}
+                            />
+                          </View>
+                          <View style={styles.dietTargetField} />
+                        </View>
 
                         <Text style={[styles.fieldLabel, { marginTop: 16 }]}>NOTES (OPTIONAL)</Text>
                         <TextInput
@@ -1326,12 +1426,27 @@ export default function CoachTrainees({ coachId }: Props) {
                           </TouchableOpacity>
                           <TouchableOpacity
                             style={[styles.workoutActionBtn, { flex: 1 }]}
-                            onPress={() => setShowAssignPlanPicker(true)}
+                            onPress={() => {
+                              setNutritionTrainee(selectedTrainee);
+                              setSelectedTrainee(null);
+                              setShowAssignPlanPicker(true);
+                            }}
                           >
                             <Ionicons name="add-circle-outline" size={16} color={colors.xpBar} />
                             <Text style={styles.workoutActionBtnText}>Assign Plan</Text>
                           </TouchableOpacity>
                         </View>
+                        <TouchableOpacity
+                          style={[styles.uploadPlanBtn, { marginBottom: 16 }]}
+                          onPress={() => {
+                            setNutritionTrainee(selectedTrainee);
+                            setSelectedTrainee(null);
+                            setShowCalorieCalculator(true);
+                          }}
+                        >
+                          <Ionicons name="calculator-outline" size={18} color={colors.text} />
+                          <Text style={styles.uploadPlanBtnText}>Build Calorie & Macro Plan</Text>
+                        </TouchableOpacity>
 
                         {selectedTraineeNutrition.length === 0 ? (
                           <View style={styles.pendingBlock}>
@@ -1342,7 +1457,7 @@ export default function CoachTrainees({ coachId }: Props) {
                         ) : (
                           selectedTraineeNutrition.map(plan => {
                             const isExpanded = expandedPlanId === plan.id;
-                            const hasTargets = plan.target_calories || plan.target_protein || plan.target_carbs || plan.target_fat;
+                            const hasTargets = plan.target_calories || plan.target_protein || plan.target_carbs || plan.target_fat || plan.target_water_ml;
                             return (
                               <View key={plan.id} style={[styles.workoutBlock, !plan.active && styles.workoutBlockInactive]}>
                                 <TouchableOpacity
@@ -1358,9 +1473,15 @@ export default function CoachTrainees({ coachId }: Props) {
                                           <Text style={styles.inactiveTagText}>Inactive</Text>
                                         </View>
                                       )}
+                                      {plan.locked && (
+                                        <View style={styles.lockedTag}>
+                                          <Ionicons name="lock-closed" size={10} color={colors.gold} />
+                                          <Text style={styles.lockedTagText}>Locked</Text>
+                                        </View>
+                                      )}
                                     </View>
                                     <Text style={styles.workoutBlockMeta}>
-                                      {plan.file_name ? plan.file_name : 'No PDF attached'} · {formatDate(plan.created_at)}
+                                      Created {formatDate(plan.created_at)}{plan.file_name ? ` · ${plan.file_name}` : ''}
                                     </Text>
                                   </View>
                                   <Ionicons name={isExpanded ? 'chevron-up' : 'chevron-down'} size={18} color={colors.textSecondary} />
@@ -1394,6 +1515,12 @@ export default function CoachTrainees({ coachId }: Props) {
                                             <Text style={styles.dietTargetChipLabel}>fat</Text>
                                           </View>
                                         )}
+                                        {plan.target_water_ml != null && (
+                                          <View style={styles.dietTargetChip}>
+                                            <Text style={styles.dietTargetChipVal}>{plan.target_water_ml}ml</Text>
+                                            <Text style={styles.dietTargetChipLabel}>water</Text>
+                                          </View>
+                                        )}
                                       </View>
                                     ) : null}
                                     {plan.notes && <Text style={styles.dietPlanNotes}>{plan.notes}</Text>}
@@ -1407,12 +1534,83 @@ export default function CoachTrainees({ coachId }: Props) {
                                         <Ionicons name="open-outline" size={16} color={colors.textSecondary} />
                                       </TouchableOpacity>
                                     )}
+                                    {plan.meals && plan.meals.length > 0 && (
+                                      <View style={{ marginTop: 8 }}>
+                                        {plan.meals.map(m => {
+                                          const mealKey = `${plan.id}-${m.slot}`;
+                                          const mealExpanded = expandedMealKey === mealKey;
+                                          return (
+                                            <View key={m.slot}>
+                                              <TouchableOpacity
+                                                style={styles.mealSummaryRow}
+                                                onPress={() => setExpandedMealKey(mealExpanded ? null : mealKey)}
+                                                activeOpacity={0.7}
+                                              >
+                                                <Text style={styles.mealSummaryLabel}>{m.label}</Text>
+                                                <Text style={styles.mealSummaryName} numberOfLines={1}>{m.name}</Text>
+                                                <Text style={styles.mealSummaryCal}>{m.actual_calories} kcal</Text>
+                                                <Ionicons
+                                                  name={mealExpanded ? 'chevron-up' : 'chevron-down'}
+                                                  size={14}
+                                                  color={colors.textSecondary}
+                                                />
+                                              </TouchableOpacity>
+                                              {mealExpanded && (
+                                                <View style={styles.mealItemsBlock}>
+                                                  {m.items.map((item, idx) => (
+                                                    <Text key={idx} style={styles.mealItemDetailText}>
+                                                      • {item.food} — {item.qty}
+                                                    </Text>
+                                                  ))}
+                                                </View>
+                                              )}
+                                            </View>
+                                          );
+                                        })}
+                                      </View>
+                                    )}
+
+                                    {plan.meals && plan.meals.length > 0 && (
+                                      <View style={{ marginTop: 4 }}>
+                                        <Text style={styles.fieldLabel}>ADHERENCE HISTORY</Text>
+                                        {loadingCompletionsFor === plan.id ? (
+                                          <ActivityIndicator size="small" color={colors.xpBar} />
+                                        ) : groupCompletionsByDate(planCompletions[plan.id] ?? []).length === 0 ? (
+                                          <Text style={styles.adherenceEmptyText}>No meals logged by the trainee yet.</Text>
+                                        ) : (
+                                          groupCompletionsByDate(planCompletions[plan.id] ?? []).map(([date, rows]) => (
+                                            <View key={date} style={styles.adherenceDayRow}>
+                                              <Text style={styles.adherenceDate}>{formatDate(date)}</Text>
+                                              <View style={styles.adherenceBadges}>
+                                                {rows.map(c => {
+                                                  const meta = MEAL_STATUS_META[c.status];
+                                                  const label = plan.meals?.find(m => m.slot === c.meal_slot)?.label ?? `Meal ${c.meal_slot}`;
+                                                  return (
+                                                    <View key={c.id} style={styles.adherenceBadge}>
+                                                      <Ionicons name={meta.icon as any} size={12} color={meta.color} />
+                                                      <Text style={styles.adherenceBadgeText}>{label}</Text>
+                                                    </View>
+                                                  );
+                                                })}
+                                              </View>
+                                            </View>
+                                          ))
+                                        )}
+                                      </View>
+                                    )}
 
                                     <View style={styles.workoutBlockActions}>
-                                      <TouchableOpacity style={styles.workoutActionBtn} onPress={() => openEditPlanEditor(plan)}>
-                                        <Ionicons name="create-outline" size={16} color={colors.xpBar} />
-                                        <Text style={styles.workoutActionBtnText}>Edit</Text>
-                                      </TouchableOpacity>
+                                      {plan.locked ? (
+                                        <TouchableOpacity style={styles.workoutActionBtn} onPress={() => openEditPlanEditor(plan)}>
+                                          <Ionicons name="lock-open-outline" size={16} color={colors.xpBar} />
+                                          <Text style={styles.workoutActionBtnText}>Unlock</Text>
+                                        </TouchableOpacity>
+                                      ) : (
+                                        <TouchableOpacity style={styles.workoutActionBtn} onPress={() => openEditPlanEditor(plan)}>
+                                          <Ionicons name="create-outline" size={16} color={colors.xpBar} />
+                                          <Text style={styles.workoutActionBtnText}>Edit</Text>
+                                        </TouchableOpacity>
+                                      )}
                                       <View style={styles.workoutActiveToggle}>
                                         <Text style={styles.workoutActiveToggleLabel}>{plan.active ? 'Active' : 'Inactive'}</Text>
                                         {togglingPlanId === plan.id ? (
@@ -1451,13 +1649,13 @@ export default function CoachTrainees({ coachId }: Props) {
         visible={showAssignPlanPicker}
         transparent
         animationType="slide"
-        onRequestClose={() => setShowAssignPlanPicker(false)}
+        onRequestClose={closeAssignPlanPicker}
       >
         <View style={styles.namePickerOverlay}>
           <View style={styles.namePickerSheet}>
             <View style={styles.modalHeader}>
               <Text style={styles.modalTitle}>Assign Nutrition Plan</Text>
-              <TouchableOpacity style={styles.closeBtn} onPress={() => setShowAssignPlanPicker(false)}>
+              <TouchableOpacity style={styles.closeBtn} onPress={closeAssignPlanPicker}>
                 <Ionicons name="close" size={22} color={colors.textSecondary} />
               </TouchableOpacity>
             </View>
@@ -1499,6 +1697,17 @@ export default function CoachTrainees({ coachId }: Props) {
           </View>
         </View>
       </Modal>
+
+      {/* ── Calorie & Macro Calculator (biometrics → calories → macros → meals → locked PDF) ── */}
+      {nutritionTrainee && (
+        <CalorieCalculatorModal
+          visible={showCalorieCalculator}
+          trainee={nutritionTrainee}
+          coachId={coachId}
+          onClose={closeCalorieCalculator}
+          onPlanCreated={handlePlanCreatedByCalculator}
+        />
+      )}
 
       {/* ── Assign Workout Modal (3-step) ── */}
       <Modal
@@ -2348,6 +2557,33 @@ const styles = StyleSheet.create({
     backgroundColor: colors.warning + '22', paddingHorizontal: 8, paddingVertical: 2, borderRadius: 6,
   },
   inactiveTagText: { fontSize: 10, fontWeight: '700', color: colors.warning },
+  lockedTag: {
+    flexDirection: 'row', alignItems: 'center', gap: 3,
+    backgroundColor: colors.gold + '22', paddingHorizontal: 8, paddingVertical: 2, borderRadius: 6,
+  },
+  lockedTagText: { fontSize: 10, fontWeight: '700', color: colors.gold },
+  unlockHint: {
+    fontSize: 12, color: colors.gold, backgroundColor: colors.gold + '15',
+    borderRadius: 10, padding: 10, marginBottom: 16, lineHeight: 17,
+  },
+  mealSummaryRow: {
+    flexDirection: 'row', alignItems: 'center', gap: 8,
+    paddingVertical: 6, borderBottomWidth: 1, borderBottomColor: colors.border,
+  },
+  mealSummaryLabel: { fontSize: 11, fontWeight: '700', color: colors.xpBar, width: 56 },
+  mealSummaryName: { fontSize: 13, color: colors.text, flex: 1 },
+  mealSummaryCal: { fontSize: 12, color: colors.textSecondary },
+  mealItemsBlock: { paddingVertical: 8, paddingLeft: 8, borderBottomWidth: 1, borderBottomColor: colors.border },
+  mealItemDetailText: { fontSize: 12, color: colors.textSecondary, lineHeight: 18 },
+  adherenceEmptyText: { fontSize: 12, color: colors.textSecondary, marginTop: 4 },
+  adherenceDayRow: { marginTop: 10 },
+  adherenceDate: { fontSize: 11, fontWeight: '700', color: colors.textSecondary, marginBottom: 4 },
+  adherenceBadges: { flexDirection: 'row', flexWrap: 'wrap', gap: 6 },
+  adherenceBadge: {
+    flexDirection: 'row', alignItems: 'center', gap: 4,
+    backgroundColor: colors.secondary, borderRadius: 8, paddingHorizontal: 8, paddingVertical: 4,
+  },
+  adherenceBadgeText: { fontSize: 10, color: colors.textSecondary, fontWeight: '600' },
   exDetailRow: {
     flexDirection: 'row', alignItems: 'center', gap: 10,
     paddingVertical: 10, borderBottomWidth: 1, borderBottomColor: colors.border,

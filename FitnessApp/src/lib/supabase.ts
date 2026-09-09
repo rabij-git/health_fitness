@@ -1,7 +1,7 @@
 import { createClient } from '@supabase/supabase-js';
 
-const SUPABASE_URL = 'https://bdyfqhykhpsgkgrklkdg.supabase.co';
-const SUPABASE_ANON_KEY = 'sb_publishable_8AcNwNrXlQxI9M_c5AyYJQ_J_kwInQh';
+export const SUPABASE_URL = 'https://bdyfqhykhpsgkgrklkdg.supabase.co';
+export const SUPABASE_ANON_KEY = 'sb_publishable_8AcNwNrXlQxI9M_c5AyYJQ_J_kwInQh';
 
 export const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
   auth: {
@@ -26,6 +26,12 @@ export interface DBUser {
   streak: number;
   status: 'pending' | 'assigned';
   created_at: string;
+  // Biometric profile, used for calorie/macro calculations. Year of birth
+  // only (not full date of birth) is stored deliberately, for privacy.
+  birth_year: number | null;
+  sex: 'male' | 'female' | null;
+  height_cm: number | null;
+  activity_level: 'sedentary' | 'light' | 'moderate' | 'active' | 'very_active' | null;
 }
 
 export interface DBGym {
@@ -143,6 +149,47 @@ export interface DBMessage {
   created_at: string;
 }
 
+export interface MacroSplit {
+  protein_pct: number;
+  carbs_pct: number;
+  fat_pct: number;
+}
+
+export interface MealItem {
+  food: string;
+  qty: string;
+}
+
+export interface MealSlot {
+  slot: number;
+  label: string;
+  target_calories: number;
+  target_protein: number;
+  target_carbs: number;
+  target_fat: number;
+  name: string;
+  items: MealItem[];
+  actual_calories: number;
+  actual_protein: number;
+  actual_carbs: number;
+  actual_fat: number;
+}
+
+// Snapshot of the biometric inputs + formula used to derive a plan's
+// targets, kept for audit/reproducibility (a trainee's profile can change
+// after the plan was calculated).
+export interface CalcInputs {
+  age: number;
+  sex: 'male' | 'female';
+  height_cm: number;
+  weight_kg: number;
+  activity_level: 'sedentary' | 'light' | 'moderate' | 'active' | 'very_active';
+  formula: 'mifflin_st_jeor';
+  calculated_tdee: number;
+  override_applied: boolean;
+  diet: 'vegan' | 'vegetarian' | 'pescatarian' | 'omnivore';
+}
+
 // A trainee can have several nutrition plans (a coach retires one by setting
 // it inactive rather than deleting it, same pattern as workouts.active).
 // Each plan can carry structured targets, an uploaded PDF, or both.
@@ -157,11 +204,23 @@ export interface DBNutritionPlan {
   target_protein: number | null;
   target_carbs: number | null;
   target_fat: number | null;
+  // How much water/day the coach wants the trainee to drink — a goal set on
+  // the plan, distinct from vitals.water (what the trainee actually logged).
+  target_water_ml: number | null;
   active: boolean;
   file_name: string | null;
   file_url: string | null;
   storage_path: string | null;
   created_at: string;
+  // Calculated-plan fields — null for plans built the old way (upload-only
+  // or manual targets with no meal breakdown).
+  meal_count: 3 | 4 | 5 | null;
+  macro_split: MacroSplit | null;
+  meals: MealSlot[] | null;
+  calc_inputs: CalcInputs | null;
+  // A plan is read-only for the trainee once locked; the coach must
+  // explicitly unlock it to edit further.
+  locked: boolean;
 }
 
 // Reusable, coach-owned nutrition plan template — mirrors DBProgram's
@@ -176,6 +235,23 @@ export interface DBNutritionPlanTemplate {
   target_protein: number | null;
   target_carbs: number | null;
   target_fat: number | null;
+  target_water_ml: number | null;
+  created_at: string;
+  meal_count: 3 | 4 | 5 | null;
+  macro_split: MacroSplit | null;
+  meals: MealSlot[] | null;
+}
+
+// One row per (trainee, plan, meal slot, day) — whether the trainee ate the
+// plan's prescribed meal, swapped it for something else, or skipped it.
+export interface DBMealCompletion {
+  id: string;
+  trainee_id: string;
+  nutrition_plan_id: string;
+  meal_slot: number;
+  log_date: string; // YYYY-MM-DD
+  status: 'as_planned' | 'substituted' | 'skipped';
+  substitute_note: string | null;
   created_at: string;
 }
 

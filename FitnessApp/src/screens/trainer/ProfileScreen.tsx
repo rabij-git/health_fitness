@@ -9,6 +9,8 @@ import {
   Linking,
   Modal,
   TextInput,
+  KeyboardAvoidingView,
+  Platform,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useFocusEffect } from '@react-navigation/native';
@@ -25,8 +27,51 @@ import {
   getOutgoingCoachRequestForTrainee,
   acceptCoachRequest,
   declineCoachRequest,
+  updateProfile,
 } from '../../lib/db';
 import { DBUser, DBWeightLog, DBNutritionPlan, DBCoachRequest } from '../../lib/supabase';
+import { ActivityLevel, Sex, ACTIVITY_LABELS } from '../../lib/nutritionCalc';
+import appJson from '../../../app.json';
+
+type InfoKey = 'privacy' | 'help';
+
+const INFO_CONTENT: Record<InfoKey, { title: string; body: string }> = {
+  privacy: {
+    title: 'Privacy',
+    body: 'Your workout, weight, and message data is stored securely in the cloud and is only visible to you and your coach.',
+  },
+  help: {
+    title: 'Help & Support',
+    body: `Need help? Message your coach directly from the Home tab, or reach out to them for account issues.\n\n${appJson.expo.name} v${appJson.expo.version}`,
+  },
+};
+
+const ACTIVITY_LEVELS: ActivityLevel[] = ['sedentary', 'light', 'moderate', 'active', 'very_active'];
+
+const MIN_BIRTH_YEAR = 1940;
+const CURRENT_YEAR = new Date().getFullYear();
+const MIN_AGE = 10;
+const MAX_BIRTH_YEAR = CURRENT_YEAR - MIN_AGE;
+const MIN_HEIGHT_CM = 100;
+const MAX_HEIGHT_CM = 250;
+
+function sanitizeYear(v: string) {
+  return v.replace(/[^0-9]/g, '').slice(0, 4);
+}
+function sanitizeHeight(v: string) {
+  const cleaned = v.replace(/[^0-9.]/g, '');
+  return parseFloat(cleaned) > MAX_HEIGHT_CM ? String(MAX_HEIGHT_CM) : cleaned;
+}
+function isValidBirthYear(v: string) {
+  if (!v) return true; // optional field — blank is fine
+  const year = parseInt(v, 10);
+  return v.length === 4 && year >= MIN_BIRTH_YEAR && year <= MAX_BIRTH_YEAR;
+}
+function isValidHeight(v: string) {
+  if (!v.trim()) return true; // optional field — blank is fine
+  const h = parseFloat(v);
+  return !isNaN(h) && h >= MIN_HEIGHT_CM && h <= MAX_HEIGHT_CM;
+}
 
 function formatDate(iso: string) {
   return new Date(iso).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
@@ -110,6 +155,43 @@ export default function ProfileScreen({ onLogout, userId }: Props) {
   const [coachSearchResults, setCoachSearchResults] = useState<DBUser[]>([]);
   const [searchingCoaches, setSearchingCoaches] = useState(false);
   const [sendingRequestTo, setSendingRequestTo] = useState<string | null>(null);
+
+  const [infoModal, setInfoModal] = useState<InfoKey | null>(null);
+  const [showSettings, setShowSettings] = useState(false);
+  const [birthYear, setBirthYear] = useState('');
+  const [sex, setSex] = useState<Sex | null>(null);
+  const [heightCm, setHeightCm] = useState('');
+  const [activityLevel, setActivityLevel] = useState<ActivityLevel | null>(null);
+  const [savingSettings, setSavingSettings] = useState(false);
+  const birthYearValid = isValidBirthYear(birthYear);
+  const heightValid = isValidHeight(heightCm);
+
+  const openSettings = useCallback(() => {
+    setBirthYear(profile?.birth_year ? String(profile.birth_year) : '');
+    setSex(profile?.sex ?? null);
+    setHeightCm(profile?.height_cm ? String(profile.height_cm) : '');
+    setActivityLevel(profile?.activity_level ?? null);
+    setShowSettings(true);
+  }, [profile]);
+
+  const handleSaveSettings = useCallback(async () => {
+    setSavingSettings(true);
+    const updates: Partial<DBUser> = {
+      birth_year: birthYear.length === 4 ? parseInt(birthYear, 10) : null,
+      sex,
+      height_cm: heightCm ? parseFloat(heightCm) : null,
+      activity_level: activityLevel,
+    };
+    try {
+      await updateProfile(userId, updates);
+      setProfile(prev => (prev ? { ...prev, ...updates } : prev));
+      setShowSettings(false);
+    } catch (e) {
+      console.warn('updateProfile error', e);
+    } finally {
+      setSavingSettings(false);
+    }
+  }, [userId, birthYear, sex, heightCm, activityLevel]);
 
   const loadAll = useCallback(() => {
     return Promise.all([
@@ -365,14 +447,15 @@ export default function ProfileScreen({ onLogout, userId }: Props) {
         {/* Settings Quick Links */}
         <View style={styles.menuCard}>
           {[
-            { icon: 'settings', label: 'Settings' },
-            { icon: 'shield-checkmark', label: 'Privacy' },
-            { icon: 'help-circle', label: 'Help & Support' },
+            { icon: 'settings', label: 'Settings', onPress: openSettings },
+            { icon: 'shield-checkmark', label: 'Privacy', onPress: () => setInfoModal('privacy') },
+            { icon: 'help-circle', label: 'Help & Support', onPress: () => setInfoModal('help') },
           ].map((item, index, arr) => (
             <TouchableOpacity
               key={item.label}
               style={[styles.menuItem, index < arr.length - 1 && styles.menuItemBorder]}
               activeOpacity={0.7}
+              onPress={item.onPress}
             >
               <View style={styles.menuLeft}>
                 <Ionicons name={item.icon as any} size={18} color={colors.textSecondary} />
@@ -441,6 +524,109 @@ export default function ProfileScreen({ onLogout, userId }: Props) {
                 </View>
               ))}
             </ScrollView>
+          </View>
+        </View>
+      </Modal>
+
+      {/* Settings — biometric profile used by the coach's calorie/macro calculator */}
+      <Modal visible={showSettings} transparent animationType="slide" onRequestClose={() => setShowSettings(false)}>
+        <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={styles.overlay}>
+          <View style={styles.sheet}>
+            <View style={styles.sheetHeader}>
+              <Text style={styles.sheetTitle}>Settings</Text>
+              <TouchableOpacity onPress={() => setShowSettings(false)}>
+                <Ionicons name="close" size={22} color={colors.textSecondary} />
+              </TouchableOpacity>
+            </View>
+            <ScrollView showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
+              <Text style={styles.detailLabel}>YEAR OF BIRTH</Text>
+              <TextInput
+                style={styles.searchInput}
+                value={birthYear}
+                onChangeText={v => setBirthYear(sanitizeYear(v))}
+                keyboardType="number-pad"
+                placeholder="e.g. 1995"
+                placeholderTextColor={colors.textSecondary}
+              />
+              {!birthYearValid && (
+                <Text style={styles.fieldError}>Enter a year between {MIN_BIRTH_YEAR} and {MAX_BIRTH_YEAR}.</Text>
+              )}
+
+              <Text style={[styles.detailLabel, { marginTop: 12 }]}>SEX</Text>
+              <View style={styles.rowChips}>
+                {(['female', 'male'] as Sex[]).map(s => (
+                  <TouchableOpacity
+                    key={s}
+                    style={[styles.chip, sex === s && styles.chipActive]}
+                    onPress={() => setSex(s)}
+                  >
+                    <Text style={[styles.chipText, sex === s && styles.chipTextActive]}>
+                      {s === 'female' ? 'Female' : 'Male'}
+                    </Text>
+                  </TouchableOpacity>
+                ))}
+              </View>
+
+              <Text style={[styles.detailLabel, { marginTop: 12 }]}>HEIGHT (CM)</Text>
+              <TextInput
+                style={styles.searchInput}
+                value={heightCm}
+                onChangeText={v => setHeightCm(sanitizeHeight(v))}
+                keyboardType="decimal-pad"
+                placeholder="e.g. 175"
+                placeholderTextColor={colors.textSecondary}
+              />
+              {!heightValid && (
+                <Text style={styles.fieldError}>Enter a height between {MIN_HEIGHT_CM}–{MAX_HEIGHT_CM} cm.</Text>
+              )}
+
+              <Text style={[styles.detailLabel, { marginTop: 12 }]}>ACTIVITY LEVEL</Text>
+              {ACTIVITY_LEVELS.map(level => (
+                <TouchableOpacity
+                  key={level}
+                  style={[styles.activityRow, activityLevel === level && styles.activityRowActive]}
+                  onPress={() => setActivityLevel(level)}
+                >
+                  <Ionicons
+                    name={activityLevel === level ? 'radio-button-on' : 'radio-button-off'}
+                    size={18}
+                    color={activityLevel === level ? colors.xpBar : colors.textSecondary}
+                  />
+                  <Text style={styles.activityRowText}>{ACTIVITY_LABELS[level]}</Text>
+                </TouchableOpacity>
+              ))}
+
+              <Text style={styles.settingsHint}>
+                Used by your coach to calculate your daily calorie and macro targets.
+              </Text>
+
+              <TouchableOpacity
+                style={[styles.saveSettingsBtn, (savingSettings || !birthYearValid || !heightValid) && { opacity: 0.6 }]}
+                onPress={handleSaveSettings}
+                disabled={savingSettings || !birthYearValid || !heightValid}
+              >
+                {savingSettings ? (
+                  <ActivityIndicator size="small" color={colors.text} />
+                ) : (
+                  <Text style={styles.saveSettingsBtnText}>Save</Text>
+                )}
+              </TouchableOpacity>
+            </ScrollView>
+          </View>
+        </KeyboardAvoidingView>
+      </Modal>
+
+      {/* Info Modal (Privacy / Help & Support) */}
+      <Modal visible={!!infoModal} transparent animationType="slide" onRequestClose={() => setInfoModal(null)}>
+        <View style={styles.overlay}>
+          <View style={styles.sheet}>
+            <View style={styles.sheetHeader}>
+              <Text style={styles.sheetTitle}>{infoModal ? INFO_CONTENT[infoModal].title : ''}</Text>
+              <TouchableOpacity onPress={() => setInfoModal(null)}>
+                <Ionicons name="close" size={22} color={colors.textSecondary} />
+              </TouchableOpacity>
+            </View>
+            <Text style={styles.infoBody}>{infoModal ? INFO_CONTENT[infoModal].body : ''}</Text>
           </View>
         </View>
       </Modal>
@@ -690,4 +876,29 @@ const styles = StyleSheet.create({
     borderColor: colors.primary,
   },
   logoutText: { fontSize: 16, fontWeight: '600', color: colors.primary },
+
+  detailLabel: { fontSize: 11, fontWeight: '700', color: colors.textSecondary, letterSpacing: 1, marginBottom: 6 },
+  infoBody: { fontSize: 14, color: colors.textSecondary, lineHeight: 21, paddingBottom: 8 },
+  rowChips: { flexDirection: 'row', gap: 10 },
+  chip: {
+    paddingHorizontal: 18, paddingVertical: 10, borderRadius: 10,
+    backgroundColor: colors.secondary, borderWidth: 1, borderColor: colors.border,
+  },
+  chipActive: { backgroundColor: colors.xpBar + '22', borderColor: colors.xpBar },
+  chipText: { color: colors.textSecondary, fontWeight: '600' },
+  chipTextActive: { color: colors.xpBar },
+  activityRow: {
+    flexDirection: 'row', alignItems: 'center', gap: 10,
+    paddingVertical: 10, paddingHorizontal: 12, borderRadius: 10, marginBottom: 6,
+    backgroundColor: colors.secondary, borderWidth: 1, borderColor: colors.border,
+  },
+  activityRowActive: { borderColor: colors.xpBar },
+  activityRowText: { color: colors.text, fontSize: 13, flexShrink: 1 },
+  settingsHint: { fontSize: 12, color: colors.textSecondary, marginTop: 16, lineHeight: 18 },
+  fieldError: { fontSize: 12, color: colors.warning, marginTop: 6 },
+  saveSettingsBtn: {
+    backgroundColor: colors.primary, borderRadius: 12, paddingVertical: 14,
+    alignItems: 'center', justifyContent: 'center', marginTop: 16, marginBottom: 8,
+  },
+  saveSettingsBtnText: { color: colors.text, fontSize: 15, fontWeight: '700' },
 });

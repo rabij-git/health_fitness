@@ -24,18 +24,21 @@ import {
   getMessages,
   sendMessage,
   markMessagesRead,
-  getWorkoutsForTrainee,
-  getWorkoutWithExercises,
-  getTraineeHistory,
   getTodayMetrics,
   setTodaySteps,
   addTodayWater,
   setTodayHeartRate,
+  getNutritionPlans,
+  getFoodLogEntries,
+  getMealCompletions,
   TodayVitals,
 } from '../../lib/db';
-import { DBUser, DBWeightLog, DBMessage, DBWorkout, DBExercise } from '../../lib/supabase';
+import { DBUser, DBWeightLog, DBMessage, DBNutritionPlan, DBFoodLogEntry, DBMealCompletion } from '../../lib/supabase';
+import { sumTodayAsPlannedCalories } from '../../lib/nutritionCalc';
 
-const DAY_LABELS = ['M', 'T', 'W', 'T', 'F', 'S', 'S'];
+function todayStr() {
+  return new Date().toISOString().split('T')[0];
+}
 
 interface Props {
   onLogout: () => void;
@@ -47,10 +50,6 @@ export default function TrainerDashboard({ onLogout, userId }: Props) {
   const [coachProfile, setCoachProfile] = useState<DBUser | null>(null);
   const [weightLogs, setWeightLogs] = useState<DBWeightLog[]>([]);
   const [dbMessages, setDbMessages] = useState<DBMessage[]>([]);
-  // Informational preview of the trainee's most recent active workout —
-  // just a preview; picking/starting a workout happens on the Workout tab.
-  const [primaryWorkout, setPrimaryWorkout] = useState<{ workout: DBWorkout; exercises: DBExercise[] } | null>(null);
-  const [sessionHistory, setSessionHistory] = useState<any[]>([]);
   const [coachId, setCoachId] = useState<string | null>(null);
   const [loadingProfile, setLoadingProfile] = useState(true);
 
@@ -61,28 +60,35 @@ export default function TrainerDashboard({ onLogout, userId }: Props) {
   const [dismissedNotifs, setDismissedNotifs] = useState<string[]>([]);
 
   const [dailyMetrics, setDailyMetrics] = useState<TodayVitals>({ steps: 0, water_ml: 0, heart_rate: null });
+  const [nutritionPlans, setNutritionPlans] = useState<DBNutritionPlan[]>([]);
+  const [foodEntries, setFoodEntries] = useState<DBFoodLogEntry[]>([]);
+  const [mealCompletionsByPlan, setMealCompletionsByPlan] = useState<Record<string, DBMealCompletion[]>>({});
   const [pedometerAvailable, setPedometerAvailable] = useState(false);
   const [hrInput, setHrInput] = useState('');
   const [savingHr, setSavingHr] = useState(false);
   const [loggingWaterAmount, setLoggingWaterAmount] = useState<number | null>(null);
 
   const loadHome = useCallback(async () => {
-    const [p, weights, workouts, history, metrics] = await Promise.all([
+    const [p, weights, metrics, plans, entries] = await Promise.all([
       getProfile(userId),
       getWeightLogs(userId),
-      getWorkoutsForTrainee(userId),
-      getTraineeHistory(userId),
       getTodayMetrics(userId),
+      getNutritionPlans(userId),
+      getFoodLogEntries(userId),
     ]);
     setProfile(p);
     setCoachId(p?.coach_id ?? null);
     setWeightLogs(weights);
-    setSessionHistory(history);
     setDailyMetrics(metrics);
+    setNutritionPlans(plans);
+    setFoodEntries(entries);
     setLoadingProfile(false);
 
-    const active = workouts.find(w => w.active);
-    setPrimaryWorkout(active ? await getWorkoutWithExercises(active.id) : null);
+    const plansWithMeals = plans.filter(p => p.active && p.meals && p.meals.length > 0);
+    const completionsList = await Promise.all(plansWithMeals.map(p => getMealCompletions(userId, p.id)));
+    const completionsMap: Record<string, DBMealCompletion[]> = {};
+    plansWithMeals.forEach((p, i) => { completionsMap[p.id] = completionsList[i]; });
+    setMealCompletionsByPlan(completionsMap);
   }, [userId]);
 
   // Steps come straight from the phone's own motion sensor — read today's
@@ -168,29 +174,20 @@ export default function TrainerDashboard({ onLogout, userId }: Props) {
     [dbMessages, coachId]
   );
 
-  // Weekly performance derived from session history (last 7 days)
-  const { weeklyPerf, weeklyDone, weeklyXp, weeklyAvgCompletion } = useMemo(() => {
-    const today = new Date();
-    const perf = DAY_LABELS.map((day, i) => {
-      const d = new Date(today);
-      d.setDate(today.getDate() - ((today.getDay() + 6) % 7) + i);
-      const dateStr = d.toISOString().split('T')[0];
-      const session = sessionHistory.find(s => s.completed_at?.startsWith(dateStr));
-      const pct = session ? (session.completion_pct ?? 0) / 100 : 0;
-      return { day, pct, done: !!session };
-    });
-    const done = perf.filter(d => d.done).length;
-    const xp = sessionHistory
-      .filter(s => {
-        const diffDays = (today.getTime() - new Date(s.completed_at).getTime()) / 86400000;
-        return diffDays <= 7;
-      })
-      .reduce((sum, s) => sum + (s.xp_awarded ?? 0), 0);
-    const avgCompletion = done > 0
-      ? Math.round(perf.filter(d => d.done).reduce((sum, d) => sum + d.pct * 100, 0) / done)
-      : 0;
-    return { weeklyPerf: perf, weeklyDone: done, weeklyXp: xp, weeklyAvgCompletion: avgCompletion };
-  }, [sessionHistory]);
+  // Calories card: today's logged intake against the active nutrition plan's
+  // target (same source FoodLogScreen's Nutrition tab uses) — manual food log
+  // entries plus any generated meals marked "As Planned" today (via
+  // sumTodayAsPlannedCalories, shared with FoodLogScreen so the two screens
+  // never disagree). food_log_entries only tracks total calories, not a macro
+  // breakdown, so macros here are the plan's targets, not what was actually eaten.
+  const { nutritionTargetPlan, todayCalories } = useMemo(() => {
+    const targetPlan = nutritionPlans.find(p => p.active && p.target_calories != null) ?? null;
+    const manualCalories = foodEntries
+      .filter(e => e.logged_at === todayStr())
+      .reduce((sum, e) => sum + (e.calories ?? 0), 0);
+    const mealCalories = sumTodayAsPlannedCalories(nutritionPlans, mealCompletionsByPlan, todayStr());
+    return { nutritionTargetPlan: targetPlan, todayCalories: manualCalories + mealCalories };
+  }, [nutritionPlans, foodEntries, mealCompletionsByPlan]);
 
   const handleSaveWeight = useCallback(async () => {
     const parsed = parseFloat(weight);
@@ -311,108 +308,6 @@ export default function TrainerDashboard({ onLogout, userId }: Props) {
           </View>
         </View>
 
-        {/* Weekly Performance Analysis Bar */}
-        <View style={styles.analysisCard}>
-          <View style={styles.analysisHeader}>
-            <Text style={styles.analysisTitle}>Weekly Performance</Text>
-            <View style={styles.analysisBadge}>
-              <Text style={styles.analysisBadgeText}>{weeklyDone}/7 days</Text>
-            </View>
-          </View>
-          <View style={styles.barsRow}>
-            {weeklyPerf.map((d, i) => (
-              <View key={i} style={styles.barItem}>
-                <View style={styles.barTrack}>
-                  <View style={[
-                    styles.barFill,
-                    { height: `${d.pct * 100}%` as any },
-                    d.done && { backgroundColor: colors.xpBar },
-                  ]} />
-                </View>
-                <Text style={[styles.barDay, d.done && { color: colors.xpBar }]}>{d.day}</Text>
-              </View>
-            ))}
-          </View>
-          <View style={styles.analysisStats}>
-            <View style={styles.analysisStat}>
-              <Text style={styles.analysisVal}>{weeklyDone}</Text>
-              <Text style={styles.analysisLabel}>Workouts</Text>
-            </View>
-            <View style={styles.analysisDivider} />
-            <View style={styles.analysisStat}>
-              <Text style={[styles.analysisVal, { color: colors.xpBar }]}>+{weeklyXp}</Text>
-              <Text style={styles.analysisLabel}>XP Earned</Text>
-            </View>
-            <View style={styles.analysisDivider} />
-            <View style={styles.analysisStat}>
-              <Text style={[styles.analysisVal, { color: colors.streak }]}>{weeklyAvgCompletion}%</Text>
-              <Text style={styles.analysisLabel}>Completion</Text>
-            </View>
-          </View>
-        </View>
-
-        {/* Calorie Bar */}
-        <View style={styles.calorieCard}>
-          <View style={styles.calorieRow}>
-            <View>
-              <Text style={styles.calorieTitle}>Calories Today</Text>
-              <Text style={styles.calorieSub}>Synced by your coach</Text>
-            </View>
-            <View style={styles.calsLeft}>
-              <Text style={styles.calsLeftNum}>—</Text>
-              <Text style={styles.calsLeftLabel}>not synced</Text>
-            </View>
-          </View>
-          <View style={styles.calBarBg}>
-            <View style={[styles.calBarFill, { width: '0%' as any }]} />
-          </View>
-          <View style={styles.macroRow}>
-            {[
-              { label: 'Protein', val: '—', color: colors.streak },
-              { label: 'Carbs', val: '—', color: '#4A9EFF' },
-              { label: 'Fat', val: '—', color: colors.gold },
-            ].map(m => (
-              <View key={m.label} style={styles.macroItem}>
-                <View style={[styles.macroDot, { backgroundColor: m.color }]} />
-                <Text style={styles.macroLabel}>{m.label}</Text>
-                <Text style={[styles.macroVal, { color: m.color }]}>{m.val}</Text>
-              </View>
-            ))}
-          </View>
-        </View>
-
-        {/* Workout Card — informational preview only; use the Workout tab below to pick/start one */}
-        <View style={styles.workoutCard}>
-          {primaryWorkout ? (
-            <>
-              <View style={styles.workoutHeader}>
-                <View>
-                  <Text style={styles.workoutTitle}>{primaryWorkout.workout.name}</Text>
-                  <Text style={styles.workoutSub}>
-                    {primaryWorkout.exercises.length} exercises • {primaryWorkout.workout.duration}
-                  </Text>
-                </View>
-                <View style={[styles.difficultyBadge, { backgroundColor: colors.accent + '66' }]}>
-                  <Text style={styles.difficultyText}>{primaryWorkout.workout.difficulty}</Text>
-                </View>
-              </View>
-              {primaryWorkout.exercises.slice(0, 3).map((ex) => (
-                <View key={ex.id} style={styles.exerciseRow}>
-                  <View style={styles.exerciseDot} />
-                  <Text style={styles.exerciseName}>{ex.name}</Text>
-                  <Text style={styles.exerciseMeta}>{ex.sets}×{ex.reps}</Text>
-                </View>
-              ))}
-            </>
-          ) : (
-            <View style={{ alignItems: 'center', paddingVertical: 20, gap: 8 }}>
-              <Ionicons name="barbell-outline" size={32} color={colors.textSecondary} />
-              <Text style={styles.workoutTitle}>No Workout Assigned Yet</Text>
-              <Text style={styles.workoutSub}>Your coach will assign your program soon.</Text>
-            </View>
-          )}
-        </View>
-
         {/* Today's Activity — steps auto-sync from the phone; weight, water,
             and heart rate are logged manually right here. */}
         <View style={styles.biometricsCard}>
@@ -515,24 +410,55 @@ export default function TrainerDashboard({ onLogout, userId }: Props) {
           </View>
         </View>
 
-        {/* Quick Stats */}
-        <View style={styles.quickStats}>
-          <View style={styles.quickStatCard}>
-            <Ionicons name="barbell" size={24} color={colors.primary} />
-            <Text style={styles.quickStatValue}>{sessionHistory.length}</Text>
-            <Text style={styles.quickStatLabel}>Workouts</Text>
+        {/* Calorie Bar — real data from the active nutrition plan + today's
+            food log (see FoodLogScreen's Nutrition tab for the same numbers).
+            Macros shown are the plan's targets, not what was actually eaten —
+            food_log_entries only tracks total calories, no macro breakdown. */}
+        <View style={styles.calorieCard}>
+          <View style={styles.calorieRow}>
+            <View>
+              <Text style={styles.calorieTitle}>Calories Today</Text>
+              <Text style={styles.calorieSub} numberOfLines={1}>
+                {nutritionTargetPlan ? nutritionTargetPlan.title : 'No active nutrition plan'}
+              </Text>
+            </View>
+            <View style={styles.calsLeft}>
+              <Text style={styles.calsLeftNum}>
+                {nutritionTargetPlan ? Math.max(0, nutritionTargetPlan.target_calories! - todayCalories) : '—'}
+              </Text>
+              <Text style={styles.calsLeftLabel}>{nutritionTargetPlan ? 'kcal left' : 'no target set'}</Text>
+            </View>
           </View>
-          <View style={styles.quickStatCard}>
-            <Ionicons name="flame" size={24} color={colors.streak} />
-            <Text style={styles.quickStatValue}>{user.streak}</Text>
-            <Text style={styles.quickStatLabel}>Day Streak</Text>
+          <View style={styles.calBarBg}>
+            <View style={[
+              styles.calBarFill,
+              {
+                width: `${nutritionTargetPlan
+                  ? Math.min(100, (todayCalories / nutritionTargetPlan.target_calories!) * 100)
+                  : 0}%` as any,
+              },
+            ]} />
           </View>
-          <View style={styles.quickStatCard}>
-            <Ionicons name="stats-chart" size={24} color={colors.xpBar} />
-            <Text style={styles.quickStatValue}>{user.xp.toLocaleString()}</Text>
-            <Text style={styles.quickStatLabel}>Total XP</Text>
-          </View>
+          {nutritionTargetPlan && (nutritionTargetPlan.target_protein != null || nutritionTargetPlan.target_carbs != null || nutritionTargetPlan.target_fat != null) && (
+            <>
+              <Text style={styles.macroCaption}>DAILY TARGETS</Text>
+              <View style={styles.macroRow}>
+                {[
+                  { label: 'Protein', val: nutritionTargetPlan.target_protein, color: colors.streak },
+                  { label: 'Carbs', val: nutritionTargetPlan.target_carbs, color: '#4A9EFF' },
+                  { label: 'Fat', val: nutritionTargetPlan.target_fat, color: colors.gold },
+                ].map(m => (
+                  <View key={m.label} style={styles.macroItem}>
+                    <View style={[styles.macroDot, { backgroundColor: m.color }]} />
+                    <Text style={styles.macroLabel}>{m.label}</Text>
+                    <Text style={[styles.macroVal, { color: m.color }]}>{m.val != null ? `${m.val}g` : '—'}</Text>
+                  </View>
+                ))}
+              </View>
+            </>
+          )}
         </View>
+
       </ScrollView>
 
       {/* Message Coach Modal */}
@@ -701,47 +627,6 @@ const styles = StyleSheet.create({
   flameItem: { alignItems: 'center', gap: 4 },
   flameDay: { fontSize: 10, color: colors.textSecondary, fontWeight: '600' },
 
-  // Analysis card
-  analysisCard: {
-    backgroundColor: colors.card,
-    borderRadius: 16,
-    padding: 18,
-    marginBottom: 14,
-    borderWidth: 1,
-    borderColor: colors.border,
-  },
-  analysisHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16 },
-  analysisTitle: { fontSize: 16, fontWeight: '700', color: colors.text },
-  analysisBadge: {
-    backgroundColor: colors.xpBar + '22',
-    paddingHorizontal: 10,
-    paddingVertical: 4,
-    borderRadius: 8,
-  },
-  analysisBadgeText: { fontSize: 12, fontWeight: '700', color: colors.xpBar },
-  barsRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-end', height: 64, marginBottom: 16 },
-  barItem: { alignItems: 'center', flex: 1, gap: 4 },
-  barTrack: {
-    width: 20,
-    height: 52,
-    backgroundColor: colors.secondary,
-    borderRadius: 6,
-    overflow: 'hidden',
-    justifyContent: 'flex-end',
-  },
-  barFill: { width: '100%', backgroundColor: colors.border, borderRadius: 6 },
-  barDay: { fontSize: 10, color: colors.textSecondary, fontWeight: '600' },
-  analysisStats: {
-    flexDirection: 'row',
-    borderTopWidth: 1,
-    borderTopColor: colors.border,
-    paddingTop: 14,
-  },
-  analysisStat: { flex: 1, alignItems: 'center' },
-  analysisVal: { fontSize: 18, fontWeight: '800', color: colors.text },
-  analysisLabel: { fontSize: 10, color: colors.textSecondary, fontWeight: '500', marginTop: 2 },
-  analysisDivider: { width: 1, backgroundColor: colors.border, marginVertical: 4 },
-
   // Calorie card
   calorieCard: {
     backgroundColor: colors.card,
@@ -759,39 +644,12 @@ const styles = StyleSheet.create({
   calsLeftLabel: { fontSize: 11, color: colors.textSecondary, fontWeight: '500' },
   calBarBg: { height: 10, backgroundColor: colors.secondary, borderRadius: 5, overflow: 'hidden', marginBottom: 14 },
   calBarFill: { height: '100%', backgroundColor: colors.success, borderRadius: 5 },
+  macroCaption: { fontSize: 10, color: colors.textSecondary, fontWeight: '700', letterSpacing: 1, marginBottom: 8 },
   macroRow: { flexDirection: 'row', justifyContent: 'space-around' },
   macroItem: { alignItems: 'center', gap: 4 },
   macroDot: { width: 10, height: 10, borderRadius: 5 },
   macroLabel: { fontSize: 11, color: colors.textSecondary, fontWeight: '500' },
   macroVal: { fontSize: 13, fontWeight: '700', color: colors.text },
-
-  // Workout card
-  workoutCard: {
-    backgroundColor: colors.card,
-    borderRadius: 16,
-    padding: 18,
-    marginBottom: 14,
-    borderWidth: 1,
-    borderColor: colors.border,
-    borderLeftWidth: 3,
-    borderLeftColor: colors.primary,
-  },
-  workoutHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 16 },
-  workoutTitle: { fontSize: 18, fontWeight: '800', color: colors.text },
-  workoutSub: { fontSize: 12, color: colors.textSecondary, marginTop: 3 },
-  difficultyBadge: { paddingHorizontal: 10, paddingVertical: 5, borderRadius: 10 },
-  difficultyText: { fontSize: 11, fontWeight: '700', color: colors.xpBar },
-  exerciseRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingVertical: 8,
-    borderBottomWidth: 1,
-    borderBottomColor: colors.border,
-    gap: 10,
-  },
-  exerciseDot: { width: 8, height: 8, borderRadius: 4, backgroundColor: colors.primary },
-  exerciseName: { flex: 1, fontSize: 14, color: colors.text, fontWeight: '500' },
-  exerciseMeta: { fontSize: 13, color: colors.textSecondary, fontWeight: '600' },
 
   // Biometrics
   biometricsCard: {
@@ -856,21 +714,6 @@ const styles = StyleSheet.create({
   saveButtonSuccess: { backgroundColor: colors.success },
   lastWeightRow: { flexDirection: 'row', alignItems: 'center', gap: 6 },
   lastWeightText: { fontSize: 12, color: colors.textSecondary },
-
-  // Quick stats
-  quickStats: { flexDirection: 'row', gap: 10 },
-  quickStatCard: {
-    flex: 1,
-    backgroundColor: colors.card,
-    borderRadius: 14,
-    padding: 16,
-    alignItems: 'center',
-    gap: 8,
-    borderWidth: 1,
-    borderColor: colors.border,
-  },
-  quickStatValue: { fontSize: 20, fontWeight: '800', color: colors.text },
-  quickStatLabel: { fontSize: 11, color: colors.textSecondary, fontWeight: '500' },
 
   // Modals
   overlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.7)', justifyContent: 'flex-end' },
