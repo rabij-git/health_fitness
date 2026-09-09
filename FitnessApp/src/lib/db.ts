@@ -154,6 +154,7 @@ export interface ExercisePayloadEntry {
   reps: string;
   weight?: string;
   time?: string; // duration like "30s"/"5m" — program_exercises only; omitted entirely for workout exercises
+  rest_seconds?: number | null; // rest period between sets, in seconds; null/0 = no rest timer
 }
 
 // Diffs an edited exercise list against what's currently in the DB for a given

@@ -9,8 +9,9 @@ import {
   ActivityIndicator,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { useFocusEffect } from '@react-navigation/native';
+import { useFocusEffect, useRoute, useNavigation } from '@react-navigation/native';
 import { Ionicons } from '@expo/vector-icons';
+import { useAudioPlayer } from 'expo-audio';
 import { colors } from '../../theme/colors';
 import { Workout, mockMedals, computeLevelFromXp } from '../../data/mockData';
 import {
@@ -72,8 +73,17 @@ interface ExerciseLog {
   coachReps: string;
   coachWeight?: string;
   coachTime?: string;
+  restSeconds?: number;
   completed: boolean;
   sets: SetLog[];
+}
+
+interface RestTimerState {
+  exerciseId: string;
+  exerciseName: string;
+  setIndex: number;
+  secondsLeft: number;
+  totalSeconds: number;
 }
 
 interface Props {
@@ -88,6 +98,7 @@ function buildInitialExercises(workout: Workout): ExerciseLog[] {
     coachReps: ex.reps,
     coachWeight: ex.weight,
     coachTime: ex.time,
+    restSeconds: ex.restSeconds,
     completed: false,
     sets: Array.from({ length: ex.sets }, () => ({
       reps: ex.reps,
@@ -95,6 +106,12 @@ function buildInitialExercises(workout: Workout): ExerciseLog[] {
       effort: null,
     })),
   }));
+}
+
+function formatRestTime(seconds: number): string {
+  const m = Math.floor(seconds / 60);
+  const s = seconds % 60;
+  return `${m}:${String(s).padStart(2, '0')}`;
 }
 
 export default function WorkoutScreen({ userId }: Props) {
@@ -106,6 +123,18 @@ export default function WorkoutScreen({ userId }: Props) {
   const [loadingWorkouts, setLoadingWorkouts] = useState(true);
   const [isPending, setIsPending] = useState(false);
   const [selectedWorkoutId, setSelectedWorkoutId] = useState<string | null>(null);
+
+  // Deep-link from the Home screen's "Workout Today" list — same
+  // openXId route-param pattern CoachDashboard uses to jump into a specific
+  // trainee on CoachTrainees.
+  const route = useRoute<any>();
+  const navigation = useNavigation<any>();
+  useEffect(() => {
+    const openId = route.params?.openWorkoutId;
+    if (!openId) return;
+    setSelectedWorkoutId(openId);
+    navigation.setParams({ openWorkoutId: undefined });
+  }, [route.params?.openWorkoutId, navigation]);
 
   useFocusEffect(useCallback(() => {
     let cancelled = false;
@@ -157,6 +186,27 @@ export default function WorkoutScreen({ userId }: Props) {
   const [modalIsComplete, setModalIsComplete] = useState(false);
   const [newlyEarnedMedalIds, setNewlyEarnedMedalIds] = useState<string[]>([]);
 
+  // ── Rest timer (between sets) ──
+  const [restTimer, setRestTimer] = useState<RestTimerState | null>(null);
+  const tickPlayer = useAudioPlayer(require('../../../assets/sounds/tick.wav'));
+
+  useEffect(() => {
+    if (!restTimer) return;
+    if (restTimer.secondsLeft <= 0) {
+      setRestTimer(null);
+      return;
+    }
+    // Tick once per second for the final 5 seconds so the trainee knows to start the next set.
+    if (restTimer.secondsLeft <= 5) {
+      tickPlayer.seekTo(0);
+      tickPlayer.play();
+    }
+    const timeout = setTimeout(() => {
+      setRestTimer(prev => (prev ? { ...prev, secondsLeft: prev.secondsLeft - 1 } : prev));
+    }, 1000);
+    return () => clearTimeout(timeout);
+  }, [restTimer]);
+
   useEffect(() => {
     if (!selectedWorkoutId) {
       setDbWorkout(null);
@@ -184,6 +234,7 @@ export default function WorkoutScreen({ userId }: Props) {
             reps: ex.reps,
             weight: ex.weight ?? undefined,
             time: ex.time ?? undefined,
+            restSeconds: ex.rest_seconds ?? undefined,
             completed: false,
           })),
         };
@@ -210,6 +261,22 @@ export default function WorkoutScreen({ userId }: Props) {
     }));
   }, []);
 
+  // Auto-tick an exercise's checkbox the moment every one of its sets has a
+  // logged effort — the trainee no longer has to tap it manually to advance.
+  useEffect(() => {
+    setExercises(prev => {
+      let changed = false;
+      const next = prev.map(ex => {
+        if (!ex.completed && ex.sets.length > 0 && ex.sets.every(s => s.effort !== null)) {
+          changed = true;
+          return { ...ex, completed: true };
+        }
+        return ex;
+      });
+      return changed ? next : prev;
+    });
+  }, [exercises]);
+
   const { completedCount, totalSets, loggedSets, progress, isFullyComplete } = useMemo(() => {
     const completed = exercises.filter(e => e.completed).length;
     const total = exercises.reduce((sum, e) => sum + e.sets.length, 0);
@@ -221,6 +288,14 @@ export default function WorkoutScreen({ userId }: Props) {
       progress: total > 0 ? logged / total : 0,
       isFullyComplete: completed === exercises.length && exercises.length > 0,
     };
+  }, [exercises]);
+
+  // Exercises must be done in order — only the first not-yet-completed exercise
+  // is interactive; everything before it (already completed) and after it (not
+  // reached yet) is locked. Equals exercises.length once every exercise is done.
+  const activeExerciseIndex = useMemo(() => {
+    const idx = exercises.findIndex(e => !e.completed);
+    return idx === -1 ? exercises.length : idx;
   }, [exercises]);
 
   const handleSubmit = async () => {
@@ -538,6 +613,15 @@ export default function WorkoutScreen({ userId }: Props) {
 
   return (
     <SafeAreaView style={styles.container}>
+      {restTimer && (
+        <View style={styles.restTimerBanner}>
+          <Ionicons name="time" size={20} color={colors.text} />
+          <View style={{ flex: 1 }}>
+            <Text style={styles.restTimerLabel}>Resting — {restTimer.exerciseName}</Text>
+            <Text style={styles.restTimerTime}>{formatRestTime(restTimer.secondsLeft)}</Text>
+          </View>
+        </View>
+      )}
       <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.scrollContent}>
         <TouchableOpacity style={styles.backRow} onPress={() => setSelectedWorkoutId(null)}>
           <Ionicons name="chevron-back" size={20} color={colors.xpBar} />
@@ -566,10 +650,14 @@ export default function WorkoutScreen({ userId }: Props) {
 
         {/* Exercise cards */}
         <Text style={styles.sectionTitle}>EXERCISES</Text>
-        {exercises.map((exercise, exIndex) => (
+        {exercises.map((exercise, exIndex) => {
+          const isPastLocked = exIndex < activeExerciseIndex;
+          const isFutureLocked = exIndex > activeExerciseIndex;
+          const isLocked = isPastLocked || isFutureLocked;
+          return (
           <View
             key={exercise.id}
-            style={[styles.exerciseCard, exercise.completed && styles.exerciseCardDone]}
+            style={[styles.exerciseCard, exercise.completed && styles.exerciseCardDone, isFutureLocked && styles.exerciseCardLocked]}
           >
             {/* Exercise header row */}
             <View style={styles.exerciseHeaderRow}>
@@ -585,13 +673,24 @@ export default function WorkoutScreen({ userId }: Props) {
                   <Text style={styles.exerciseTimeBadgeText}>{exercise.coachTime}</Text>
                 </View>
               )}
-              <TouchableOpacity
-                style={[styles.checkbox, exercise.completed && styles.checkboxDone]}
-                onPress={() => toggleExercise(exercise.id)}
-              >
-                {exercise.completed && <Ionicons name="checkmark" size={18} color={colors.text} />}
-              </TouchableOpacity>
+              {isFutureLocked ? (
+                <View style={styles.checkboxLocked}>
+                  <Ionicons name="lock-closed" size={14} color={colors.textSecondary} />
+                </View>
+              ) : (
+                <TouchableOpacity
+                  style={[styles.checkbox, exercise.completed && styles.checkboxDone]}
+                  onPress={() => toggleExercise(exercise.id)}
+                  disabled={isPastLocked}
+                >
+                  {exercise.completed && <Ionicons name="checkmark" size={18} color={colors.text} />}
+                </TouchableOpacity>
+              )}
             </View>
+
+            {isFutureLocked && (
+              <Text style={styles.exerciseLockedHint}>Complete the previous exercise to unlock</Text>
+            )}
 
             {/* Set table header */}
             <View style={styles.tableHeader}>
@@ -601,8 +700,14 @@ export default function WorkoutScreen({ userId }: Props) {
               <Text style={[styles.colHeader, styles.colEffort]}>EFFORT</Text>
             </View>
 
-            {/* Set rows */}
-            {exercise.sets.map((set, setIndex) => (
+            {/* Set rows — must be logged in order too: only the first not-yet-logged
+                set in the active exercise is interactive, same locking pattern as exercises. */}
+            {(() => {
+              const firstUnloggedSetIndex = exercise.sets.findIndex(s => s.effort === null);
+              const activeSetIndex = firstUnloggedSetIndex === -1 ? exercise.sets.length : firstUnloggedSetIndex;
+              return exercise.sets.map((set, setIndex) => {
+                const isSetLocked = isLocked || setIndex !== activeSetIndex;
+                return (
               <View key={setIndex} style={styles.setRow}>
                 {/* Set number */}
                 <View style={styles.colSet}>
@@ -637,8 +742,22 @@ export default function WorkoutScreen({ userId }: Props) {
                           styles.effortBtn,
                           { borderColor: cfg.color },
                           selected && { backgroundColor: cfg.color },
+                          (isSetLocked || !!restTimer) && styles.effortBtnLocked,
                         ]}
-                        onPress={() => updateSet(exercise.id, setIndex, 'effort', selected ? null : level)}
+                        disabled={isSetLocked || !!restTimer}
+                        onPress={() => {
+                          const newValue = selected ? null : level;
+                          updateSet(exercise.id, setIndex, 'effort', newValue);
+                          if (newValue !== null && exercise.restSeconds && exercise.restSeconds > 0) {
+                            setRestTimer({
+                              exerciseId: exercise.id,
+                              exerciseName: exercise.name,
+                              setIndex,
+                              secondsLeft: exercise.restSeconds,
+                              totalSeconds: exercise.restSeconds,
+                            });
+                          }
+                        }}
                         activeOpacity={0.7}
                       >
                         <Text style={[styles.effortBtnText, selected && styles.effortBtnTextSelected]}>
@@ -649,7 +768,9 @@ export default function WorkoutScreen({ userId }: Props) {
                   })}
                 </View>
               </View>
-            ))}
+                );
+              });
+            })()}
 
             {/* Effort legend — shows under a set when effort is selected */}
             {exercise.sets.some((s) => s.effort !== null) && (
@@ -667,7 +788,8 @@ export default function WorkoutScreen({ userId }: Props) {
               </View>
             )}
           </View>
-        ))}
+          );
+        })}
 
         {/* Effort scale key */}
         <View style={styles.effortKey}>
@@ -762,6 +884,16 @@ const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: colors.background },
   scrollContent: { padding: 20, paddingBottom: 48 },
 
+  // Rest timer banner — floats above the scroll content between sets
+  restTimerBanner: {
+    position: 'absolute', top: 8, left: 16, right: 16, zIndex: 10,
+    flexDirection: 'row', alignItems: 'center', gap: 10,
+    backgroundColor: colors.primary, borderRadius: 14, padding: 14,
+    shadowColor: '#000', shadowOpacity: 0.3, shadowRadius: 8, shadowOffset: { width: 0, height: 4 }, elevation: 6,
+  },
+  restTimerLabel: { fontSize: 12, fontWeight: '700', color: colors.text, opacity: 0.85 },
+  restTimerTime: { fontSize: 20, fontWeight: '800', color: colors.text },
+
   // Pending state
   pendingContainer: { flex: 1, alignItems: 'center', justifyContent: 'center', padding: 32 },
   pendingTitle: { fontSize: 24, fontWeight: '800', color: colors.text, marginTop: 20, marginBottom: 10 },
@@ -829,6 +961,7 @@ const styles = StyleSheet.create({
     borderColor: colors.border,
   },
   exerciseCardDone: { borderColor: colors.xpBar + '66', backgroundColor: '#0a1f1d' },
+  exerciseCardLocked: { opacity: 0.45 },
 
   exerciseHeaderRow: { flexDirection: 'row', alignItems: 'center', gap: 12, marginBottom: 14 },
   exerciseTimeBadge: {
@@ -843,6 +976,7 @@ const styles = StyleSheet.create({
   exerciseNumberText: { fontSize: 14, fontWeight: '700', color: colors.xpBar },
   exerciseName: { flex: 1, fontSize: 17, fontWeight: '700', color: colors.text },
   exerciseNameDone: { color: colors.textSecondary, textDecorationLine: 'line-through' },
+  exerciseLockedHint: { fontSize: 12, color: colors.textSecondary, fontStyle: 'italic', marginTop: -8, marginBottom: 14 },
 
   checkbox: {
     width: 36, height: 36, borderRadius: 10,
@@ -850,6 +984,11 @@ const styles = StyleSheet.create({
     alignItems: 'center', justifyContent: 'center',
   },
   checkboxDone: { backgroundColor: colors.xpBar, borderColor: colors.xpBar },
+  checkboxLocked: {
+    width: 36, height: 36, borderRadius: 10,
+    borderWidth: 2, borderColor: colors.border,
+    alignItems: 'center', justifyContent: 'center',
+  },
 
   // Set table
   tableHeader: {
@@ -901,6 +1040,7 @@ const styles = StyleSheet.create({
   },
   effortBtnText: { fontSize: 11, fontWeight: '700', color: colors.textSecondary },
   effortBtnTextSelected: { color: '#fff' },
+  effortBtnLocked: { opacity: 0.35 },
 
   // Effort legend under sets
   effortLegendRow: { marginTop: 10, gap: 4 },

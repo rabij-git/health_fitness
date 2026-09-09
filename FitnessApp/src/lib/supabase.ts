@@ -83,6 +83,7 @@ export interface DBExercise {
   reps: string;
   weight?: string;
   time: string; // duration like "30s" or "5m"; plain number or "0" = not timed
+  rest_seconds?: number | null; // rest period between sets; null/0 = no rest timer
   sort_order: number;
 }
 
@@ -94,6 +95,7 @@ export interface DBProgramExercise {
   reps: string;
   weight?: string;
   time: string; // duration like "30s" or "5m"; plain number or "0" = not timed
+  rest_seconds?: number | null; // rest period between sets; null/0 = no rest timer
   sort_order: number;
 }
 

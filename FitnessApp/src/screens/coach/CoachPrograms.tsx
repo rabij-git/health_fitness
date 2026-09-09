@@ -32,10 +32,11 @@ interface ExerciseEntry {
   reps: string;
   weight: string;
   time: string; // minutes, default '0'
+  restSeconds: string; // rest between sets, in seconds; '0' = no rest timer
 }
 
 function buildEmptyExercise(): ExerciseEntry {
-  return { id: String(Date.now() + Math.random()), name: '', sets: '3', reps: '10', weight: '', time: '0' };
+  return { id: String(Date.now() + Math.random()), name: '', sets: '3', reps: '10', weight: '', time: '0', restSeconds: '0' };
 }
 
 const CATEGORY_ICONS: Record<string, string> = {
@@ -60,6 +61,7 @@ function exercisesPayload(exercises: ExerciseEntry[]) {
     reps: e.reps || '10',
     weight: withKg(e.weight),
     time: e.time.trim() || '0',
+    rest_seconds: parseInt(e.restSeconds) || 0,
   }));
 }
 
@@ -248,7 +250,7 @@ export default function CoachPrograms({ coachId }: Props) {
       if (prev[lastIdx] && !prev[lastIdx].name.trim()) {
         return prev.map((e, i) => i === lastIdx ? { ...e, ...item, id: e.id } : e);
       }
-      return [...prev, { id: String(Date.now() + Math.random()), ...item }];
+      return [...prev, { id: String(Date.now() + Math.random()), restSeconds: '0', ...item }];
     });
   }, []);
 
@@ -293,6 +295,7 @@ export default function CoachPrograms({ coachId }: Props) {
             reps: ex.reps,
             weight: stripKg(ex.weight),
             time: sanitizeTimeInput(ex.time ?? '0'),
+            restSeconds: String(ex.rest_seconds ?? '0'),
           }))
         : [buildEmptyExercise()]
     );
@@ -305,7 +308,7 @@ export default function CoachPrograms({ coachId }: Props) {
       if (prev[lastIdx] && !prev[lastIdx].name.trim()) {
         return prev.map((e, i) => i === lastIdx ? { ...e, ...item, id: e.id } : e);
       }
-      return [...prev, { id: String(Date.now() + Math.random()), ...item }];
+      return [...prev, { id: String(Date.now() + Math.random()), restSeconds: '0', ...item }];
     });
   }, []);
 
@@ -602,6 +605,17 @@ export default function CoachPrograms({ coachId }: Props) {
                           placeholderTextColor={colors.textSecondary}
                         />
                       </View>
+                      <View style={styles.exMetaField}>
+                        <Text style={styles.exMetaLabel} numberOfLines={1}>REST (SEC)</Text>
+                        <TextInput
+                          style={styles.exMetaInput}
+                          value={ex.restSeconds}
+                          onChangeText={v => setExercises(prev => prev.map(e => e.id === ex.id ? { ...e, restSeconds: sanitizeCount(v, 0, 600) } : e))}
+                          placeholder="0"
+                          keyboardType="number-pad"
+                          placeholderTextColor={colors.textSecondary}
+                        />
+                      </View>
                       {exercises.length > 1 && (
                         <TouchableOpacity
                           onPress={() => setExercises(prev => prev.filter(e => e.id !== ex.id))}
@@ -826,6 +840,17 @@ export default function CoachPrograms({ coachId }: Props) {
                             placeholderTextColor={colors.textSecondary}
                           />
                         </View>
+                        <View style={styles.exMetaField}>
+                          <Text style={styles.exMetaLabel} numberOfLines={1}>REST (SEC)</Text>
+                          <TextInput
+                            style={styles.exMetaInput}
+                            value={ex.restSeconds}
+                            onChangeText={v => setEditExercises(prev => prev.map(e => e.id === ex.id ? { ...e, restSeconds: sanitizeCount(v, 0, 600) } : e))}
+                            placeholder="0"
+                            keyboardType="number-pad"
+                            placeholderTextColor={colors.textSecondary}
+                          />
+                        </View>
                         <TouchableOpacity
                           onPress={() => setEditExercises(prev => prev.filter(e => e.id !== ex.id))}
                           style={styles.removeBtn}
@@ -850,7 +875,7 @@ export default function CoachPrograms({ coachId }: Props) {
                     <Text style={styles.backBtnText}>Cancel</Text>
                   </TouchableOpacity>
                   <TouchableOpacity
-                    style={[styles.nextBtn, (!editProgName.trim() || saving) && styles.nextBtnDisabled]}
+                    style={[styles.nextBtn, styles.nextBtnInFooter, (!editProgName.trim() || saving) && styles.nextBtnDisabled]}
                     onPress={saveEditProgram}
                     disabled={!editProgName.trim() || saving}
                   >
@@ -1066,8 +1091,8 @@ const styles = StyleSheet.create({
   },
   exNumText: { fontSize: 13, fontWeight: '700', color: colors.xpBar },
   exFields: { flex: 1 },
-  exMetaRow: { flexDirection: 'row', gap: 8, alignItems: 'center' },
-  exMetaField: { flex: 1 },
+  exMetaRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, alignItems: 'center' },
+  exMetaField: { flex: 1, minWidth: 70 },
   exMetaLabel: { fontSize: 9, fontWeight: '700', color: colors.textSecondary, letterSpacing: 1, marginBottom: 4 },
   exMetaInput: {
     backgroundColor: colors.secondary, borderRadius: 8, padding: 10,
@@ -1093,6 +1118,9 @@ const styles = StyleSheet.create({
     gap: 8, paddingVertical: 15, borderRadius: 12, backgroundColor: colors.primary,
     marginBottom: 20,
   },
+  // Used when nextBtn sits next to backBtn in modalFooter — cancels nextBtn's own
+  // marginBottom so a row-stretch alignment doesn't make it shorter than backBtn.
+  nextBtnInFooter: { marginBottom: 0 },
   nextBtnDisabled: { opacity: 0.4 },
   nextBtnText: { fontSize: 15, fontWeight: '700', color: colors.text },
 });

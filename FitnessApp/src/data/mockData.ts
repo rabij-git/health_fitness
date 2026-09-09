@@ -7,6 +7,7 @@ export interface Exercise {
   reps: string;
   weight?: string;
   time?: string;
+  restSeconds?: number; // rest period between sets, in seconds; 0/undefined = no rest timer
   completed: boolean;
 }
 

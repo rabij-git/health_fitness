@@ -402,19 +402,38 @@ export default function FoodLogScreen({ userId }: { userId: string }) {
         <Text style={styles.title}>Nutrition</Text>
         <Text style={styles.subtitle}>Your nutrition plans and daily food log</Text>
 
-        {targetPlan?.target_calories != null && (
-          <View style={styles.todayProgressCard}>
-            <Text style={styles.todayProgressText}>
-              {todayCalories} / {targetPlan.target_calories} kcal today
-            </Text>
-            <View style={styles.progressBg}>
-              <View style={[
-                styles.progressFill,
-                { width: `${Math.min(100, (todayCalories / targetPlan.target_calories) * 100)}%` as any },
-              ]} />
+        {targetPlan?.target_calories != null && (() => {
+          const overBudget = todayCalories > targetPlan.target_calories!;
+          return (
+            <View style={styles.todayProgressCard}>
+              <Text style={[styles.todayProgressText, overBudget && styles.todayProgressTextOver]}>
+                {todayCalories} / {targetPlan.target_calories} kcal today
+              </Text>
+              <View style={styles.progressBg}>
+                <View style={[
+                  styles.progressFill,
+                  overBudget && styles.progressFillOver,
+                  { width: `${Math.min(100, (todayCalories / targetPlan.target_calories!) * 100)}%` as any },
+                ]} />
+              </View>
+              {(targetPlan.target_protein != null || targetPlan.target_carbs != null || targetPlan.target_fat != null) && (
+                <View style={styles.macroTargetRow}>
+                  {[
+                    { label: 'Protein', val: targetPlan.target_protein, color: colors.streak },
+                    { label: 'Carbs', val: targetPlan.target_carbs, color: '#4A9EFF' },
+                    { label: 'Fat', val: targetPlan.target_fat, color: colors.gold },
+                  ].map(m => (
+                    <View key={m.label} style={styles.macroTargetItem}>
+                      <View style={[styles.macroTargetDot, { backgroundColor: m.color }]} />
+                      <Text style={styles.macroTargetLabel}>{m.label}</Text>
+                      <Text style={[styles.macroTargetVal, { color: m.color }]}>{m.val != null ? `${m.val}g` : '—'}</Text>
+                    </View>
+                  ))}
+                </View>
+              )}
             </View>
-          </View>
-        )}
+          );
+        })()}
 
         {waterTargetPlan?.target_water_ml != null && (
           <View style={styles.todayProgressCard}>
@@ -471,12 +490,6 @@ export default function FoodLogScreen({ userId }: { userId: string }) {
         )}
 
         {/* Food Log */}
-        {days.length === 0 && !loading && (
-          <View style={styles.emptyPlan}>
-            <Ionicons name="fast-food-outline" size={32} color={colors.textSecondary} />
-            <Text style={styles.emptyPlanText}>No food logged yet.</Text>
-          </View>
-        )}
         {days.map(day => (
           <View key={day.date} style={styles.dayGroup}>
             <Text style={styles.dayLabel}>{formatDay(day.date)}</Text>
@@ -570,9 +583,16 @@ const styles = StyleSheet.create({
     borderWidth: 1, borderColor: colors.border,
   },
   todayProgressText: { fontSize: 13, fontWeight: '600', color: colors.text, marginBottom: 8 },
+  todayProgressTextOver: { color: colors.primary },
   progressBg: { height: 8, backgroundColor: colors.secondary, borderRadius: 4, overflow: 'hidden' },
   progressFill: { height: '100%', backgroundColor: colors.xpBar, borderRadius: 4 },
   progressFillWater: { backgroundColor: colors.primary },
+  progressFillOver: { backgroundColor: colors.primary },
+  macroTargetRow: { flexDirection: 'row', justifyContent: 'space-around', marginTop: 14, paddingTop: 14, borderTopWidth: 1, borderTopColor: colors.border },
+  macroTargetItem: { alignItems: 'center', gap: 4 },
+  macroTargetDot: { width: 10, height: 10, borderRadius: 5 },
+  macroTargetLabel: { fontSize: 11, color: colors.textSecondary, fontWeight: '500' },
+  macroTargetVal: { fontSize: 13, fontWeight: '700' },
 
   emptyPlan: { alignItems: 'center', paddingVertical: 24, gap: 10, marginBottom: 8 },
   emptyPlanText: { fontSize: 13, color: colors.textSecondary, textAlign: 'center', paddingHorizontal: 24 },

@@ -63,6 +63,7 @@ interface ExerciseEntry {
   reps: string;
   weight: string;
   time: string; // duration like "30s" or "5m", default '0'
+  restSeconds: string; // rest between sets, in seconds; '0' = no rest timer
 }
 
 interface Props {
@@ -70,7 +71,7 @@ interface Props {
 }
 
 function buildEmptyExercise(): ExerciseEntry {
-  return { id: String(Date.now() + Math.random()), name: '', sets: '3', reps: '10', weight: '', time: '0' };
+  return { id: String(Date.now() + Math.random()), name: '', sets: '3', reps: '10', weight: '', time: '0', restSeconds: '0' };
 }
 
 const CATEGORY_ICONS: Record<string, string> = {
@@ -580,6 +581,7 @@ export default function CoachTrainees({ coachId }: Props) {
             reps: ex.reps,
             weight: stripKg(ex.weight),
             time: sanitizeTimeInput(ex.time ?? '0'),
+            restSeconds: String(ex.rest_seconds ?? '0'),
           }))
         : [buildEmptyExercise()]
     );
@@ -591,7 +593,7 @@ export default function CoachTrainees({ coachId }: Props) {
       if (prev[lastIdx] && !prev[lastIdx].name.trim()) {
         return prev.map((e, i) => i === lastIdx ? { ...e, ...item, id: e.id } : e);
       }
-      return [...prev, { id: String(Date.now() + Math.random()), ...item }];
+      return [...prev, { id: String(Date.now() + Math.random()), restSeconds: '0', ...item }];
     });
   }, []);
 
@@ -628,6 +630,7 @@ export default function CoachTrainees({ coachId }: Props) {
         reps: e.reps || '10',
         weight: withKg(e.weight),
         time: e.time.trim() || '0',
+        rest_seconds: parseInt(e.restSeconds) || 0,
       }));
       setSaving(true);
       try {
@@ -666,6 +669,7 @@ export default function CoachTrainees({ coachId }: Props) {
           reps: ex.reps,
           weight: stripKg(ex.weight),
           time: sanitizeTimeInput(ex.time ?? '0'),
+          restSeconds: String(ex.rest_seconds ?? '0'),
         }))
       );
       setEditActiveCategory('Push');
@@ -682,7 +686,7 @@ export default function CoachTrainees({ coachId }: Props) {
       if (prev[lastIdx] && !prev[lastIdx].name.trim()) {
         return prev.map((e, i) => i === lastIdx ? { ...e, ...item, id: e.id } : e);
       }
-      return [...prev, { id: String(Date.now() + Math.random()), ...item }];
+      return [...prev, { id: String(Date.now() + Math.random()), restSeconds: '0', ...item }];
     });
   }, []);
 
@@ -695,6 +699,7 @@ export default function CoachTrainees({ coachId }: Props) {
       reps: e.reps || '10',
       weight: withKg(e.weight),
       time: e.time.trim() || '0',
+      rest_seconds: parseInt(e.restSeconds) || 0,
     }));
     setSaving(true);
     try {
@@ -1917,6 +1922,17 @@ export default function CoachTrainees({ coachId }: Props) {
                             placeholderTextColor={colors.textSecondary}
                           />
                         </View>
+                        <View style={styles.exMetaField}>
+                          <Text style={styles.exMetaLabel} numberOfLines={1}>REST (SEC)</Text>
+                          <TextInput
+                            style={styles.exMetaInput}
+                            value={ex.restSeconds}
+                            onChangeText={v => setExercises(prev => prev.map(e => e.id === ex.id ? { ...e, restSeconds: sanitizeCount(v, 0, 600) } : e))}
+                            placeholder="0"
+                            keyboardType="number-pad"
+                            placeholderTextColor={colors.textSecondary}
+                          />
+                        </View>
                         {exercises.length > 1 && (
                           <TouchableOpacity
                             onPress={() => setExercises(prev => prev.filter(e => e.id !== ex.id))}
@@ -2170,6 +2186,17 @@ export default function CoachTrainees({ coachId }: Props) {
                           placeholderTextColor={colors.textSecondary}
                         />
                       </View>
+                      <View style={styles.exMetaField}>
+                        <Text style={styles.exMetaLabel} numberOfLines={1}>REST (SEC)</Text>
+                        <TextInput
+                          style={styles.exMetaInput}
+                          value={ex.restSeconds}
+                          onChangeText={v => setEditExercises(prev => prev.map(e => e.id === ex.id ? { ...e, restSeconds: sanitizeCount(v, 0, 600) } : e))}
+                          placeholder="0"
+                          keyboardType="number-pad"
+                          placeholderTextColor={colors.textSecondary}
+                        />
+                      </View>
                       <TouchableOpacity
                         onPress={() => setEditExercises(prev => prev.filter(e => e.id !== ex.id))}
                         style={styles.removeBtn}
@@ -2410,8 +2437,8 @@ const styles = StyleSheet.create({
   readOnlyFieldText: { fontSize: 15, color: colors.text, fontWeight: '600' },
   readOnlyHint: { fontSize: 11, color: colors.textSecondary, marginBottom: 4 },
   exFields: { flex: 1 },
-  exMetaRow: { flexDirection: 'row', gap: 8, alignItems: 'center' },
-  exMetaField: { flex: 1 },
+  exMetaRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, alignItems: 'center' },
+  exMetaField: { flex: 1, minWidth: 70 },
   exMetaLabel: { fontSize: 9, fontWeight: '700', color: colors.textSecondary, letterSpacing: 1, marginBottom: 4 },
   exMetaInput: {
     backgroundColor: colors.secondary, borderRadius: 8, padding: 10,

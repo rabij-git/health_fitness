@@ -31,21 +31,31 @@ import {
   getNutritionPlans,
   getFoodLogEntries,
   getMealCompletions,
+  getWorkoutsForTrainee,
+  getWorkoutIdsCompletedToday,
   TodayVitals,
 } from '../../lib/db';
-import { DBUser, DBWeightLog, DBMessage, DBNutritionPlan, DBFoodLogEntry, DBMealCompletion } from '../../lib/supabase';
+import { DBUser, DBWeightLog, DBMessage, DBNutritionPlan, DBFoodLogEntry, DBMealCompletion, DBWorkout } from '../../lib/supabase';
 import { sumTodayAsPlannedCalories } from '../../lib/nutritionCalc';
 
 function todayStr() {
   return new Date().toISOString().split('T')[0];
 }
 
+// Mirrors the same helper duplicated in WorkoutScreen.tsx/CoachTrainees.tsx —
+// scheduled_days is null/empty = any day, otherwise must include today.
+function isScheduledForToday(workout: DBWorkout): boolean {
+  if (!workout.scheduled_days || workout.scheduled_days.length === 0) return true;
+  return workout.scheduled_days.includes(new Date().getDay());
+}
+
 interface Props {
   onLogout: () => void;
   userId: string;
+  navigation?: any;
 }
 
-export default function TrainerDashboard({ onLogout, userId }: Props) {
+export default function TrainerDashboard({ onLogout, userId, navigation }: Props) {
   const [profile, setProfile] = useState<DBUser | null>(null);
   const [coachProfile, setCoachProfile] = useState<DBUser | null>(null);
   const [weightLogs, setWeightLogs] = useState<DBWeightLog[]>([]);
@@ -67,14 +77,18 @@ export default function TrainerDashboard({ onLogout, userId }: Props) {
   const [hrInput, setHrInput] = useState('');
   const [savingHr, setSavingHr] = useState(false);
   const [loggingWaterAmount, setLoggingWaterAmount] = useState<number | null>(null);
+  const [workouts, setWorkouts] = useState<DBWorkout[]>([]);
+  const [completedTodayIds, setCompletedTodayIds] = useState<Set<string>>(new Set());
 
   const loadHome = useCallback(async () => {
-    const [p, weights, metrics, plans, entries] = await Promise.all([
+    const [p, weights, metrics, plans, entries, workoutList, completedIds] = await Promise.all([
       getProfile(userId),
       getWeightLogs(userId),
       getTodayMetrics(userId),
       getNutritionPlans(userId),
       getFoodLogEntries(userId),
+      getWorkoutsForTrainee(userId),
+      getWorkoutIdsCompletedToday(userId),
     ]);
     setProfile(p);
     setCoachId(p?.coach_id ?? null);
@@ -82,6 +96,8 @@ export default function TrainerDashboard({ onLogout, userId }: Props) {
     setDailyMetrics(metrics);
     setNutritionPlans(plans);
     setFoodEntries(entries);
+    setWorkouts(workoutList);
+    setCompletedTodayIds(completedIds);
     setLoadingProfile(false);
 
     const plansWithMeals = plans.filter(p => p.active && p.meals && p.meals.length > 0);
@@ -188,6 +204,13 @@ export default function TrainerDashboard({ onLogout, userId }: Props) {
     const mealCalories = sumTodayAsPlannedCalories(nutritionPlans, mealCompletionsByPlan, todayStr());
     return { nutritionTargetPlan: targetPlan, todayCalories: manualCalories + mealCalories };
   }, [nutritionPlans, foodEntries, mealCompletionsByPlan]);
+
+  // Same "doable right now" rule as the Workout tab's own picker: active,
+  // scheduled for today (or unrestricted), and not already completed today.
+  const todoWorkouts = useMemo(
+    () => workouts.filter(w => w.active && !completedTodayIds.has(w.id) && isScheduledForToday(w)),
+    [workouts, completedTodayIds]
+  );
 
   const handleSaveWeight = useCallback(async () => {
     const parsed = parseFloat(weight);
@@ -410,10 +433,41 @@ export default function TrainerDashboard({ onLogout, userId }: Props) {
           </View>
         </View>
 
+        {/* Workout Today — workouts actually doable right now (active,
+            scheduled for today, not already completed today). Tapping one
+            jumps to the Workout tab with that workout pre-selected and ready
+            to start, via the same openXId route-param pattern CoachDashboard
+            uses to deep-link into CoachTrainees. */}
+        {todoWorkouts.length > 0 && (
+          <View style={styles.workoutTodayCard}>
+            <Text style={styles.workoutTodayTitle}>Workout Today</Text>
+            {todoWorkouts.map((w, i) => (
+              <TouchableOpacity
+                key={w.id}
+                style={[styles.workoutTodayRow, i < todoWorkouts.length - 1 && styles.workoutTodayRowDivider]}
+                onPress={() => navigation?.navigate('Workout', { openWorkoutId: w.id })}
+                activeOpacity={0.8}
+              >
+                <View style={styles.workoutTodayIcon}>
+                  <Ionicons name="barbell" size={18} color={colors.primary} />
+                </View>
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.workoutTodayName}>{w.name}</Text>
+                  <Text style={styles.workoutTodayMeta}>{w.duration} • {w.difficulty}</Text>
+                </View>
+                <Ionicons name="chevron-forward" size={18} color={colors.textSecondary} />
+              </TouchableOpacity>
+            ))}
+          </View>
+        )}
+
         {/* Calorie Bar — real data from the active nutrition plan + today's
             food log (see FoodLogScreen's Nutrition tab for the same numbers).
             Macros shown are the plan's targets, not what was actually eaten —
             food_log_entries only tracks total calories, no macro breakdown. */}
+        {(() => {
+          const overBudget = !!nutritionTargetPlan && todayCalories > nutritionTargetPlan.target_calories!;
+          return (
         <View style={styles.calorieCard}>
           <View style={styles.calorieRow}>
             <View>
@@ -423,15 +477,20 @@ export default function TrainerDashboard({ onLogout, userId }: Props) {
               </Text>
             </View>
             <View style={styles.calsLeft}>
-              <Text style={styles.calsLeftNum}>
-                {nutritionTargetPlan ? Math.max(0, nutritionTargetPlan.target_calories! - todayCalories) : '—'}
+              <Text style={[styles.calsLeftNum, overBudget && styles.calsLeftNumOver]}>
+                {nutritionTargetPlan
+                  ? Math.abs(nutritionTargetPlan.target_calories! - todayCalories)
+                  : '—'}
               </Text>
-              <Text style={styles.calsLeftLabel}>{nutritionTargetPlan ? 'kcal left' : 'no target set'}</Text>
+              <Text style={styles.calsLeftLabel}>
+                {nutritionTargetPlan ? (overBudget ? 'kcal over' : 'kcal left') : 'no target set'}
+              </Text>
             </View>
           </View>
           <View style={styles.calBarBg}>
             <View style={[
               styles.calBarFill,
+              overBudget && styles.calBarFillOver,
               {
                 width: `${nutritionTargetPlan
                   ? Math.min(100, (todayCalories / nutritionTargetPlan.target_calories!) * 100)
@@ -458,6 +517,8 @@ export default function TrainerDashboard({ onLogout, userId }: Props) {
             </>
           )}
         </View>
+          );
+        })()}
 
       </ScrollView>
 
@@ -627,6 +688,30 @@ const styles = StyleSheet.create({
   flameItem: { alignItems: 'center', gap: 4 },
   flameDay: { fontSize: 10, color: colors.textSecondary, fontWeight: '600' },
 
+  // Workout Today card
+  workoutTodayCard: {
+    backgroundColor: colors.card,
+    borderRadius: 16,
+    padding: 18,
+    marginBottom: 14,
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderLeftWidth: 3,
+    borderLeftColor: colors.primary,
+  },
+  workoutTodayTitle: { fontSize: 16, fontWeight: '700', color: colors.text, marginBottom: 12 },
+  workoutTodayRow: {
+    flexDirection: 'row', alignItems: 'center', gap: 12,
+    paddingVertical: 10,
+  },
+  workoutTodayRowDivider: { borderBottomWidth: 1, borderBottomColor: colors.border },
+  workoutTodayIcon: {
+    width: 36, height: 36, borderRadius: 10,
+    backgroundColor: colors.primary + '22', alignItems: 'center', justifyContent: 'center',
+  },
+  workoutTodayName: { fontSize: 15, fontWeight: '700', color: colors.text },
+  workoutTodayMeta: { fontSize: 12, color: colors.textSecondary, marginTop: 2 },
+
   // Calorie card
   calorieCard: {
     backgroundColor: colors.card,
@@ -641,9 +726,11 @@ const styles = StyleSheet.create({
   calorieSub: { fontSize: 12, color: colors.textSecondary, marginTop: 2 },
   calsLeft: { alignItems: 'flex-end' },
   calsLeftNum: { fontSize: 22, fontWeight: '900', color: colors.success },
+  calsLeftNumOver: { color: colors.primary },
   calsLeftLabel: { fontSize: 11, color: colors.textSecondary, fontWeight: '500' },
   calBarBg: { height: 10, backgroundColor: colors.secondary, borderRadius: 5, overflow: 'hidden', marginBottom: 14 },
   calBarFill: { height: '100%', backgroundColor: colors.success, borderRadius: 5 },
+  calBarFillOver: { backgroundColor: colors.primary },
   macroCaption: { fontSize: 10, color: colors.textSecondary, fontWeight: '700', letterSpacing: 1, marginBottom: 8 },
   macroRow: { flexDirection: 'row', justifyContent: 'space-around' },
   macroItem: { alignItems: 'center', gap: 4 },

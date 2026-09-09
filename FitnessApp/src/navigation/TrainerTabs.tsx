@@ -50,7 +50,7 @@ export default function TrainerTabs({ onLogout, userId }: Props) {
       })}
     >
       <Tab.Screen name="Home">
-        {() => <TrainerDashboard onLogout={onLogout} userId={userId} />}
+        {({ navigation }) => <TrainerDashboard onLogout={onLogout} userId={userId} navigation={navigation} />}
       </Tab.Screen>
       <Tab.Screen name="Workout">
         {() => <WorkoutScreen userId={userId} />}
