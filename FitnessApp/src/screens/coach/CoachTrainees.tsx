@@ -397,7 +397,6 @@ export default function CoachTrainees({ coachId }: Props) {
       const plan = await uploadNutritionPlan(selectedTrainee.id, coachId, asset.uri, asset.name);
       setSelectedTraineeNutrition(prev => [plan, ...deactivateOtherPlansLocally(prev, plan.id)]);
     } catch (e) {
-      console.warn('Nutrition plan upload error', e);
       Alert.alert('Error', e instanceof Error ? e.message : 'Could not upload this plan. Please try again.');
     } finally {
       setUploadingNutrition(false);
@@ -442,7 +441,6 @@ export default function CoachTrainees({ coachId }: Props) {
     try {
       await setNutritionPlanActive(plan.id, nextActive);
     } catch (e) {
-      console.warn('setNutritionPlanActive error', e);
       setSelectedTraineeNutrition(snapshot);
       Alert.alert('Error', 'Could not update this plan. Please try again.');
     } finally {
@@ -460,7 +458,6 @@ export default function CoachTrainees({ coachId }: Props) {
       setSelectedTrainee(nutritionTrainee);
       setNutritionTrainee(null);
     } catch (e) {
-      console.warn('assignNutritionTemplate error', e);
       Alert.alert('Error', e instanceof Error ? e.message : 'Could not assign this plan. Please try again.');
     } finally {
       setAssigningPlanId(null);
@@ -515,7 +512,6 @@ export default function CoachTrainees({ coachId }: Props) {
       setSelectedTraineeNutrition(prev => prev.map(p => p.id === plan.id ? plan : p));
       setEditingPlanId(null);
     } catch (e) {
-      console.warn('saveNutritionPlan error', e);
       Alert.alert('Error', e instanceof Error ? e.message : 'Could not save this plan. Please try again.');
     } finally {
       setSavingPlan(false);

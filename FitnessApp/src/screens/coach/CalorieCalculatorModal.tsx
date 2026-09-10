@@ -323,7 +323,6 @@ export default function CalorieCalculatorModal({ visible, trainee, coachId, onCl
       onClose();
     } catch (e) {
       Alert.alert('Error', e instanceof Error ? e.message : 'Could not finalize the plan. Please try again.');
-      console.warn('finalize calorie plan error', e);
     } finally {
       setFinalizing(false);
     }
