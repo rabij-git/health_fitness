@@ -30,7 +30,7 @@ import {
   splitIntoMealTargets,
   MEAL_SLOT_LABELS,
 } from '../../lib/nutritionCalc';
-import { generateMealForSlot, scaleTemplateToTarget, templatesForMealType, mealTemplates, MealTemplate, MealType, Diet } from '../../data/mealLibrary';
+import { generateMealForSlot, scaleTemplateToTarget, templatesForMealType, MealTemplate, MealType, Diet } from '../../data/mealLibrary';
 
 interface Props {
   visible: boolean;
@@ -260,24 +260,6 @@ export default function CalorieCalculatorModal({ visible, trainee, coachId, onCl
     setMealSlots(generated);
     setStep('meals');
   }, [totalCaloriesNum, grams, mealCount, mealTypesForCount, diet]);
-
-  const handleRegenerate = useCallback((index: number) => {
-    setMealSlots(prev => {
-      const current = prev[index];
-      const currentTemplateId = mealTemplates.find(t => t.name === current.name)?.id;
-      const target = {
-        slot: current.slot,
-        target_calories: current.target_calories,
-        target_protein: current.target_protein,
-        target_carbs: current.target_carbs,
-        target_fat: current.target_fat,
-      };
-      const next = generateMealForSlot(target, mealTypesForCount[index], diet, currentTemplateId);
-      const copy = [...prev];
-      copy[index] = next;
-      return copy;
-    });
-  }, [mealTypesForCount, diet]);
 
   // Every template eligible for the slot currently open in the picker —
   // templatesForMealType already applies the diet nesting (a pescatarian
@@ -629,16 +611,10 @@ export default function CalorieCalculatorModal({ visible, trainee, coachId, onCl
                       <View key={m.slot} style={styles.mealCard}>
                         <View style={styles.mealCardHeader}>
                           <Text style={styles.mealCardLabel}>{m.label}</Text>
-                          <View style={{ flexDirection: 'row', gap: 14 }}>
-                            <TouchableOpacity onPress={() => handleRegenerate(i)} style={styles.regenBtn}>
-                              <Ionicons name="refresh" size={14} color={colors.xpBar} />
-                              <Text style={styles.regenBtnText}>Regenerate</Text>
-                            </TouchableOpacity>
-                            <TouchableOpacity onPress={() => setPickerIndex(i)} style={styles.regenBtn}>
-                              <Ionicons name="list" size={14} color={colors.xpBar} />
-                              <Text style={styles.regenBtnText}>Choose</Text>
-                            </TouchableOpacity>
-                          </View>
+                          <TouchableOpacity onPress={() => setPickerIndex(i)} style={styles.regenBtn}>
+                            <Ionicons name="list" size={14} color={colors.xpBar} />
+                            <Text style={styles.regenBtnText}>Choose</Text>
+                          </TouchableOpacity>
                         </View>
                         <Text style={styles.mealCardName}>{m.name}</Text>
                         <Text style={styles.mealCardMacros}>
