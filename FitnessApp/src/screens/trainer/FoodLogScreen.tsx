@@ -271,7 +271,10 @@ function NutritionPlanCard({ userId, plan, inactive, completions, onCompletionsC
           </View>
         )}
       </View>
-      <Text style={styles.planDate}>Created {formatPlanDate(plan.created_at)}</Text>
+      <Text style={styles.planDate}>
+        Created {formatPlanDate(plan.created_at)}
+        {plan.end_date ? ` · Ended ${formatPlanDate(plan.end_date)}` : ''}
+      </Text>
       {hasTargets ? (
         <View style={styles.targetsRow}>
           {plan.target_calories != null && (

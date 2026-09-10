@@ -264,9 +264,11 @@ export default function CalorieCalculatorModal({ visible, trainee, coachId, onCl
   // Every template eligible for the slot currently open in the picker —
   // templatesForMealType already applies the diet nesting (a pescatarian
   // trainee's list includes pescatarian/vegetarian/vegan templates, etc.).
+  // Sorted alphabetically so a long list (up to 40 for omnivore) is easy to
+  // scan instead of appearing in an arbitrary insertion order.
   const pickerOptions = useMemo(() => {
     if (pickerIndex == null) return [];
-    return templatesForMealType(mealTypesForCount[pickerIndex], diet);
+    return [...templatesForMealType(mealTypesForCount[pickerIndex], diet)].sort((a, b) => a.name.localeCompare(b.name));
   }, [pickerIndex, mealTypesForCount, diet]);
 
   const handleSelectFromPicker = useCallback((template: MealTemplate) => {
@@ -320,7 +322,7 @@ export default function CalorieCalculatorModal({ visible, trainee, coachId, onCl
       onPlanCreated(locked);
       onClose();
     } catch (e) {
-      Alert.alert('Error', 'Could not finalize the plan. Please try again.');
+      Alert.alert('Error', e instanceof Error ? e.message : 'Could not finalize the plan. Please try again.');
       console.warn('finalize calorie plan error', e);
     } finally {
       setFinalizing(false);

@@ -99,6 +99,14 @@ function formatDate(iso: string) {
   return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
 }
 
+// A trainee can only ever have one active nutrition plan — mirrors the
+// server-side deactivateOtherPlans (db.ts) so the local list reflects the
+// same "other plans just got retired" outcome without waiting on a refetch.
+function deactivateOtherPlansLocally(plans: DBNutritionPlan[], exceptId: string): DBNutritionPlan[] {
+  const today = new Date().toISOString().split('T')[0];
+  return plans.map(p => (p.active && p.id !== exceptId ? { ...p, active: false, end_date: today } : p));
+}
+
 const MEAL_STATUS_META: Record<DBMealCompletion['status'], { icon: string; color: string; label: string }> = {
   as_planned: { icon: 'checkmark-circle', color: colors.success, label: 'As Planned' },
   substituted: { icon: 'swap-horizontal', color: colors.warning, label: 'Substituted' },
@@ -387,9 +395,10 @@ export default function CoachTrainees({ coachId }: Props) {
     setUploadingNutrition(true);
     try {
       const plan = await uploadNutritionPlan(selectedTrainee.id, coachId, asset.uri, asset.name);
-      setSelectedTraineeNutrition(prev => [plan, ...prev]);
+      setSelectedTraineeNutrition(prev => [plan, ...deactivateOtherPlansLocally(prev, plan.id)]);
     } catch (e) {
       console.warn('Nutrition plan upload error', e);
+      Alert.alert('Error', e instanceof Error ? e.message : 'Could not upload this plan. Please try again.');
     } finally {
       setUploadingNutrition(false);
     }
@@ -422,29 +431,37 @@ export default function CoachTrainees({ coachId }: Props) {
 
   const handleToggleNutritionActive = useCallback(async (plan: DBNutritionPlan) => {
     const nextActive = !plan.active;
+    const today = new Date().toISOString().split('T')[0];
     setTogglingPlanId(plan.id);
-    setSelectedTraineeNutrition(prev => prev.map(p => p.id === plan.id ? { ...p, active: nextActive } : p));
+    const snapshot = selectedTraineeNutrition;
+    setSelectedTraineeNutrition(prev => {
+      const withThisToggled = prev.map(p => p.id === plan.id ? { ...p, active: nextActive, end_date: nextActive ? null : today } : p);
+      // Reactivating this one retires whatever else was active, same as the server does.
+      return nextActive ? deactivateOtherPlansLocally(withThisToggled, plan.id) : withThisToggled;
+    });
     try {
       await setNutritionPlanActive(plan.id, nextActive);
     } catch (e) {
       console.warn('setNutritionPlanActive error', e);
-      setSelectedTraineeNutrition(prev => prev.map(p => p.id === plan.id ? { ...p, active: plan.active } : p));
+      setSelectedTraineeNutrition(snapshot);
+      Alert.alert('Error', 'Could not update this plan. Please try again.');
     } finally {
       setTogglingPlanId(null);
     }
-  }, []);
+  }, [selectedTraineeNutrition]);
 
   const handleAssignPlan = useCallback(async (template: DBNutritionPlanTemplate) => {
     if (!nutritionTrainee || assigningPlanId) return;
     setAssigningPlanId(template.id);
     try {
       const plan = await assignNutritionTemplate(nutritionTrainee.id, coachId, template);
-      setSelectedTraineeNutrition(prev => [plan, ...prev]);
+      setSelectedTraineeNutrition(prev => [plan, ...deactivateOtherPlansLocally(prev, plan.id)]);
       setShowAssignPlanPicker(false);
       setSelectedTrainee(nutritionTrainee);
       setNutritionTrainee(null);
     } catch (e) {
       console.warn('assignNutritionTemplate error', e);
+      Alert.alert('Error', e instanceof Error ? e.message : 'Could not assign this plan. Please try again.');
     } finally {
       setAssigningPlanId(null);
     }
@@ -457,7 +474,7 @@ export default function CoachTrainees({ coachId }: Props) {
   }, [nutritionTrainee]);
 
   const handlePlanCreatedByCalculator = useCallback((plan: DBNutritionPlan) => {
-    setSelectedTraineeNutrition(prev => [plan, ...prev]);
+    setSelectedTraineeNutrition(prev => [plan, ...deactivateOtherPlansLocally(prev, plan.id)]);
   }, []);
 
   const closeCalorieCalculator = useCallback(() => {
@@ -499,6 +516,7 @@ export default function CoachTrainees({ coachId }: Props) {
       setEditingPlanId(null);
     } catch (e) {
       console.warn('saveNutritionPlan error', e);
+      Alert.alert('Error', e instanceof Error ? e.message : 'Could not save this plan. Please try again.');
     } finally {
       setSavingPlan(false);
     }
@@ -1486,7 +1504,9 @@ export default function CoachTrainees({ coachId }: Props) {
                                       )}
                                     </View>
                                     <Text style={styles.workoutBlockMeta}>
-                                      Created {formatDate(plan.created_at)}{plan.file_name ? ` · ${plan.file_name}` : ''}
+                                      Created {formatDate(plan.created_at)}
+                                      {!plan.active && plan.end_date ? ` · Ended ${formatDate(plan.end_date)}` : ''}
+                                      {plan.file_name ? ` · ${plan.file_name}` : ''}
                                     </Text>
                                   </View>
                                   <Ionicons name={isExpanded ? 'chevron-up' : 'chevron-down'} size={18} color={colors.textSecondary} />

@@ -558,6 +558,37 @@ export async function getExerciseWeightLogs(traineeId: string, limit: number = 1
 
 const NUTRITION_BUCKET = 'nutrition-plans';
 
+// A trainee can't have two plans with the same name — it's almost always a
+// mistake (which one did the coach mean to edit/assign?), so it's blocked
+// outright rather than just discouraged. Scoped per-trainee, not per-coach —
+// different trainees reusing a common name like "Cutting Phase" is fine.
+async function assertUniquePlanTitle(traineeId: string, title: string, excludePlanId?: string) {
+  const { data, error } = await supabase
+    .from('nutrition_plans')
+    .select('id, title')
+    .eq('trainee_id', traineeId);
+  if (error) throw error;
+  const normalized = title.trim().toLowerCase();
+  const clash = (data ?? []).some(p => p.id !== excludePlanId && p.title.trim().toLowerCase() === normalized);
+  if (clash) {
+    throw new Error(`This trainee already has a nutrition plan named "${title.trim()}". Please use a different name.`);
+  }
+}
+
+// A trainee can only ever have one active nutrition plan — deactivating the
+// others stamps today as their end date (same pattern as setWorkoutActive)
+// so they read as real history instead of just disappearing.
+async function deactivateOtherPlans(traineeId: string, exceptPlanId: string) {
+  const end_date = new Date().toISOString().split('T')[0];
+  const { error } = await supabase
+    .from('nutrition_plans')
+    .update({ active: false, end_date })
+    .eq('trainee_id', traineeId)
+    .eq('active', true)
+    .neq('id', exceptPlanId);
+  if (error) throw error;
+}
+
 // Quick PDF-only plan — structured targets (if any) are added/edited afterward
 // via updateNutritionPlan, same as any other plan.
 export async function uploadNutritionPlan(
@@ -566,6 +597,8 @@ export async function uploadNutritionPlan(
   fileUri: string,
   fileName: string
 ): Promise<DBNutritionPlan> {
+  await assertUniquePlanTitle(traineeId, fileName);
+
   const storagePath = `${traineeId}/${Date.now()}-${fileName}`;
 
   await uploadFileToStorage(fileUri, NUTRITION_BUCKET, storagePath, 'application/pdf');
@@ -586,6 +619,7 @@ export async function uploadNutritionPlan(
     .select()
     .single();
   if (error) throw error;
+  await deactivateOtherPlans(traineeId, data.id);
   return data;
 }
 
@@ -642,6 +676,8 @@ export async function assignNutritionTemplate(
   coachId: string,
   template: DBNutritionPlanTemplate
 ): Promise<DBNutritionPlan> {
+  await assertUniquePlanTitle(traineeId, template.title);
+
   const { data, error } = await supabase
     .from('nutrition_plans')
     .insert({
@@ -660,6 +696,7 @@ export async function assignNutritionTemplate(
     .select()
     .single();
   if (error) throw error;
+  await deactivateOtherPlans(traineeId, data.id);
   return data;
 }
 
@@ -683,6 +720,16 @@ export async function updateNutritionPlan(
     >
   >
 ): Promise<DBNutritionPlan> {
+  if (fields.title != null) {
+    const { data: existing, error: fetchError } = await supabase
+      .from('nutrition_plans')
+      .select('trainee_id')
+      .eq('id', planId)
+      .single();
+    if (fetchError) throw fetchError;
+    await assertUniquePlanTitle(existing.trainee_id, fields.title, planId);
+  }
+
   const { data, error } = await supabase
     .from('nutrition_plans')
     .update(fields)
@@ -695,9 +742,21 @@ export async function updateNutritionPlan(
 
 // A trainee can have several nutrition plans; a coach retires one by setting
 // it inactive rather than deleting it, so it stays visible as history.
+// Deactivating stamps today as the end date (mirrors setWorkoutActive);
+// reactivating clears it. Since a trainee can only ever have one active
+// plan, reactivating this one also deactivates whatever else was active.
 export async function setNutritionPlanActive(planId: string, active: boolean) {
-  const { error } = await supabase.from('nutrition_plans').update({ active }).eq('id', planId);
+  const end_date = active ? null : new Date().toISOString().split('T')[0];
+  const { data, error } = await supabase
+    .from('nutrition_plans')
+    .update({ active, end_date })
+    .eq('id', planId)
+    .select('trainee_id')
+    .single();
   if (error) throw error;
+  if (active) {
+    await deactivateOtherPlans(data.trainee_id, planId);
+  }
 }
 
 export async function getNutritionPlans(traineeId: string): Promise<DBNutritionPlan[]> {
@@ -741,12 +800,15 @@ export async function createCalculatedNutritionPlan(
     | 'calc_inputs'
   >
 ): Promise<DBNutritionPlan> {
+  await assertUniquePlanTitle(traineeId, fields.title);
+
   const { data, error } = await supabase
     .from('nutrition_plans')
     .insert({ trainee_id: traineeId, coach_id: coachId, active: true, locked: false, ...fields })
     .select()
     .single();
   if (error) throw error;
+  await deactivateOtherPlans(traineeId, data.id);
   return data;
 }
 

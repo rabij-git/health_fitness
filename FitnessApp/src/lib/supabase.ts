@@ -210,6 +210,10 @@ export interface DBNutritionPlan {
   // the plan, distinct from vitals.water (what the trainee actually logged).
   target_water_ml: number | null;
   active: boolean;
+  // Only one plan is ever active per trainee — deactivating one (whether by
+  // toggle or by another plan taking over) stamps today's date here so it
+  // reads as real history; reactivating clears it. Mirrors workouts.end_date.
+  end_date: string | null;
   file_name: string | null;
   file_url: string | null;
   storage_path: string | null;
