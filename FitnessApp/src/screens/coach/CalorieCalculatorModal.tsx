@@ -30,7 +30,7 @@ import {
   splitIntoMealTargets,
   MEAL_SLOT_LABELS,
 } from '../../lib/nutritionCalc';
-import { generateMealForSlot, mealTemplates, MealType, Diet } from '../../data/mealLibrary';
+import { generateMealForSlot, scaleTemplateToTarget, templatesForMealType, mealTemplates, MealTemplate, MealType, Diet } from '../../data/mealLibrary';
 
 interface Props {
   visible: boolean;
@@ -94,6 +94,12 @@ export default function CalorieCalculatorModal({ visible, trainee, coachId, onCl
   const [weightKg, setWeightKg] = useState<number | null>(null);
   const [loadingWeight, setLoadingWeight] = useState(true);
   const [savingBiometrics, setSavingBiometrics] = useState(false);
+  // Year of birth / sex / height are the trainee's own biometric facts, not
+  // coach-assigned data — once either side has set one, the coach can only
+  // view it here (it stays editable from the trainee's own Profile screen).
+  // A field the trainee never filled in can still be entered by the coach
+  // once; it locks the same way on the next time this modal is opened.
+  const [lockedFields, setLockedFields] = useState({ birthYear: false, sex: false, height: false });
 
   const [totalCalories, setTotalCalories] = useState('');
   const [overrideApplied, setOverrideApplied] = useState(false);
@@ -106,6 +112,9 @@ export default function CalorieCalculatorModal({ visible, trainee, coachId, onCl
   const [mealCount, setMealCount] = useState<3 | 4 | 5>(3);
   const [diet, setDiet] = useState<Diet>('omnivore');
   const [mealSlots, setMealSlots] = useState<MealSlot[]>([]);
+  // Index of the meal slot currently choosing a meal from the dropdown list,
+  // or null when the picker is closed.
+  const [pickerIndex, setPickerIndex] = useState<number | null>(null);
 
   const [title, setTitle] = useState('');
   const [notes, setNotes] = useState('');
@@ -124,6 +133,11 @@ export default function CalorieCalculatorModal({ visible, trainee, coachId, onCl
     setSex(trainee.sex ?? null);
     setHeightCm(trainee.height_cm ? String(trainee.height_cm) : '');
     setActivityLevel(trainee.activity_level ?? null);
+    setLockedFields({
+      birthYear: trainee.birth_year != null,
+      sex: trainee.sex != null,
+      height: trainee.height_cm != null,
+    });
     setTotalCalories('');
     setOverrideApplied(false);
     setWaterMl('');
@@ -150,6 +164,11 @@ export default function CalorieCalculatorModal({ visible, trainee, coachId, onCl
           setSex(freshSex);
           setHeightCm(freshHeightCm ? String(freshHeightCm) : '');
           setActivityLevel(freshActivityLevel);
+          setLockedFields({
+            birthYear: freshBirthYear != null,
+            sex: freshSex != null,
+            height: freshHeightCm != null,
+          });
         }
         setWeightKg(freshWeightKg);
 
@@ -223,6 +242,7 @@ export default function CalorieCalculatorModal({ visible, trainee, coachId, onCl
         height_cm: parseFloat(heightCm),
         activity_level: activityLevel!,
       });
+      setLockedFields({ birthYear: true, sex: true, height: true });
       setStep('calories');
     } catch (e) {
       Alert.alert('Error', 'Could not save biometrics. Please try again.');
@@ -258,6 +278,32 @@ export default function CalorieCalculatorModal({ visible, trainee, coachId, onCl
       return copy;
     });
   }, [mealTypesForCount, diet]);
+
+  // Every template eligible for the slot currently open in the picker —
+  // templatesForMealType already applies the diet nesting (a pescatarian
+  // trainee's list includes pescatarian/vegetarian/vegan templates, etc.).
+  const pickerOptions = useMemo(() => {
+    if (pickerIndex == null) return [];
+    return templatesForMealType(mealTypesForCount[pickerIndex], diet);
+  }, [pickerIndex, mealTypesForCount, diet]);
+
+  const handleSelectFromPicker = useCallback((template: MealTemplate) => {
+    setMealSlots(prev => {
+      if (pickerIndex == null) return prev;
+      const current = prev[pickerIndex];
+      const target = {
+        slot: current.slot,
+        target_calories: current.target_calories,
+        target_protein: current.target_protein,
+        target_carbs: current.target_carbs,
+        target_fat: current.target_fat,
+      };
+      const copy = [...prev];
+      copy[pickerIndex] = scaleTemplateToTarget(template, target);
+      return copy;
+    });
+    setPickerIndex(null);
+  }, [pickerIndex]);
 
   const handleFinalize = useCallback(async () => {
     if (!sex || !activityLevel || bmr == null || suggestedTdee == null || !weightKg) return;
@@ -310,7 +356,13 @@ export default function CalorieCalculatorModal({ visible, trainee, coachId, onCl
   };
 
   return (
-    <Modal visible={visible} transparent animationType="slide" onRequestClose={goBack}>
+    <>
+    {/* visible is gated on pickerIndex too — the meal picker below is a second
+        Modal, and iOS won't reliably show/register touches on a Modal stacked
+        over another already-visible one, so only one of the two is ever
+        visible={true} at a time (same pattern as CoachPrograms.tsx's
+        Manage Library / exercise-name-picker modals). */}
+    <Modal visible={visible && pickerIndex === null} transparent animationType="slide" onRequestClose={goBack}>
       <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={styles.modalOverlay}>
         <View style={styles.modalSheet}>
           <View style={styles.modalHeader}>
@@ -328,26 +380,38 @@ export default function CalorieCalculatorModal({ visible, trainee, coachId, onCl
           <ScrollView showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
             {step === 'biometrics' && (
               <View>
-                <Text style={styles.fieldLabel}>YEAR OF BIRTH</Text>
+                <View style={styles.fieldLabelRow}>
+                  <Text style={styles.fieldLabel}>YEAR OF BIRTH</Text>
+                  {lockedFields.birthYear && <Ionicons name="lock-closed" size={12} color={colors.textSecondary} />}
+                </View>
                 <TextInput
-                  style={styles.textInput}
+                  style={[styles.textInput, lockedFields.birthYear && styles.textInputLocked]}
                   value={birthYear}
                   onChangeText={v => setBirthYear(sanitizeYear(v))}
+                  editable={!lockedFields.birthYear}
                   keyboardType="number-pad"
                   placeholder="e.g. 1982"
                   placeholderTextColor={colors.textSecondary}
                 />
-                {birthYear.length === 4 && !isValidBirthYear(birthYear) && (
-                  <Text style={styles.fieldError}>Enter a year between {MIN_BIRTH_YEAR} and {MAX_BIRTH_YEAR}.</Text>
+                {lockedFields.birthYear ? (
+                  <Text style={styles.lockedFieldNote}>Set by the trainee — only they can change it, in their Profile.</Text>
+                ) : (
+                  birthYear.length === 4 && !isValidBirthYear(birthYear) && (
+                    <Text style={styles.fieldError}>Enter a year between {MIN_BIRTH_YEAR} and {MAX_BIRTH_YEAR}.</Text>
+                  )
                 )}
 
-                <Text style={[styles.fieldLabel, { marginTop: 16 }]}>SEX</Text>
+                <View style={[styles.fieldLabelRow, { marginTop: 16 }]}>
+                  <Text style={styles.fieldLabel}>SEX</Text>
+                  {lockedFields.sex && <Ionicons name="lock-closed" size={12} color={colors.textSecondary} />}
+                </View>
                 <View style={styles.rowChips}>
                   {(['female', 'male'] as Sex[]).map(s => (
                     <TouchableOpacity
                       key={s}
-                      style={[styles.chip, sex === s && styles.chipActive]}
-                      onPress={() => setSex(s)}
+                      style={[styles.chip, sex === s && styles.chipActive, lockedFields.sex && styles.chipLocked]}
+                      onPress={() => !lockedFields.sex && setSex(s)}
+                      disabled={lockedFields.sex}
                     >
                       <Text style={[styles.chipText, sex === s && styles.chipTextActive]}>
                         {s === 'female' ? 'Female' : 'Male'}
@@ -355,18 +419,29 @@ export default function CalorieCalculatorModal({ visible, trainee, coachId, onCl
                     </TouchableOpacity>
                   ))}
                 </View>
+                {lockedFields.sex && (
+                  <Text style={styles.lockedFieldNote}>Set by the trainee — only they can change it, in their Profile.</Text>
+                )}
 
-                <Text style={[styles.fieldLabel, { marginTop: 16 }]}>HEIGHT (CM)</Text>
+                <View style={[styles.fieldLabelRow, { marginTop: 16 }]}>
+                  <Text style={styles.fieldLabel}>HEIGHT (CM)</Text>
+                  {lockedFields.height && <Ionicons name="lock-closed" size={12} color={colors.textSecondary} />}
+                </View>
                 <TextInput
-                  style={styles.textInput}
+                  style={[styles.textInput, lockedFields.height && styles.textInputLocked]}
                   value={heightCm}
                   onChangeText={v => setHeightCm(sanitizeHeight(v))}
+                  editable={!lockedFields.height}
                   keyboardType="decimal-pad"
                   placeholder="e.g. 168"
                   placeholderTextColor={colors.textSecondary}
                 />
-                {heightCm.length > 0 && !isValidHeight(heightCm) && (
-                  <Text style={styles.fieldError}>Enter a height between {MIN_HEIGHT_CM}–{MAX_HEIGHT_CM} cm.</Text>
+                {lockedFields.height ? (
+                  <Text style={styles.lockedFieldNote}>Set by the trainee — only they can change it, in their Profile.</Text>
+                ) : (
+                  heightCm.length > 0 && !isValidHeight(heightCm) && (
+                    <Text style={styles.fieldError}>Enter a height between {MIN_HEIGHT_CM}–{MAX_HEIGHT_CM} cm.</Text>
+                  )
                 )}
 
                 <Text style={[styles.fieldLabel, { marginTop: 16 }]}>ACTIVITY LEVEL</Text>
@@ -554,10 +629,16 @@ export default function CalorieCalculatorModal({ visible, trainee, coachId, onCl
                       <View key={m.slot} style={styles.mealCard}>
                         <View style={styles.mealCardHeader}>
                           <Text style={styles.mealCardLabel}>{m.label}</Text>
-                          <TouchableOpacity onPress={() => handleRegenerate(i)} style={styles.regenBtn}>
-                            <Ionicons name="refresh" size={14} color={colors.xpBar} />
-                            <Text style={styles.regenBtnText}>Regenerate</Text>
-                          </TouchableOpacity>
+                          <View style={{ flexDirection: 'row', gap: 14 }}>
+                            <TouchableOpacity onPress={() => handleRegenerate(i)} style={styles.regenBtn}>
+                              <Ionicons name="refresh" size={14} color={colors.xpBar} />
+                              <Text style={styles.regenBtnText}>Regenerate</Text>
+                            </TouchableOpacity>
+                            <TouchableOpacity onPress={() => setPickerIndex(i)} style={styles.regenBtn}>
+                              <Ionicons name="list" size={14} color={colors.xpBar} />
+                              <Text style={styles.regenBtnText}>Choose</Text>
+                            </TouchableOpacity>
+                          </View>
                         </View>
                         <Text style={styles.mealCardName}>{m.name}</Text>
                         <Text style={styles.mealCardMacros}>
@@ -643,6 +724,39 @@ export default function CalorieCalculatorModal({ visible, trainee, coachId, onCl
         </View>
       </KeyboardAvoidingView>
     </Modal>
+
+    {/* Meal picker — every template eligible for this slot's meal type and
+        the trainee's diet (diet nesting handled by templatesForMealType),
+        so a coach can hand-pick a specific meal instead of only shuffling
+        through the auto-generator's closest-macro-match suggestions. */}
+    <Modal visible={pickerIndex !== null} transparent animationType="slide" onRequestClose={() => setPickerIndex(null)}>
+      <View style={styles.pickerOverlay}>
+        <View style={styles.pickerSheet}>
+          <View style={styles.modalHeader}>
+            <Text style={styles.modalTitle}>
+              Choose {pickerIndex != null ? mealTypesForCount[pickerIndex] : ''}
+            </Text>
+            <TouchableOpacity style={styles.closeBtn} onPress={() => setPickerIndex(null)}>
+              <Ionicons name="close" size={22} color={colors.textSecondary} />
+            </TouchableOpacity>
+          </View>
+          <ScrollView showsVerticalScrollIndicator={false}>
+            {pickerOptions.map(t => (
+              <TouchableOpacity key={t.id} style={styles.pickerRow} onPress={() => handleSelectFromPicker(t)}>
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.pickerRowName}>{t.name}</Text>
+                  <Text style={styles.pickerRowMacros}>
+                    {t.baseCalories} kcal · P {t.baseProtein}g · C {t.baseCarbs}g · F {t.baseFat}g
+                  </Text>
+                </View>
+                <Ionicons name="chevron-forward" size={18} color={colors.textSecondary} />
+              </TouchableOpacity>
+            ))}
+          </ScrollView>
+        </View>
+      </View>
+    </Modal>
+    </>
   );
 }
 
@@ -698,16 +812,20 @@ const styles = StyleSheet.create({
   },
   cancelBtnText: { color: colors.textSecondary, fontSize: 14, fontWeight: '700' },
   fieldLabel: { fontSize: 12, fontWeight: '700', color: colors.textSecondary, letterSpacing: 1, marginBottom: 8 },
+  fieldLabelRow: { flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: 8 },
   textInput: {
     backgroundColor: colors.secondary, borderRadius: 12, paddingHorizontal: 14,
     paddingVertical: 12, color: colors.text, fontSize: 15, borderWidth: 1, borderColor: colors.border,
   },
+  textInputLocked: { opacity: 0.5 },
+  lockedFieldNote: { color: colors.textSecondary, fontSize: 12, marginTop: 6, fontStyle: 'italic' },
   rowChips: { flexDirection: 'row', gap: 10 },
   chip: {
     paddingHorizontal: 18, paddingVertical: 10, borderRadius: 10,
     backgroundColor: colors.secondary, borderWidth: 1, borderColor: colors.border,
   },
   chipActive: { backgroundColor: colors.xpBar + '22', borderColor: colors.xpBar },
+  chipLocked: { opacity: 0.5 },
   chipText: { color: colors.textSecondary, fontWeight: '600' },
   chipTextActive: { color: colors.xpBar },
   activityRow: {
@@ -760,4 +878,16 @@ const styles = StyleSheet.create({
   mealCardMacros: { color: colors.textSecondary, fontSize: 12, marginTop: 2, marginBottom: 8 },
   mealItemText: { color: colors.textSecondary, fontSize: 13, lineHeight: 19 },
   lockNotice: { color: colors.textSecondary, fontSize: 12, marginTop: 16, lineHeight: 18 },
+
+  pickerOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.75)', justifyContent: 'flex-end' },
+  pickerSheet: {
+    backgroundColor: colors.card, borderTopLeftRadius: 28, borderTopRightRadius: 28,
+    padding: 24, maxHeight: '80%',
+  },
+  pickerRow: {
+    flexDirection: 'row', alignItems: 'center', gap: 10,
+    paddingVertical: 12, borderBottomWidth: 1, borderBottomColor: colors.border,
+  },
+  pickerRowName: { color: colors.text, fontSize: 14, fontWeight: '700' },
+  pickerRowMacros: { color: colors.textSecondary, fontSize: 12, marginTop: 2 },
 });
