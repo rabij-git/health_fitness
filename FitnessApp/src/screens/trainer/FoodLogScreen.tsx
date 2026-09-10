@@ -404,6 +404,30 @@ export default function FoodLogScreen({ userId }: { userId: string }) {
   const targetPlan = activePlans.find(p => p.target_calories != null);
   const waterTargetPlan = activePlans.find(p => p.target_water_ml != null);
   const days = groupByDay(entries);
+
+  // Real trainee activity mostly lives here, not in food_log_entries — since
+  // the manual "Add Food" entry point was removed, meal tracking (As Planned/
+  // Substituted/Skipped) is how a trainee actually logs most days now. Pooled
+  // across every plan (not just one) and keyed by date so History reads as a
+  // single combined timeline instead of requiring a trainee to open each
+  // plan's own history toggle to see anything.
+  const plansWithMealHistory = plans.filter(p => (completionsByPlan[p.id]?.length ?? 0) > 0);
+  const mealHistoryByDate = useMemo(() => {
+    const map = new Map<string, { planTitle: string; slotLabel: string; status: DBMealCompletion['status'] }[]>();
+    for (const plan of plans) {
+      for (const c of completionsByPlan[plan.id] ?? []) {
+        if (c.log_date === todayStr()) continue; // today is shown live on the Nutrition segment
+        const slotLabel = plan.meals?.find(m => m.slot === c.meal_slot)?.label ?? `Meal ${c.meal_slot}`;
+        if (!map.has(c.log_date)) map.set(c.log_date, []);
+        map.get(c.log_date)!.push({ planTitle: plan.title, slotLabel, status: c.status });
+      }
+    }
+    return map;
+  }, [plans, completionsByPlan]);
+  const historyDates = useMemo(() => {
+    const set = new Set<string>([...days.map(d => d.date), ...mealHistoryByDate.keys()]);
+    return Array.from(set).sort((a, b) => (a < b ? 1 : -1));
+  }, [days, mealHistoryByDate]);
   const todayMealNutrition = sumTodayAsPlannedNutrition(plans, completionsByPlan, todayStr());
   const todayCalories = entries
     .filter(e => e.logged_at === todayStr())
@@ -531,28 +555,44 @@ export default function FoodLogScreen({ userId }: { userId: string }) {
         <Text style={styles.title}>History</Text>
         <Text style={styles.subtitle}>Everything you've logged, by day</Text>
 
-        {days.length === 0 ? (
+        {historyDates.length === 0 ? (
           <View style={styles.emptyPlan}>
             <Ionicons name="time-outline" size={32} color={colors.textSecondary} />
             <Text style={styles.emptyPlanText}>Nothing logged yet</Text>
           </View>
         ) : (
-          days.map(day => (
-            <View key={day.date} style={styles.dayGroup}>
-              <Text style={styles.dayLabel}>{formatDay(day.date)}</Text>
-              {day.entries.map(entry => (
-                <View key={entry.id} style={styles.foodRow}>
-                  <View style={{ flex: 1 }}>
-                    <Text style={styles.foodName}>{entry.food_name}</Text>
-                    {entry.calories != null && <Text style={styles.foodCalories}>{entry.calories} kcal</Text>}
+          historyDates.map(date => {
+            const dayEntries = days.find(d => d.date === date)?.entries ?? [];
+            const dayMeals = mealHistoryByDate.get(date) ?? [];
+            return (
+              <View key={date} style={styles.dayGroup}>
+                <Text style={styles.dayLabel}>{formatDay(date)}</Text>
+                {dayMeals.length > 0 && (
+                  <View style={[styles.historyBadges, dayEntries.length > 0 && { marginBottom: 8 }]}>
+                    {dayMeals.map((m, i) => (
+                      <View key={i} style={styles.historyBadge}>
+                        <Ionicons name={STATUS_META[m.status].icon as any} size={12} color={STATUS_META[m.status].color} />
+                        <Text style={styles.historyBadgeText}>
+                          {plansWithMealHistory.length > 1 ? `${m.planTitle} • ${m.slotLabel}` : m.slotLabel}
+                        </Text>
+                      </View>
+                    ))}
                   </View>
-                  <TouchableOpacity onPress={() => handleDelete(entry.id)} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
-                    <Ionicons name="trash-outline" size={16} color={colors.primary} />
-                  </TouchableOpacity>
-                </View>
-              ))}
-            </View>
-          ))
+                )}
+                {dayEntries.map(entry => (
+                  <View key={entry.id} style={styles.foodRow}>
+                    <View style={{ flex: 1 }}>
+                      <Text style={styles.foodName}>{entry.food_name}</Text>
+                      {entry.calories != null && <Text style={styles.foodCalories}>{entry.calories} kcal</Text>}
+                    </View>
+                    <TouchableOpacity onPress={() => handleDelete(entry.id)} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+                      <Ionicons name="trash-outline" size={16} color={colors.primary} />
+                    </TouchableOpacity>
+                  </View>
+                ))}
+              </View>
+            );
+          })
         )}
         </>
         )}
