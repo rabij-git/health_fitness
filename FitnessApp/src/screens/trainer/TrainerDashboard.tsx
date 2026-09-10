@@ -36,7 +36,7 @@ import {
   TodayVitals,
 } from '../../lib/db';
 import { DBUser, DBWeightLog, DBMessage, DBNutritionPlan, DBFoodLogEntry, DBMealCompletion, DBWorkout } from '../../lib/supabase';
-import { sumTodayAsPlannedCalories } from '../../lib/nutritionCalc';
+import { sumTodayAsPlannedNutrition } from '../../lib/nutritionCalc';
 
 function todayStr() {
   return new Date().toISOString().split('T')[0];
@@ -47,6 +47,27 @@ function todayStr() {
 function isScheduledForToday(workout: DBWorkout): boolean {
   if (!workout.scheduled_days || workout.scheduled_days.length === 0) return true;
   return workout.scheduled_days.includes(new Date().getDay());
+}
+
+// A progress bar that fills in its own base color up to `target`, then keeps
+// going in `colors.primary` (red) for whatever's over — so going over
+// budget shows as a red overflow segment on the bar itself, rather than
+// just recoloring the whole thing. `bgStyle` controls the bar's own height/
+// radius/background (calorie vs. macro bars use different sizes).
+function DualBar({ consumed, target, baseColor, bgStyle }: { consumed: number; target: number; baseColor: string; bgStyle: any }) {
+  const barMax = Math.max(consumed, target, 1);
+  const baseWidthPct = (Math.min(consumed, target) / barMax) * 100;
+  const overWidthPct = consumed > target ? ((consumed - target) / barMax) * 100 : 0;
+  return (
+    <View style={bgStyle}>
+      <View style={{ flexDirection: 'row', height: '100%' }}>
+        <View style={{ width: `${baseWidthPct}%` as any, height: '100%', backgroundColor: baseColor }} />
+        {overWidthPct > 0 && (
+          <View style={{ width: `${overWidthPct}%` as any, height: '100%', backgroundColor: colors.primary }} />
+        )}
+      </View>
+    </View>
+  );
 }
 
 interface Props {
@@ -193,16 +214,22 @@ export default function TrainerDashboard({ onLogout, userId, navigation }: Props
   // Calories card: today's logged intake against the active nutrition plan's
   // target (same source FoodLogScreen's Nutrition tab uses) — manual food log
   // entries plus any generated meals marked "As Planned" today (via
-  // sumTodayAsPlannedCalories, shared with FoodLogScreen so the two screens
+  // sumTodayAsPlannedNutrition, shared with FoodLogScreen so the two screens
   // never disagree). food_log_entries only tracks total calories, not a macro
-  // breakdown, so macros here are the plan's targets, not what was actually eaten.
-  const { nutritionTargetPlan, todayCalories } = useMemo(() => {
+  // breakdown, so today's protein/carbs/fat only reflect planned-meal tracking.
+  const { nutritionTargetPlan, todayCalories, todayProtein, todayCarbs, todayFat } = useMemo(() => {
     const targetPlan = nutritionPlans.find(p => p.active && p.target_calories != null) ?? null;
     const manualCalories = foodEntries
       .filter(e => e.logged_at === todayStr())
       .reduce((sum, e) => sum + (e.calories ?? 0), 0);
-    const mealCalories = sumTodayAsPlannedCalories(nutritionPlans, mealCompletionsByPlan, todayStr());
-    return { nutritionTargetPlan: targetPlan, todayCalories: manualCalories + mealCalories };
+    const meals = sumTodayAsPlannedNutrition(nutritionPlans, mealCompletionsByPlan, todayStr());
+    return {
+      nutritionTargetPlan: targetPlan,
+      todayCalories: manualCalories + meals.calories,
+      todayProtein: meals.protein,
+      todayCarbs: meals.carbs,
+      todayFat: meals.fat,
+    };
   }, [nutritionPlans, foodEntries, mealCompletionsByPlan]);
 
   // Same "doable right now" rule as the Workout tab's own picker: active,
@@ -466,7 +493,6 @@ export default function TrainerDashboard({ onLogout, userId, navigation }: Props
             Macros shown are the plan's targets, not what was actually eaten —
             food_log_entries only tracks total calories, no macro breakdown. */}
         {(() => {
-          const overBudget = !!nutritionTargetPlan && todayCalories > nutritionTargetPlan.target_calories!;
           return (
         <View style={styles.calorieCard}>
           <View style={styles.calorieRow}>
@@ -477,43 +503,40 @@ export default function TrainerDashboard({ onLogout, userId, navigation }: Props
               </Text>
             </View>
             <View style={styles.calsLeft}>
-              <Text style={[styles.calsLeftNum, overBudget && styles.calsLeftNumOver]}>
-                {nutritionTargetPlan
-                  ? Math.abs(nutritionTargetPlan.target_calories! - todayCalories)
-                  : '—'}
+              <Text style={styles.calsLeftNum}>
+                {nutritionTargetPlan ? `${todayCalories} / ${nutritionTargetPlan.target_calories}` : '—'}
               </Text>
               <Text style={styles.calsLeftLabel}>
-                {nutritionTargetPlan ? (overBudget ? 'kcal over' : 'kcal left') : 'no target set'}
+                {nutritionTargetPlan ? 'kcal today' : 'no target set'}
               </Text>
             </View>
           </View>
-          <View style={styles.calBarBg}>
-            <View style={[
-              styles.calBarFill,
-              overBudget && styles.calBarFillOver,
-              {
-                width: `${nutritionTargetPlan
-                  ? Math.min(100, (todayCalories / nutritionTargetPlan.target_calories!) * 100)
-                  : 0}%` as any,
-              },
-            ]} />
-          </View>
+          {nutritionTargetPlan ? (
+            <DualBar
+              consumed={todayCalories}
+              target={nutritionTargetPlan.target_calories!}
+              baseColor={colors.success}
+              bgStyle={styles.calBarBg}
+            />
+          ) : (
+            <View style={styles.calBarBg} />
+          )}
           {nutritionTargetPlan && (nutritionTargetPlan.target_protein != null || nutritionTargetPlan.target_carbs != null || nutritionTargetPlan.target_fat != null) && (
             <>
-              <Text style={styles.macroCaption}>DAILY TARGETS</Text>
-              <View style={styles.macroRow}>
-                {[
-                  { label: 'Protein', val: nutritionTargetPlan.target_protein, color: colors.streak },
-                  { label: 'Carbs', val: nutritionTargetPlan.target_carbs, color: '#4A9EFF' },
-                  { label: 'Fat', val: nutritionTargetPlan.target_fat, color: colors.gold },
-                ].map(m => (
-                  <View key={m.label} style={styles.macroItem}>
-                    <View style={[styles.macroDot, { backgroundColor: m.color }]} />
-                    <Text style={styles.macroLabel}>{m.label}</Text>
-                    <Text style={[styles.macroVal, { color: m.color }]}>{m.val != null ? `${m.val}g` : '—'}</Text>
+              <Text style={styles.macroCaption}>MACROS TODAY</Text>
+              {[
+                { label: 'Protein', consumed: todayProtein, target: nutritionTargetPlan.target_protein, color: colors.primary },
+                { label: 'Carbs', consumed: todayCarbs, target: nutritionTargetPlan.target_carbs, color: '#4A9EFF' },
+                { label: 'Fat', consumed: todayFat, target: nutritionTargetPlan.target_fat, color: colors.gold },
+              ].filter(m => m.target != null).map(m => (
+                <View key={m.label} style={styles.macroBarRow}>
+                  <View style={styles.macroBarLabelRow}>
+                    <Text style={[styles.macroBarLabel, { color: m.color }]}>{m.label}</Text>
+                    <Text style={styles.macroBarVal}>{m.consumed}g / {m.target}g</Text>
                   </View>
-                ))}
-              </View>
+                  <DualBar consumed={m.consumed} target={m.target!} baseColor={colors.success} bgStyle={styles.macroBarBg} />
+                </View>
+              ))}
             </>
           )}
         </View>
@@ -725,18 +748,15 @@ const styles = StyleSheet.create({
   calorieTitle: { fontSize: 16, fontWeight: '700', color: colors.text },
   calorieSub: { fontSize: 12, color: colors.textSecondary, marginTop: 2 },
   calsLeft: { alignItems: 'flex-end' },
-  calsLeftNum: { fontSize: 22, fontWeight: '900', color: colors.success },
-  calsLeftNumOver: { color: colors.primary },
+  calsLeftNum: { fontSize: 22, fontWeight: '900', color: colors.textSecondary },
   calsLeftLabel: { fontSize: 11, color: colors.textSecondary, fontWeight: '500' },
   calBarBg: { height: 10, backgroundColor: colors.secondary, borderRadius: 5, overflow: 'hidden', marginBottom: 14 },
-  calBarFill: { height: '100%', backgroundColor: colors.success, borderRadius: 5 },
-  calBarFillOver: { backgroundColor: colors.primary },
   macroCaption: { fontSize: 10, color: colors.textSecondary, fontWeight: '700', letterSpacing: 1, marginBottom: 8 },
-  macroRow: { flexDirection: 'row', justifyContent: 'space-around' },
-  macroItem: { alignItems: 'center', gap: 4 },
-  macroDot: { width: 10, height: 10, borderRadius: 5 },
-  macroLabel: { fontSize: 11, color: colors.textSecondary, fontWeight: '500' },
-  macroVal: { fontSize: 13, fontWeight: '700', color: colors.text },
+  macroBarRow: { marginBottom: 10 },
+  macroBarLabelRow: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 4 },
+  macroBarLabel: { fontSize: 12, color: colors.textSecondary, fontWeight: '600' },
+  macroBarVal: { fontSize: 12, fontWeight: '700', color: colors.textSecondary },
+  macroBarBg: { height: 6, backgroundColor: colors.secondary, borderRadius: 3, overflow: 'hidden' },
 
   // Biometrics
   biometricsCard: {

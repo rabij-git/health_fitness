@@ -348,8 +348,8 @@ export default function ProfileScreen({ onLogout, userId }: Props) {
         <WeightChart logs={weightLogs} />
 
         {/* Nutrition Documents — quick access to any uploaded PDFs; full plan
-            details (targets, notes, active/inactive) live on the Log tab's
-            "Nutrition" segment instead. */}
+            details (targets, notes, active/inactive) live on the Nutrition
+            tab instead. */}
         {nutritionPlans.some(p => p.file_url) && (
           <View style={styles.nutritionCard}>
             <Text style={styles.nutritionTitle}>Nutrition Documents</Text>

@@ -12,12 +12,13 @@ import {
   Linking,
   ActivityIndicator,
 } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import { useFocusEffect } from '@react-navigation/native';
 import { Ionicons } from '@expo/vector-icons';
 import { colors } from '../../theme/colors';
 import { getNutritionPlans, getFoodLogEntries, deleteFoodLogEntry, getMealCompletions, upsertMealCompletion, getTodayMetrics } from '../../lib/db';
 import { DBNutritionPlan, DBFoodLogEntry, DBMealCompletion, MealSlot } from '../../lib/supabase';
-import { sumTodayAsPlannedCalories } from '../../lib/nutritionCalc';
+import { sumTodayAsPlannedNutrition } from '../../lib/nutritionCalc';
 
 const STATUS_META: Record<DBMealCompletion['status'], { icon: string; label: string; color: string }> = {
   as_planned: { icon: 'checkmark-circle', label: 'As Planned', color: colors.success },
@@ -341,7 +342,28 @@ function NutritionPlanCard({ userId, plan, inactive, completions, onCompletionsC
   );
 }
 
+// A progress bar that fills in its own base color up to `target`, then keeps
+// going in `colors.primary` (red) for whatever's over — going over budget
+// shows as a red overflow segment on the bar itself rather than just
+// recoloring the whole thing. `bgStyle` controls the bar's own height/radius.
+function DualBar({ consumed, target, baseColor, bgStyle }: { consumed: number; target: number; baseColor: string; bgStyle: any }) {
+  const barMax = Math.max(consumed, target, 1);
+  const baseWidthPct = (Math.min(consumed, target) / barMax) * 100;
+  const overWidthPct = consumed > target ? ((consumed - target) / barMax) * 100 : 0;
+  return (
+    <View style={bgStyle}>
+      <View style={{ flexDirection: 'row', height: '100%' }}>
+        <View style={{ width: `${baseWidthPct}%` as any, height: '100%', backgroundColor: baseColor }} />
+        {overWidthPct > 0 && (
+          <View style={{ width: `${overWidthPct}%` as any, height: '100%', backgroundColor: colors.primary }} />
+        )}
+      </View>
+    </View>
+  );
+}
+
 export default function FoodLogScreen({ userId }: { userId: string }) {
+  const [segment, setSegment] = useState<'nutrition' | 'history'>('nutrition');
   const [plans, setPlans] = useState<DBNutritionPlan[]>([]);
   const [entries, setEntries] = useState<DBFoodLogEntry[]>([]);
   const [loading, setLoading] = useState(true);
@@ -382,10 +404,11 @@ export default function FoodLogScreen({ userId }: { userId: string }) {
   const targetPlan = activePlans.find(p => p.target_calories != null);
   const waterTargetPlan = activePlans.find(p => p.target_water_ml != null);
   const days = groupByDay(entries);
+  const todayMealNutrition = sumTodayAsPlannedNutrition(plans, completionsByPlan, todayStr());
   const todayCalories = entries
     .filter(e => e.logged_at === todayStr())
     .reduce((sum, e) => sum + (e.calories ?? 0), 0)
-    + sumTodayAsPlannedCalories(plans, completionsByPlan, todayStr());
+    + todayMealNutrition.calories;
 
   const handleDelete = useCallback(async (id: string) => {
     setEntries(prev => prev.filter(e => e.id !== id));
@@ -397,43 +420,57 @@ export default function FoodLogScreen({ userId }: { userId: string }) {
   }, []);
 
   return (
-    <View style={styles.container}>
+    <SafeAreaView style={styles.container}>
+      <View style={styles.segmentRow}>
+        <TouchableOpacity
+          style={[styles.segment, segment === 'nutrition' && styles.segmentActive]}
+          onPress={() => setSegment('nutrition')}
+        >
+          <Text style={[styles.segmentText, segment === 'nutrition' && styles.segmentTextActive]}>Nutrition</Text>
+        </TouchableOpacity>
+        <TouchableOpacity
+          style={[styles.segment, segment === 'history' && styles.segmentActive]}
+          onPress={() => setSegment('history')}
+        >
+          <Text style={[styles.segmentText, segment === 'history' && styles.segmentTextActive]}>History</Text>
+        </TouchableOpacity>
+      </View>
       <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.scrollContent}>
+        {segment === 'nutrition' ? (
+        <>
         <Text style={styles.title}>Nutrition</Text>
-        <Text style={styles.subtitle}>Your nutrition plans and daily food log</Text>
+        <Text style={styles.subtitle}>Your nutrition plans and daily targets</Text>
 
-        {targetPlan?.target_calories != null && (() => {
-          const overBudget = todayCalories > targetPlan.target_calories!;
-          return (
-            <View style={styles.todayProgressCard}>
-              <Text style={[styles.todayProgressText, overBudget && styles.todayProgressTextOver]}>
-                {todayCalories} / {targetPlan.target_calories} kcal today
-              </Text>
-              <View style={styles.progressBg}>
-                <View style={[
-                  styles.progressFill,
-                  overBudget && styles.progressFillOver,
-                  { width: `${Math.min(100, (todayCalories / targetPlan.target_calories!) * 100)}%` as any },
-                ]} />
-              </View>
-              {(targetPlan.target_protein != null || targetPlan.target_carbs != null || targetPlan.target_fat != null) && (
-                <View style={styles.macroTargetRow}>
-                  {[
-                    { label: 'Protein', val: targetPlan.target_protein, color: colors.streak },
-                    { label: 'Carbs', val: targetPlan.target_carbs, color: '#4A9EFF' },
-                    { label: 'Fat', val: targetPlan.target_fat, color: colors.gold },
-                  ].map(m => (
-                    <View key={m.label} style={styles.macroTargetItem}>
-                      <View style={[styles.macroTargetDot, { backgroundColor: m.color }]} />
-                      <Text style={styles.macroTargetLabel}>{m.label}</Text>
-                      <Text style={[styles.macroTargetVal, { color: m.color }]}>{m.val != null ? `${m.val}g` : '—'}</Text>
+        {targetPlan?.target_calories != null && (
+          <View style={styles.todayProgressCard}>
+            <Text style={[styles.todayProgressText, styles.todayProgressTextCalories]}>
+              {todayCalories} / {targetPlan.target_calories} kcal today
+            </Text>
+            <DualBar
+              consumed={todayCalories}
+              target={targetPlan.target_calories!}
+              baseColor={colors.success}
+              bgStyle={styles.progressBg}
+            />
+            {(targetPlan.target_protein != null || targetPlan.target_carbs != null || targetPlan.target_fat != null) && (
+              <View style={styles.macroTargetRow}>
+                {[
+                  { label: 'Protein', consumed: todayMealNutrition.protein, target: targetPlan.target_protein, color: colors.primary },
+                  { label: 'Carbs', consumed: todayMealNutrition.carbs, target: targetPlan.target_carbs, color: '#4A9EFF' },
+                  { label: 'Fat', consumed: todayMealNutrition.fat, target: targetPlan.target_fat, color: colors.gold },
+                ].filter(m => m.target != null).map(m => (
+                  <View key={m.label} style={styles.macroBarRow}>
+                    <View style={styles.macroBarLabelRow}>
+                      <Text style={[styles.macroBarLabel, { color: m.color }]}>{m.label}</Text>
+                      <Text style={styles.macroBarVal}>{m.consumed}g / {m.target}g</Text>
                     </View>
-                  ))}
-                </View>
-              )}
-            </View>
-          );
-        })()}
+                    <DualBar consumed={m.consumed} target={m.target!} baseColor={colors.success} bgStyle={styles.macroBarBg} />
+                  </View>
+                ))}
+              </View>
+            )}
+          </View>
+        )}
 
         {waterTargetPlan?.target_water_ml != null && (
           <View style={styles.todayProgressCard}>
@@ -488,26 +525,39 @@ export default function FoodLogScreen({ userId }: { userId: string }) {
             )}
           </>
         )}
+        </>
+        ) : (
+        <>
+        <Text style={styles.title}>History</Text>
+        <Text style={styles.subtitle}>Everything you've logged, by day</Text>
 
-        {/* Food Log */}
-        {days.map(day => (
-          <View key={day.date} style={styles.dayGroup}>
-            <Text style={styles.dayLabel}>{formatDay(day.date)}</Text>
-            {day.entries.map(entry => (
-              <View key={entry.id} style={styles.foodRow}>
-                <View style={{ flex: 1 }}>
-                  <Text style={styles.foodName}>{entry.food_name}</Text>
-                  {entry.calories != null && <Text style={styles.foodCalories}>{entry.calories} kcal</Text>}
-                </View>
-                <TouchableOpacity onPress={() => handleDelete(entry.id)} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
-                  <Ionicons name="trash-outline" size={16} color={colors.primary} />
-                </TouchableOpacity>
-              </View>
-            ))}
+        {days.length === 0 ? (
+          <View style={styles.emptyPlan}>
+            <Ionicons name="time-outline" size={32} color={colors.textSecondary} />
+            <Text style={styles.emptyPlanText}>Nothing logged yet</Text>
           </View>
-        ))}
+        ) : (
+          days.map(day => (
+            <View key={day.date} style={styles.dayGroup}>
+              <Text style={styles.dayLabel}>{formatDay(day.date)}</Text>
+              {day.entries.map(entry => (
+                <View key={entry.id} style={styles.foodRow}>
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.foodName}>{entry.food_name}</Text>
+                    {entry.calories != null && <Text style={styles.foodCalories}>{entry.calories} kcal</Text>}
+                  </View>
+                  <TouchableOpacity onPress={() => handleDelete(entry.id)} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+                    <Ionicons name="trash-outline" size={16} color={colors.primary} />
+                  </TouchableOpacity>
+                </View>
+              ))}
+            </View>
+          ))
+        )}
+        </>
+        )}
       </ScrollView>
-    </View>
+    </SafeAreaView>
   );
 }
 
@@ -516,6 +566,22 @@ const styles = StyleSheet.create({
   scrollContent: { padding: 20, paddingBottom: 40 },
   title: { fontSize: 26, fontWeight: '800', color: colors.text, marginBottom: 6, marginTop: 8 },
   subtitle: { fontSize: 13, color: colors.textSecondary, marginBottom: 20 },
+
+  segmentRow: {
+    flexDirection: 'row',
+    backgroundColor: colors.card,
+    marginHorizontal: 20,
+    marginTop: 12,
+    borderRadius: 12,
+    padding: 4,
+    borderWidth: 1,
+    borderColor: colors.border,
+    zIndex: 1,
+  },
+  segment: { flex: 1, paddingVertical: 9, borderRadius: 8, alignItems: 'center' },
+  segmentActive: { backgroundColor: colors.primary },
+  segmentText: { fontSize: 13, fontWeight: '600', color: colors.textSecondary },
+  segmentTextActive: { color: colors.text },
 
   sectionLabel: { fontSize: 11, fontWeight: '700', color: colors.textSecondary, letterSpacing: 1.5, marginBottom: 10 },
   planCard: {
@@ -583,16 +649,16 @@ const styles = StyleSheet.create({
     borderWidth: 1, borderColor: colors.border,
   },
   todayProgressText: { fontSize: 13, fontWeight: '600', color: colors.text, marginBottom: 8 },
-  todayProgressTextOver: { color: colors.primary },
+  todayProgressTextCalories: { color: colors.textSecondary },
   progressBg: { height: 8, backgroundColor: colors.secondary, borderRadius: 4, overflow: 'hidden' },
   progressFill: { height: '100%', backgroundColor: colors.xpBar, borderRadius: 4 },
   progressFillWater: { backgroundColor: colors.primary },
-  progressFillOver: { backgroundColor: colors.primary },
-  macroTargetRow: { flexDirection: 'row', justifyContent: 'space-around', marginTop: 14, paddingTop: 14, borderTopWidth: 1, borderTopColor: colors.border },
-  macroTargetItem: { alignItems: 'center', gap: 4 },
-  macroTargetDot: { width: 10, height: 10, borderRadius: 5 },
-  macroTargetLabel: { fontSize: 11, color: colors.textSecondary, fontWeight: '500' },
-  macroTargetVal: { fontSize: 13, fontWeight: '700' },
+  macroTargetRow: { marginTop: 14, paddingTop: 14, borderTopWidth: 1, borderTopColor: colors.border },
+  macroBarRow: { marginBottom: 10 },
+  macroBarLabelRow: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 4 },
+  macroBarLabel: { fontSize: 12, color: colors.textSecondary, fontWeight: '600' },
+  macroBarVal: { fontSize: 12, fontWeight: '700', color: colors.textSecondary },
+  macroBarBg: { height: 6, backgroundColor: colors.secondary, borderRadius: 3, overflow: 'hidden' },
 
   emptyPlan: { alignItems: 'center', paddingVertical: 24, gap: 10, marginBottom: 8 },
   emptyPlanText: { fontSize: 13, color: colors.textSecondary, textAlign: 'center', paddingHorizontal: 24 },

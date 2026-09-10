@@ -8,7 +8,6 @@ import {
   Modal,
   ActivityIndicator,
 } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
 import { useFocusEffect, useRoute, useNavigation } from '@react-navigation/native';
 import { Ionicons } from '@expo/vector-icons';
 import { useAudioPlayer } from 'expo-audio';
@@ -335,8 +334,9 @@ export default function WorkoutScreen({ userId }: Props) {
       console.warn('Workout completion: failed to save session', e);
     }
 
-    // Record what was actually done today against each attempted exercise, so
-    // the Log tab reflects real completed workouts instead of staying empty.
+    // Record what was actually done today against each attempted exercise —
+    // kept for potential future reporting; the Workout tab's History segment
+    // reads from workout_sessions directly, not this table.
     try {
       const attempted = exercises.filter(ex => ex.sets.some(s => s.effort !== null));
       for (const ex of attempted) {
@@ -386,31 +386,31 @@ export default function WorkoutScreen({ userId }: Props) {
 
   if (loadingWorkouts) {
     return (
-      <SafeAreaView style={styles.container}>
+      <View style={styles.container}>
         <View style={styles.pendingContainer}>
           <ActivityIndicator size="large" color={colors.xpBar} />
           <Text style={{ color: colors.textSecondary, marginTop: 16 }}>Loading workouts...</Text>
         </View>
-      </SafeAreaView>
+      </View>
     );
   }
 
   if (isPending) {
     return (
-      <SafeAreaView style={styles.container}>
+      <View style={styles.container}>
         <View style={styles.pendingContainer}>
           <Ionicons name="time-outline" size={64} color={colors.xpBar} />
           <Text style={styles.pendingTitle}>Waiting for Coach</Text>
           <Text style={styles.pendingSub}>Your account is set up.{'\n'}Your coach will assign your program soon.</Text>
         </View>
-      </SafeAreaView>
+      </View>
     );
   }
 
   // ── Workout picker (landing view) ──
   if (!selectedWorkoutId) {
     return (
-      <SafeAreaView style={styles.container}>
+      <View style={styles.container}>
         <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.scrollContent}>
           <View style={styles.header}>
             <Text style={styles.programLabel}>YOUR WORKOUTS</Text>
@@ -530,14 +530,14 @@ export default function WorkoutScreen({ userId }: Props) {
             </>
           )}
         </ScrollView>
-      </SafeAreaView>
+      </View>
     );
   }
 
   // ── Selected workout: loading its exercises ──
   if (loadingDetail || !dbWorkout) {
     return (
-      <SafeAreaView style={styles.container}>
+      <View style={styles.container}>
         <TouchableOpacity style={styles.backRow} onPress={() => setSelectedWorkoutId(null)}>
           <Ionicons name="chevron-back" size={20} color={colors.xpBar} />
           <Text style={styles.backRowText}>All Workouts</Text>
@@ -545,7 +545,7 @@ export default function WorkoutScreen({ userId }: Props) {
         <View style={styles.pendingContainer}>
           <ActivityIndicator size="large" color={colors.xpBar} />
         </View>
-      </SafeAreaView>
+      </View>
     );
   }
 
@@ -562,7 +562,7 @@ export default function WorkoutScreen({ userId }: Props) {
   // for today — either way, no logging/finish. ──
   if (readOnlyReason) {
     return (
-      <SafeAreaView style={styles.container}>
+      <View style={styles.container}>
         <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.scrollContent}>
           <TouchableOpacity style={styles.backRow} onPress={() => setSelectedWorkoutId(null)}>
             <Ionicons name="chevron-back" size={20} color={colors.xpBar} />
@@ -607,12 +607,12 @@ export default function WorkoutScreen({ userId }: Props) {
             </View>
           ))}
         </ScrollView>
-      </SafeAreaView>
+      </View>
     );
   }
 
   return (
-    <SafeAreaView style={styles.container}>
+    <View style={styles.container}>
       {restTimer && (
         <View style={styles.restTimerBanner}>
           <Ionicons name="time" size={20} color={colors.text} />
@@ -876,7 +876,7 @@ export default function WorkoutScreen({ userId }: Props) {
           </View>
         </View>
       </Modal>
-    </SafeAreaView>
+    </View>
   );
 }
 

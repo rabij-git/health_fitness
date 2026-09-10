@@ -415,13 +415,13 @@ export async function saveWorkoutSession(session: Omit<DBWorkoutSession, 'id' | 
   if (error) throw error;
 }
 
-export async function getTraineeHistory(traineeId: string): Promise<(DBWorkoutSession & { workout_name: string })[]> {
+export async function getTraineeHistory(traineeId: string, limit: number = 20): Promise<(DBWorkoutSession & { workout_name: string })[]> {
   const { data, error } = await supabase
     .from('workout_sessions')
     .select('*, workouts(name)')
     .eq('trainee_id', traineeId)
     .order('completed_at', { ascending: false })
-    .limit(20);
+    .limit(limit);
   if (error) return [];
   return (data ?? []).map((s: any) => ({ ...s, workout_name: s.workouts?.name ?? '' }));
 }

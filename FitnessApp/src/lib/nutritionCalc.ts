@@ -101,20 +101,29 @@ export const MEAL_SLOT_LABELS: Record<3 | 4 | 5, string[]> = {
   5: ['Breakfast', 'Snack', 'Lunch', 'Snack', 'Dinner'],
 };
 
-// Calories logged from generated-meal tracking: only 'as_planned' counts,
-// since that's the one status with a known calorie value (the meal's own
-// target) — 'substituted' has no calorie figure attached to its free-text
-// note, and 'skipped' means nothing was eaten. Only active plans count,
-// mirroring the trackable gate meal tracking itself uses (inactive/past
-// plans are display-only history, never loggable). Shared between
+export interface TodayNutritionTotals {
+  calories: number;
+  protein: number;
+  carbs: number;
+  fat: number;
+}
+
+// Nutrition logged from generated-meal tracking: only 'as_planned' counts,
+// since that's the one status with known calorie/macro values (the meal's
+// own actual_* fields) — 'substituted' has no figures attached to its
+// free-text note, and 'skipped' means nothing was eaten. Only active plans
+// count, mirroring the trackable gate meal tracking itself uses (inactive/
+// past plans are display-only history, never loggable). Shared between
 // FoodLogScreen (per-plan completions, for its own UI) and TrainerDashboard
-// (just the total) so the "today's calories" figure agrees everywhere.
-export function sumTodayAsPlannedCalories(
+// (just the totals) so the "today's nutrition" figures agree everywhere.
+// Manual food_log_entries only ever contribute to calories — they carry no
+// macro breakdown — so protein/carbs/fat here reflect planned-meal tracking only.
+export function sumTodayAsPlannedNutrition(
   plans: Pick<DBNutritionPlan, 'id' | 'active' | 'meals'>[],
   completionsByPlan: Record<string, DBMealCompletion[]>,
   today: string
-): number {
-  let total = 0;
+): TodayNutritionTotals {
+  const totals: TodayNutritionTotals = { calories: 0, protein: 0, carbs: 0, fat: 0 };
   for (const plan of plans) {
     if (!plan.active || !plan.meals) continue;
     const completions = completionsByPlan[plan.id];
@@ -122,8 +131,20 @@ export function sumTodayAsPlannedCalories(
     for (const c of completions) {
       if (c.log_date !== today || c.status !== 'as_planned') continue;
       const meal = plan.meals.find(m => m.slot === c.meal_slot);
-      if (meal) total += meal.actual_calories;
+      if (!meal) continue;
+      totals.calories += meal.actual_calories;
+      totals.protein += meal.actual_protein;
+      totals.carbs += meal.actual_carbs;
+      totals.fat += meal.actual_fat;
     }
   }
-  return total;
+  return totals;
+}
+
+export function sumTodayAsPlannedCalories(
+  plans: Pick<DBNutritionPlan, 'id' | 'active' | 'meals'>[],
+  completionsByPlan: Record<string, DBMealCompletion[]>,
+  today: string
+): number {
+  return sumTodayAsPlannedNutrition(plans, completionsByPlan, today).calories;
 }

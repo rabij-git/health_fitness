@@ -4,11 +4,11 @@ import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { colors } from '../theme/colors';
 import TrainerDashboard from '../screens/trainer/TrainerDashboard';
-import WorkoutScreen from '../screens/trainer/WorkoutScreen';
+import WorkoutTabScreen from '../screens/trainer/WorkoutTabScreen';
 import GamificationScreen from '../screens/trainer/GamificationScreen';
 import SocialScreen from '../screens/trainer/SocialScreen';
 import ProfileScreen from '../screens/trainer/ProfileScreen';
-import LogScreen from '../screens/trainer/LogScreen';
+import FoodLogScreen from '../screens/trainer/FoodLogScreen';
 
 const Tab = createBottomTabNavigator();
 
@@ -38,7 +38,7 @@ export default function TrainerTabs({ onLogout, userId }: Props) {
           const icons: Record<string, { focused: string; unfocused: string }> = {
             Home: { focused: 'home', unfocused: 'home-outline' },
             Workout: { focused: 'barbell', unfocused: 'barbell-outline' },
-            Log: { focused: 'stats-chart', unfocused: 'stats-chart-outline' },
+            Nutrition: { focused: 'restaurant', unfocused: 'restaurant-outline' },
             Medals: { focused: 'trophy', unfocused: 'trophy-outline' },
             Social: { focused: 'people', unfocused: 'people-outline' },
             Profile: { focused: 'person', unfocused: 'person-outline' },
@@ -53,10 +53,10 @@ export default function TrainerTabs({ onLogout, userId }: Props) {
         {({ navigation }) => <TrainerDashboard onLogout={onLogout} userId={userId} navigation={navigation} />}
       </Tab.Screen>
       <Tab.Screen name="Workout">
-        {() => <WorkoutScreen userId={userId} />}
+        {() => <WorkoutTabScreen userId={userId} />}
       </Tab.Screen>
-      <Tab.Screen name="Log">
-        {() => <LogScreen userId={userId} />}
+      <Tab.Screen name="Nutrition">
+        {() => <FoodLogScreen userId={userId} />}
       </Tab.Screen>
       <Tab.Screen name="Medals">
         {() => <GamificationScreen userId={userId} />}
