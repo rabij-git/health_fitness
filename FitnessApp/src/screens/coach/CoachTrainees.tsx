@@ -190,7 +190,10 @@ export default function CoachTrainees({ coachId }: Props) {
 
   // ── Trainee detail modal ──
   const [selectedTrainee, setSelectedTrainee] = useState<DBUser | null>(null);
-  const [detailTab, setDetailTab] = useState<'program' | 'history' | 'weight' | 'steps' | 'nutrition' | 'chat'>('program');
+  const [detailTab, setDetailTab] = useState<'program' | 'weight' | 'steps' | 'nutrition' | 'chat'>('program');
+  // Program tab is itself split into Program / History, same pattern as the
+  // Nutrition tab's Plans / History toggle.
+  const [programSubTab, setProgramSubTab] = useState<'program' | 'history'>('program');
   // All workouts (active + inactive) assigned to the selected trainee — a trainee
   // can now have several at once, unlike the old single-latest-workout model.
   const [selectedTraineeWorkouts, setSelectedTraineeWorkouts] = useState<DBWorkout[]>([]);
@@ -326,6 +329,7 @@ export default function CoachTrainees({ coachId }: Props) {
       setSelectedTraineeWorkouts([]);
       setExpandedWorkoutId(null);
       setExpandedWorkoutExercises([]);
+      setProgramSubTab('program');
       setSelectedTraineeHistory([]);
       setSelectedTraineeWeights([]);
       setSelectedTraineeSteps([]);
@@ -1009,7 +1013,7 @@ export default function CoachTrainees({ coachId }: Props) {
               style={styles.tabRow}
               contentContainerStyle={{ flexDirection: 'row', alignItems: 'center' }}
             >
-              {(['program', 'history', 'weight', 'steps', 'nutrition', 'chat'] as const).map(tab => (
+              {(['program', 'weight', 'steps', 'nutrition', 'chat'] as const).map(tab => (
                 <TouchableOpacity
                   key={tab}
                   style={[styles.tab, detailTab === tab && styles.tabActive]}
@@ -1017,7 +1021,7 @@ export default function CoachTrainees({ coachId }: Props) {
                   hitSlop={{ top: 8, bottom: 8 }}
                 >
                   <Text style={[styles.tabText, detailTab === tab && styles.tabTextActive]} numberOfLines={1}>
-                    {tab === 'program' ? 'Program' : tab === 'history' ? 'History' : tab === 'weight' ? 'Weight' : tab === 'steps' ? 'Steps' : tab === 'nutrition' ? 'Nutrition' : 'Chat'}
+                    {tab === 'program' ? 'Program' : tab === 'weight' ? 'Weight' : tab === 'steps' ? 'Steps' : tab === 'nutrition' ? 'Nutrition' : 'Chat'}
                   </Text>
                 </TouchableOpacity>
               ))}
@@ -1067,6 +1071,95 @@ export default function CoachTrainees({ coachId }: Props) {
                 {/* Program tab */}
                 {detailTab === 'program' && (
                   <View>
+                    <View style={styles.nutritionSegmentRow}>
+                      <TouchableOpacity
+                        style={[styles.nutritionSegment, programSubTab === 'program' && styles.nutritionSegmentActive]}
+                        onPress={() => setProgramSubTab('program')}
+                      >
+                        <Text style={[styles.nutritionSegmentText, programSubTab === 'program' && styles.nutritionSegmentTextActive]}>Program</Text>
+                      </TouchableOpacity>
+                      <TouchableOpacity
+                        style={[styles.nutritionSegment, programSubTab === 'history' && styles.nutritionSegmentActive]}
+                        onPress={() => setProgramSubTab('history')}
+                      >
+                        <Text style={[styles.nutritionSegmentText, programSubTab === 'history' && styles.nutritionSegmentTextActive]}>History</Text>
+                      </TouchableOpacity>
+                    </View>
+                    {programSubTab === 'history' ? (
+                      <>
+                        <Text style={styles.fieldLabel}>TRAINING HISTORY</Text>
+                        {selectedTraineeHistory.length === 0 && (
+                          <Text style={{ color: colors.textSecondary, textAlign: 'center', paddingVertical: 20 }}>No sessions logged yet</Text>
+                        )}
+                        {selectedTraineeHistory.map((entry, i) => {
+                          const isExpanded = expandedHistoryId === (entry.id ?? String(i));
+                          const hasDetails = !!entry.details && entry.details.length > 0;
+                          return (
+                            <View key={entry.id ?? i} style={styles.historyBlock}>
+                              <TouchableOpacity
+                                style={styles.historyRow}
+                                activeOpacity={hasDetails ? 0.7 : 1}
+                                onPress={() => hasDetails && setExpandedHistoryId(isExpanded ? null : (entry.id ?? String(i)))}
+                              >
+                                <View style={styles.historyDate}>
+                                  <Text style={styles.historyDateText}>{formatDate(entry.completed_at)}</Text>
+                                </View>
+                                <View style={styles.historyInfo}>
+                                  <Text style={styles.historyWorkout}>{entry.workout_name}</Text>
+                                  <Text style={styles.historyMeta}>
+                                    {entry.completion_pct}% complete{!hasDetails ? ' · no detail logged' : ''}
+                                  </Text>
+                                </View>
+                                <View style={[
+                                  styles.completionBadge,
+                                  { backgroundColor: entry.completion_pct >= 100 ? colors.success + '22' : colors.warning + '22' },
+                                ]}>
+                                  <Text style={[
+                                    styles.completionText,
+                                    { color: entry.completion_pct >= 100 ? colors.success : colors.warning },
+                                  ]}>
+                                    {entry.completion_pct}%
+                                  </Text>
+                                </View>
+                                {hasDetails && (
+                                  <Ionicons
+                                    name={isExpanded ? 'chevron-up' : 'chevron-down'}
+                                    size={16}
+                                    color={colors.textSecondary}
+                                    style={{ marginLeft: 6 }}
+                                  />
+                                )}
+                              </TouchableOpacity>
+
+                              {isExpanded && hasDetails && (
+                                <View style={styles.historyDetailBody}>
+                                  {entry.details.map((ex: SessionExerciseDetail, exI: number) => (
+                                    <View key={exI} style={styles.historyExerciseBlock}>
+                                      <Text style={styles.historyExerciseName}>{ex.name}</Text>
+                                      {ex.sets.map((s: SessionSetDetail, setI: number) => (
+                                        <View key={setI} style={styles.historySetRow}>
+                                          <Text style={styles.historySetLabel}>Set {setI + 1}</Text>
+                                          <Text style={styles.historySetMeta}>{s.reps || '—'} reps{s.weight ? ` · ${s.weight}` : ''}</Text>
+                                          {s.effort !== null ? (
+                                            <View style={styles.effortPill}>
+                                              <View style={[styles.effortPillDot, { backgroundColor: EFFORT_LABELS[s.effort]?.color ?? colors.textSecondary }]} />
+                                              <Text style={styles.effortPillText}>{EFFORT_LABELS[s.effort]?.desc ?? `Effort ${s.effort}`}</Text>
+                                            </View>
+                                          ) : (
+                                            <Text style={styles.historySetSkipped}>Not logged</Text>
+                                          )}
+                                        </View>
+                                      ))}
+                                    </View>
+                                  ))}
+                                </View>
+                              )}
+                            </View>
+                          );
+                        })}
+                      </>
+                    ) : (
+                      <>
                     <View style={styles.programTabHeaderRow}>
                       <TouchableOpacity
                         style={[styles.workoutActionBtn, { flex: 1 }]}
@@ -1183,82 +1276,8 @@ export default function CoachTrainees({ coachId }: Props) {
                         })}
                       </>
                     )}
-                  </View>
-                )}
-
-                {/* History tab */}
-                {detailTab === 'history' && (
-                  <View>
-                    <Text style={styles.fieldLabel}>TRAINING HISTORY</Text>
-                    {selectedTraineeHistory.length === 0 && (
-                      <Text style={{ color: colors.textSecondary, textAlign: 'center', paddingVertical: 20 }}>No sessions logged yet</Text>
+                      </>
                     )}
-                    {selectedTraineeHistory.map((entry, i) => {
-                      const isExpanded = expandedHistoryId === (entry.id ?? String(i));
-                      const hasDetails = !!entry.details && entry.details.length > 0;
-                      return (
-                        <View key={entry.id ?? i} style={styles.historyBlock}>
-                          <TouchableOpacity
-                            style={styles.historyRow}
-                            activeOpacity={hasDetails ? 0.7 : 1}
-                            onPress={() => hasDetails && setExpandedHistoryId(isExpanded ? null : (entry.id ?? String(i)))}
-                          >
-                            <View style={styles.historyDate}>
-                              <Text style={styles.historyDateText}>{formatDate(entry.completed_at)}</Text>
-                            </View>
-                            <View style={styles.historyInfo}>
-                              <Text style={styles.historyWorkout}>{entry.workout_name}</Text>
-                              <Text style={styles.historyMeta}>
-                                {entry.completion_pct}% complete{!hasDetails ? ' · no detail logged' : ''}
-                              </Text>
-                            </View>
-                            <View style={[
-                              styles.completionBadge,
-                              { backgroundColor: entry.completion_pct >= 100 ? colors.success + '22' : colors.warning + '22' },
-                            ]}>
-                              <Text style={[
-                                styles.completionText,
-                                { color: entry.completion_pct >= 100 ? colors.success : colors.warning },
-                              ]}>
-                                {entry.completion_pct}%
-                              </Text>
-                            </View>
-                            {hasDetails && (
-                              <Ionicons
-                                name={isExpanded ? 'chevron-up' : 'chevron-down'}
-                                size={16}
-                                color={colors.textSecondary}
-                                style={{ marginLeft: 6 }}
-                              />
-                            )}
-                          </TouchableOpacity>
-
-                          {isExpanded && hasDetails && (
-                            <View style={styles.historyDetailBody}>
-                              {entry.details.map((ex: SessionExerciseDetail, exI: number) => (
-                                <View key={exI} style={styles.historyExerciseBlock}>
-                                  <Text style={styles.historyExerciseName}>{ex.name}</Text>
-                                  {ex.sets.map((s: SessionSetDetail, setI: number) => (
-                                    <View key={setI} style={styles.historySetRow}>
-                                      <Text style={styles.historySetLabel}>Set {setI + 1}</Text>
-                                      <Text style={styles.historySetMeta}>{s.reps || '—'} reps{s.weight ? ` · ${s.weight}` : ''}</Text>
-                                      {s.effort !== null ? (
-                                        <View style={styles.effortPill}>
-                                          <View style={[styles.effortPillDot, { backgroundColor: EFFORT_LABELS[s.effort]?.color ?? colors.textSecondary }]} />
-                                          <Text style={styles.effortPillText}>{EFFORT_LABELS[s.effort]?.desc ?? `Effort ${s.effort}`}</Text>
-                                        </View>
-                                      ) : (
-                                        <Text style={styles.historySetSkipped}>Not logged</Text>
-                                      )}
-                                    </View>
-                                  ))}
-                                </View>
-                              ))}
-                            </View>
-                          )}
-                        </View>
-                      );
-                    })}
                   </View>
                 )}
 
