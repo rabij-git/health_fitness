@@ -17,7 +17,6 @@ import {
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useRoute, useNavigation, useFocusEffect } from '@react-navigation/native';
 import { Ionicons } from '@expo/vector-icons';
-import * as DocumentPicker from 'expo-document-picker';
 import { colors } from '../../theme/colors';
 import {
   getMyTrainees,
@@ -40,18 +39,18 @@ import {
   getTraineeHistory,
   getWeightLogs,
   getNutritionPlans,
-  uploadNutritionPlan,
   getNutritionTemplates,
   assignNutritionTemplate,
   updateNutritionPlan,
   setNutritionPlanActive,
   deleteNutritionPlan,
   getMealCompletions,
+  getFoodLogEntries,
   getMessages,
   sendMessage,
   getVitalsHistory,
 } from '../../lib/db';
-import { DBProgram, DBUser, DBWorkout, DBExercise, DBWeightLog, DBNutritionPlan, DBNutritionPlanTemplate, DBCoachRequest, DBLibraryExercise, DBMessage, DBVital, DBMealCompletion, SessionExerciseDetail, SessionSetDetail } from '../../lib/supabase';
+import { DBProgram, DBUser, DBWorkout, DBExercise, DBWeightLog, DBNutritionPlan, DBNutritionPlanTemplate, DBCoachRequest, DBLibraryExercise, DBMessage, DBVital, DBMealCompletion, DBFoodLogEntry, SessionExerciseDetail, SessionSetDetail } from '../../lib/supabase';
 import { sanitizeCount, sanitizeWeightInput, sanitizeTimeInput, stripKg, withKg } from '../../lib/exerciseInput';
 import CalorieCalculatorModal from './CalorieCalculatorModal';
 
@@ -122,6 +121,44 @@ function groupCompletionsByDate(completions: DBMealCompletion[]): [string, DBMea
   return Array.from(map.entries()).sort((a, b) => (a[0] < b[0] ? 1 : -1)).slice(0, 14);
 }
 
+interface FoodHistoryDay {
+  date: string;
+  meals: { planTitle: string; slotLabel: string; status: DBMealCompletion['status'] }[];
+  entries: DBFoodLogEntry[];
+}
+
+// Consolidates every plan's meal-tracking (As Planned/Substituted/Skipped)
+// plus the manual food log into one by-date timeline for the coach — mirrors
+// the trainee's own Nutrition tab "History" segment (FoodLogScreen.tsx) so
+// the coach sees the same picture instead of having to open each plan's own
+// ADHERENCE HISTORY one at a time. Today's meal-tracking is excluded (same
+// convention as the trainee side — it's live elsewhere, not history yet);
+// food log entries aren't, since there's no separate "today" view for those.
+function buildTraineeFoodHistory(
+  plans: DBNutritionPlan[],
+  completionsByPlan: Record<string, DBMealCompletion[]>,
+  foodEntries: DBFoodLogEntry[]
+): FoodHistoryDay[] {
+  const today = new Date().toISOString().split('T')[0];
+  const map = new Map<string, FoodHistoryDay>();
+  const dayFor = (date: string) => {
+    if (!map.has(date)) map.set(date, { date, meals: [], entries: [] });
+    return map.get(date)!;
+  };
+
+  for (const plan of plans) {
+    for (const c of completionsByPlan[plan.id] ?? []) {
+      if (c.log_date === today) continue;
+      const slotLabel = plan.meals?.find(m => m.slot === c.meal_slot)?.label ?? `Meal ${c.meal_slot}`;
+      dayFor(c.log_date).meals.push({ planTitle: plan.title, slotLabel, status: c.status });
+    }
+  }
+  for (const e of foodEntries) {
+    dayFor(e.logged_at).entries.push(e);
+  }
+  return Array.from(map.values()).sort((a, b) => (a.date < b.date ? 1 : -1));
+}
+
 // Matches the effort scale a trainee logs against in WorkoutScreen.tsx
 // (0-4, "reps in reserve" style — lower is easier, higher is closer to failure).
 const EFFORT_LABELS: Record<number, { desc: string; color: string }> = {
@@ -176,10 +213,13 @@ export default function CoachTrainees({ coachId }: Props) {
   const [togglingPlanId, setTogglingPlanId] = useState<string | null>(null);
   const [planCompletions, setPlanCompletions] = useState<Record<string, DBMealCompletion[]>>({});
   const [loadingCompletionsFor, setLoadingCompletionsFor] = useState<string | null>(null);
+  // Manual food_log_entries for the selected trainee — fetched alongside the
+  // rest of their detail data, feeds the Nutrition tab's "History" view.
+  const [selectedTraineeFoodLog, setSelectedTraineeFoodLog] = useState<DBFoodLogEntry[]>([]);
+  const [nutritionSubTab, setNutritionSubTab] = useState<'plans' | 'history'>('plans');
   const [selectedTraineeMessages, setSelectedTraineeMessages] = useState<DBMessage[]>([]);
   const [chatInput, setChatInput] = useState('');
   const [loadingDetail, setLoadingDetail] = useState(false);
-  const [uploadingNutrition, setUploadingNutrition] = useState(false);
 
   // ── Nutrition plan editor (inline within the "Nutrition" tab — editing an
   // already-assigned plan's copied values, not creating a new one) ──
@@ -291,6 +331,9 @@ export default function CoachTrainees({ coachId }: Props) {
       setSelectedTraineeSteps([]);
       setSelectedTraineeWater([]);
       setSelectedTraineeNutrition([]);
+      setSelectedTraineeFoodLog([]);
+      setPlanCompletions({});
+      setNutritionSubTab('plans');
       setExpandedPlanId(null);
       setSelectedTraineeMessages([]);
       setEditingPlanId(null);
@@ -304,16 +347,31 @@ export default function CoachTrainees({ coachId }: Props) {
       getVitalsHistory(selectedTrainee.id, 'steps'),
       getVitalsHistory(selectedTrainee.id, 'water'),
       getNutritionPlans(selectedTrainee.id),
+      getFoodLogEntries(selectedTrainee.id),
       getMessages(coachId, selectedTrainee.id),
-    ]).then(([workouts, history, weights, steps, water, nutrition, messages]) => {
+    ]).then(([workouts, history, weights, steps, water, nutrition, foodLog, messages]) => {
       setSelectedTraineeWorkouts(workouts);
       setSelectedTraineeHistory(history);
       setSelectedTraineeWeights(weights);
       setSelectedTraineeSteps(steps);
       setSelectedTraineeWater(water);
       setSelectedTraineeNutrition(nutrition);
+      setSelectedTraineeFoodLog(foodLog);
       setSelectedTraineeMessages(messages);
       setLoadingDetail(false);
+
+      // Eagerly pull every plan's meal-tracking (not just the one the coach
+      // happens to expand) so the new "History" view has everything to pool
+      // as soon as it's opened, instead of an empty screen until each plan
+      // card is individually expanded.
+      const plansWithMeals = nutrition.filter(p => p.meals && p.meals.length > 0);
+      if (plansWithMeals.length > 0) {
+        Promise.all(plansWithMeals.map(p => getMealCompletions(selectedTrainee.id, p.id))).then(results => {
+          const map: Record<string, DBMealCompletion[]> = {};
+          plansWithMeals.forEach((p, i) => { map[p.id] = results[i]; });
+          setPlanCompletions(prev => ({ ...prev, ...map }));
+        });
+      }
     });
   }, [selectedTrainee, coachId]);
 
@@ -386,22 +444,6 @@ export default function CoachTrainees({ coachId }: Props) {
       console.warn('Send message error', e);
     }
   }, [coachId, selectedTrainee, chatInput]);
-
-  const handleUploadNutrition = useCallback(async () => {
-    if (!selectedTrainee) return;
-    const result = await DocumentPicker.getDocumentAsync({ type: 'application/pdf' });
-    if (result.canceled || !result.assets?.[0]) return;
-    const asset = result.assets[0];
-    setUploadingNutrition(true);
-    try {
-      const plan = await uploadNutritionPlan(selectedTrainee.id, coachId, asset.uri, asset.name);
-      setSelectedTraineeNutrition(prev => [plan, ...deactivateOtherPlansLocally(prev, plan.id)]);
-    } catch (e) {
-      Alert.alert('Error', e instanceof Error ? e.message : 'Could not upload this plan. Please try again.');
-    } finally {
-      setUploadingNutrition(false);
-    }
-  }, [selectedTrainee, coachId]);
 
   const handleDeleteNutrition = useCallback(async (plan: DBNutritionPlan) => {
     setSelectedTraineeNutrition(prev => prev.filter(p => p.id !== plan.id));
@@ -1281,38 +1323,22 @@ export default function CoachTrainees({ coachId }: Props) {
                 {/* Nutrition tab */}
                 {detailTab === 'nutrition' && (
                   <View>
-                    {(() => {
-                      const waterTarget = selectedTraineeNutrition.find(p => p.active && p.target_water_ml != null)?.target_water_ml;
-                      if (waterTarget == null) return null;
-                      const today = new Date().toISOString().split('T')[0];
-                      const todayWater = selectedTraineeWater[0]?.created_date === today ? selectedTraineeWater[0].metric_value : 0;
-                      return (
-                        <View style={styles.dietTargetsDisplay}>
-                          <View style={styles.dietTargetChip}>
-                            <Text style={styles.dietTargetChipVal}>{todayWater} / {waterTarget}ml</Text>
-                            <Text style={styles.dietTargetChipLabel}>water today</Text>
-                          </View>
-                        </View>
-                      );
-                    })()}
-                    <Text style={styles.fieldLabel}>WATER INTAKE</Text>
-                    {selectedTraineeWater.length === 0 ? (
-                      <Text style={{ color: colors.textSecondary, textAlign: 'center', paddingVertical: 12 }}>No water logged yet</Text>
-                    ) : (
-                      selectedTraineeWater.slice(0, 7).map((entry, i) => (
-                        <View key={entry.id} style={styles.weightRow}>
-                          <Ionicons name="water-outline" size={16} color={colors.primary} />
-                          <Text style={styles.weightDate}>{formatDate(entry.created_date)}</Text>
-                          <Text style={styles.weightVal}>{entry.metric_value}ml</Text>
-                          {i === 0 && (
-                            <View style={styles.latestTag}>
-                              <Text style={styles.latestTagText}>Today</Text>
-                            </View>
-                          )}
-                        </View>
-                      ))
+                    {!editingPlanId && (
+                      <View style={styles.nutritionSegmentRow}>
+                        <TouchableOpacity
+                          style={[styles.nutritionSegment, nutritionSubTab === 'plans' && styles.nutritionSegmentActive]}
+                          onPress={() => setNutritionSubTab('plans')}
+                        >
+                          <Text style={[styles.nutritionSegmentText, nutritionSubTab === 'plans' && styles.nutritionSegmentTextActive]}>Plans</Text>
+                        </TouchableOpacity>
+                        <TouchableOpacity
+                          style={[styles.nutritionSegment, nutritionSubTab === 'history' && styles.nutritionSegmentActive]}
+                          onPress={() => setNutritionSubTab('history')}
+                        >
+                          <Text style={[styles.nutritionSegmentText, nutritionSubTab === 'history' && styles.nutritionSegmentTextActive]}>History</Text>
+                        </TouchableOpacity>
+                      </View>
                     )}
-                    <View style={{ height: 16 }} />
                     {editingPlanId ? (
                       <>
                         {selectedTraineeNutrition.find(p => p.id === editingPlanId)?.locked && (
@@ -1426,35 +1452,88 @@ export default function CoachTrainees({ coachId }: Props) {
                           </TouchableOpacity>
                         </View>
                       </>
+                    ) : nutritionSubTab === 'history' ? (
+                      <>
+                        {(() => {
+                          const waterTarget = selectedTraineeNutrition.find(p => p.active && p.target_water_ml != null)?.target_water_ml;
+                          if (waterTarget == null) return null;
+                          const today = new Date().toISOString().split('T')[0];
+                          const todayWater = selectedTraineeWater[0]?.created_date === today ? selectedTraineeWater[0].metric_value : 0;
+                          return (
+                            <View style={styles.dietTargetsDisplay}>
+                              <View style={styles.dietTargetChip}>
+                                <Text style={styles.dietTargetChipVal}>{todayWater} / {waterTarget}ml</Text>
+                                <Text style={styles.dietTargetChipLabel}>water today</Text>
+                              </View>
+                            </View>
+                          );
+                        })()}
+                        <Text style={styles.fieldLabel}>WATER INTAKE</Text>
+                        {selectedTraineeWater.length === 0 ? (
+                          <Text style={{ color: colors.textSecondary, textAlign: 'center', paddingVertical: 12 }}>No water logged yet</Text>
+                        ) : (
+                          selectedTraineeWater.slice(0, 7).map((entry, i) => (
+                            <View key={entry.id} style={styles.weightRow}>
+                              <Ionicons name="water-outline" size={16} color={colors.primary} />
+                              <Text style={styles.weightDate}>{formatDate(entry.created_date)}</Text>
+                              <Text style={styles.weightVal}>{entry.metric_value}ml</Text>
+                              {i === 0 && (
+                                <View style={styles.latestTag}>
+                                  <Text style={styles.latestTagText}>Today</Text>
+                                </View>
+                              )}
+                            </View>
+                          ))
+                        )}
+                        <View style={{ height: 16 }} />
+
+                        <Text style={styles.fieldLabel}>FOOD LOG HISTORY</Text>
+                        {(() => {
+                          const days = buildTraineeFoodHistory(selectedTraineeNutrition, planCompletions, selectedTraineeFoodLog);
+                          if (days.length === 0) {
+                            return <Text style={styles.adherenceEmptyText}>Nothing logged by the trainee yet.</Text>;
+                          }
+                          return days.map(day => (
+                            <View key={day.date} style={styles.adherenceDayRow}>
+                              <Text style={styles.adherenceDate}>{formatDate(day.date)}</Text>
+                              {day.meals.length > 0 && (
+                                <View style={styles.adherenceBadges}>
+                                  {day.meals.map((m, i) => {
+                                    const meta = MEAL_STATUS_META[m.status];
+                                    return (
+                                      <View key={i} style={styles.adherenceBadge}>
+                                        <Ionicons name={meta.icon as any} size={12} color={meta.color} />
+                                        <Text style={styles.adherenceBadgeText}>
+                                          {selectedTraineeNutrition.length > 1 ? `${m.planTitle} • ${m.slotLabel}` : m.slotLabel}
+                                        </Text>
+                                      </View>
+                                    );
+                                  })}
+                                </View>
+                              )}
+                              {day.entries.map(entry => (
+                                <View key={entry.id} style={styles.foodLogHistoryRow}>
+                                  <Text style={styles.foodLogHistoryName}>{entry.food_name}</Text>
+                                  {entry.calories != null && <Text style={styles.foodLogHistoryCal}>{entry.calories} kcal</Text>}
+                                </View>
+                              ))}
+                            </View>
+                          ));
+                        })()}
+                      </>
                     ) : (
                       <>
-                        <View style={styles.programTabHeaderRow}>
-                          <TouchableOpacity
-                            style={[styles.workoutActionBtn, { flex: 1 }]}
-                            onPress={handleUploadNutrition}
-                            disabled={uploadingNutrition}
-                          >
-                            {uploadingNutrition ? (
-                              <ActivityIndicator size="small" color={colors.xpBar} />
-                            ) : (
-                              <>
-                                <Ionicons name="cloud-upload-outline" size={16} color={colors.xpBar} />
-                                <Text style={styles.workoutActionBtnText}>Upload PDF</Text>
-                              </>
-                            )}
-                          </TouchableOpacity>
-                          <TouchableOpacity
-                            style={[styles.workoutActionBtn, { flex: 1 }]}
-                            onPress={() => {
-                              setNutritionTrainee(selectedTrainee);
-                              setSelectedTrainee(null);
-                              setShowAssignPlanPicker(true);
-                            }}
-                          >
-                            <Ionicons name="add-circle-outline" size={16} color={colors.xpBar} />
-                            <Text style={styles.workoutActionBtnText}>Assign Plan</Text>
-                          </TouchableOpacity>
-                        </View>
+                        <TouchableOpacity
+                          style={[styles.workoutActionBtn, { marginBottom: 10 }]}
+                          onPress={() => {
+                            setNutritionTrainee(selectedTrainee);
+                            setSelectedTrainee(null);
+                            setShowAssignPlanPicker(true);
+                          }}
+                        >
+                          <Ionicons name="add-circle-outline" size={16} color={colors.xpBar} />
+                          <Text style={styles.workoutActionBtnText}>Assign Plan</Text>
+                        </TouchableOpacity>
                         <TouchableOpacity
                           style={[styles.uploadPlanBtn, { marginBottom: 16 }]}
                           onPress={() => {
@@ -1471,7 +1550,7 @@ export default function CoachTrainees({ coachId }: Props) {
                           <View style={styles.pendingBlock}>
                             <Ionicons name="restaurant-outline" size={40} color={colors.textSecondary} />
                             <Text style={styles.pendingTitle}>No Nutrition Plans Yet</Text>
-                            <Text style={styles.pendingSubtitle}>Upload a PDF or create a plan so this trainee can start logging their food.</Text>
+                            <Text style={styles.pendingSubtitle}>Assign a template or build a calorie plan so this trainee can start logging their food.</Text>
                           </View>
                         ) : (
                           selectedTraineeNutrition.map(plan => {
@@ -2627,6 +2706,21 @@ const styles = StyleSheet.create({
     backgroundColor: colors.secondary, borderRadius: 8, paddingHorizontal: 8, paddingVertical: 4,
   },
   adherenceBadgeText: { fontSize: 10, color: colors.textSecondary, fontWeight: '600' },
+  foodLogHistoryRow: {
+    flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center',
+    paddingVertical: 6, marginTop: 4,
+    borderTopWidth: 1, borderTopColor: colors.border,
+  },
+  foodLogHistoryName: { fontSize: 13, color: colors.text, fontWeight: '600', flex: 1 },
+  foodLogHistoryCal: { fontSize: 12, color: colors.textSecondary, marginLeft: 8 },
+  nutritionSegmentRow: {
+    flexDirection: 'row', backgroundColor: colors.secondary, borderRadius: 10, padding: 3,
+    borderWidth: 1, borderColor: colors.border, marginBottom: 16,
+  },
+  nutritionSegment: { flex: 1, alignItems: 'center', paddingVertical: 8, borderRadius: 7 },
+  nutritionSegmentActive: { backgroundColor: colors.primary },
+  nutritionSegmentText: { fontSize: 13, fontWeight: '600', color: colors.textSecondary },
+  nutritionSegmentTextActive: { color: colors.text },
   exDetailRow: {
     flexDirection: 'row', alignItems: 'center', gap: 10,
     paddingVertical: 10, borderBottomWidth: 1, borderBottomColor: colors.border,
