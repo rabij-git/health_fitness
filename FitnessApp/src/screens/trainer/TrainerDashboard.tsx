@@ -218,7 +218,13 @@ export default function TrainerDashboard({ onLogout, userId, navigation }: Props
   // never disagree). food_log_entries only tracks total calories, not a macro
   // breakdown, so today's protein/carbs/fat only reflect planned-meal tracking.
   const { nutritionTargetPlan, todayCalories, todayProtein, todayCarbs, todayFat } = useMemo(() => {
-    const targetPlan = nutritionPlans.find(p => p.active && p.target_calories != null) ?? null;
+    // A trainee can have an active Nutrition Plan and an active Calorie &
+    // Macro Plan at the same time — if both carry a calorie target, the
+    // calculator-built one (template_id null) wins, since it's the
+    // meal-broken-down plan the rest of this card's macro rows come from.
+    const activeWithCalorieTarget = nutritionPlans.filter(p => p.active && p.target_calories != null);
+    const targetPlan =
+      activeWithCalorieTarget.find(p => p.template_id == null) ?? activeWithCalorieTarget[0] ?? null;
     const manualCalories = foodEntries
       .filter(e => e.logged_at === todayStr())
       .reduce((sum, e) => sum + (e.calories ?? 0), 0);

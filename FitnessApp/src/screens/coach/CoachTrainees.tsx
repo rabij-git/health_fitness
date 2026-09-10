@@ -98,12 +98,27 @@ function formatDate(iso: string) {
   return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
 }
 
-// A trainee can only ever have one active nutrition plan — mirrors the
-// server-side deactivateOtherPlans (db.ts) so the local list reflects the
-// same "other plans just got retired" outcome without waiting on a refetch.
-function deactivateOtherPlansLocally(plans: DBNutritionPlan[], exceptId: string): DBNutritionPlan[] {
+// A plan is either a template-assigned Nutrition Plan (template_id set) or a
+// calculator-built Calorie & Macro Plan (template_id null) — a trainee can
+// have one active plan of each kind at once, independently.
+function planKind(plan: Pick<DBNutritionPlan, 'template_id'>): 'nutrition' | 'calorie_macro' {
+  return plan.template_id != null ? 'nutrition' : 'calorie_macro';
+}
+
+// Mirrors the server-side deactivateOtherPlans (db.ts) so the local list
+// reflects the same "other plans of the same kind just got retired" outcome
+// without waiting on a refetch.
+function deactivateOtherPlansLocally(
+  plans: DBNutritionPlan[],
+  exceptId: string,
+  keepKind: 'nutrition' | 'calorie_macro'
+): DBNutritionPlan[] {
   const today = new Date().toISOString().split('T')[0];
-  return plans.map(p => (p.active && p.id !== exceptId ? { ...p, active: false, end_date: today } : p));
+  return plans.map(p =>
+    p.active && p.id !== exceptId && planKind(p) === keepKind
+      ? { ...p, active: false, end_date: today }
+      : p
+  );
 }
 
 const MEAL_STATUS_META: Record<DBMealCompletion['status'], { icon: string; color: string; label: string }> = {
@@ -481,8 +496,8 @@ export default function CoachTrainees({ coachId }: Props) {
     const snapshot = selectedTraineeNutrition;
     setSelectedTraineeNutrition(prev => {
       const withThisToggled = prev.map(p => p.id === plan.id ? { ...p, active: nextActive, end_date: nextActive ? null : today } : p);
-      // Reactivating this one retires whatever else was active, same as the server does.
-      return nextActive ? deactivateOtherPlansLocally(withThisToggled, plan.id) : withThisToggled;
+      // Reactivating this one retires whatever else of the same kind was active, same as the server does.
+      return nextActive ? deactivateOtherPlansLocally(withThisToggled, plan.id, planKind(plan)) : withThisToggled;
     });
     try {
       await setNutritionPlanActive(plan.id, nextActive);
@@ -499,7 +514,7 @@ export default function CoachTrainees({ coachId }: Props) {
     setAssigningPlanId(template.id);
     try {
       const plan = await assignNutritionTemplate(nutritionTrainee.id, coachId, template);
-      setSelectedTraineeNutrition(prev => [plan, ...deactivateOtherPlansLocally(prev, plan.id)]);
+      setSelectedTraineeNutrition(prev => [plan, ...deactivateOtherPlansLocally(prev, plan.id, planKind(plan))]);
       setShowAssignPlanPicker(false);
       setSelectedTrainee(nutritionTrainee);
       setNutritionTrainee(null);
@@ -517,7 +532,7 @@ export default function CoachTrainees({ coachId }: Props) {
   }, [nutritionTrainee]);
 
   const handlePlanCreatedByCalculator = useCallback((plan: DBNutritionPlan) => {
-    setSelectedTraineeNutrition(prev => [plan, ...deactivateOtherPlansLocally(prev, plan.id)]);
+    setSelectedTraineeNutrition(prev => [plan, ...deactivateOtherPlansLocally(prev, plan.id, planKind(plan))]);
   }, []);
 
   const closeCalorieCalculator = useCallback(() => {
@@ -1013,7 +1028,7 @@ export default function CoachTrainees({ coachId }: Props) {
               style={styles.tabRow}
               contentContainerStyle={{ flexDirection: 'row', alignItems: 'center' }}
             >
-              {(['program', 'weight', 'steps', 'nutrition', 'chat'] as const).map(tab => (
+              {(['program', 'nutrition', 'weight', 'steps', 'chat'] as const).map(tab => (
                 <TouchableOpacity
                   key={tab}
                   style={[styles.tab, detailTab === tab && styles.tabActive]}
@@ -1474,7 +1489,10 @@ export default function CoachTrainees({ coachId }: Props) {
                     ) : nutritionSubTab === 'history' ? (
                       <>
                         {(() => {
-                          const waterTarget = selectedTraineeNutrition.find(p => p.active && p.target_water_ml != null)?.target_water_ml;
+                          // Prefer the calculator-built Calorie & Macro Plan's water target
+                          // over the Nutrition Plan's, same precedence as the trainee's own screens.
+                          const activeWithWaterTarget = selectedTraineeNutrition.filter(p => p.active && p.target_water_ml != null);
+                          const waterTarget = (activeWithWaterTarget.find(p => p.template_id == null) ?? activeWithWaterTarget[0])?.target_water_ml;
                           if (waterTarget == null) return null;
                           const today = new Date().toISOString().split('T')[0];
                           const todayWater = selectedTraineeWater[0]?.created_date === today ? selectedTraineeWater[0].metric_value : 0;

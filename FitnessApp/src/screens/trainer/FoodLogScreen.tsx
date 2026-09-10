@@ -404,8 +404,13 @@ export default function FoodLogScreen({ userId }: { userId: string }) {
 
   const activePlans = plans.filter(p => p.active);
   const pastPlans = plans.filter(p => !p.active);
-  const targetPlan = activePlans.find(p => p.target_calories != null);
-  const waterTargetPlan = activePlans.find(p => p.target_water_ml != null);
+  // A trainee can have an active Nutrition Plan and an active Calorie & Macro
+  // Plan at once — if both carry a target, the calculator-built one
+  // (template_id null) wins, mirrored on TrainerDashboard.tsx's Home card.
+  const activeWithCalorieTarget = activePlans.filter(p => p.target_calories != null);
+  const targetPlan = activeWithCalorieTarget.find(p => p.template_id == null) ?? activeWithCalorieTarget[0];
+  const activeWithWaterTarget = activePlans.filter(p => p.target_water_ml != null);
+  const waterTargetPlan = activeWithWaterTarget.find(p => p.template_id == null) ?? activeWithWaterTarget[0];
   const days = groupByDay(entries);
 
   // Real trainee activity mostly lives here, not in food_log_entries — since

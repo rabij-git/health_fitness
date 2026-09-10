@@ -575,17 +575,22 @@ async function assertUniquePlanTitle(traineeId: string, title: string, excludePl
   }
 }
 
-// A trainee can only ever have one active nutrition plan — deactivating the
-// others stamps today as their end date (same pattern as setWorkoutActive)
-// so they read as real history instead of just disappearing.
-async function deactivateOtherPlans(traineeId: string, exceptPlanId: string) {
+// A trainee can have at most one active plan of each *kind* at the same
+// time — a template-assigned Nutrition Plan (template_id set, from the
+// coach's Nutrition tab) and a calculator-built Calorie & Macro Plan
+// (template_id null) are independent slots, so activating one never retires
+// the other. Deactivating stamps today as the end date (same pattern as
+// setWorkoutActive) so it reads as real history instead of just disappearing.
+async function deactivateOtherPlans(traineeId: string, exceptPlanId: string, isCalculated: boolean) {
   const end_date = new Date().toISOString().split('T')[0];
-  const { error } = await supabase
+  let query = supabase
     .from('nutrition_plans')
     .update({ active: false, end_date })
     .eq('trainee_id', traineeId)
     .eq('active', true)
     .neq('id', exceptPlanId);
+  query = isCalculated ? query.is('template_id', null) : query.not('template_id', 'is', null);
+  const { error } = await query;
   if (error) throw error;
 }
 
@@ -619,7 +624,8 @@ export async function uploadNutritionPlan(
     .select()
     .single();
   if (error) throw error;
-  await deactivateOtherPlans(traineeId, data.id);
+  // No template_id (not template-based) — grouped with the calorie/macro kind.
+  await deactivateOtherPlans(traineeId, data.id, true);
   return data;
 }
 
@@ -696,7 +702,7 @@ export async function assignNutritionTemplate(
     .select()
     .single();
   if (error) throw error;
-  await deactivateOtherPlans(traineeId, data.id);
+  await deactivateOtherPlans(traineeId, data.id, false);
   return data;
 }
 
@@ -743,19 +749,20 @@ export async function updateNutritionPlan(
 // A trainee can have several nutrition plans; a coach retires one by setting
 // it inactive rather than deleting it, so it stays visible as history.
 // Deactivating stamps today as the end date (mirrors setWorkoutActive);
-// reactivating clears it. Since a trainee can only ever have one active
-// plan, reactivating this one also deactivates whatever else was active.
+// reactivating clears it. Since a trainee can only ever have one active plan
+// per kind (see deactivateOtherPlans), reactivating this one only deactivates
+// whatever else of the *same* kind was active.
 export async function setNutritionPlanActive(planId: string, active: boolean) {
   const end_date = active ? null : new Date().toISOString().split('T')[0];
   const { data, error } = await supabase
     .from('nutrition_plans')
     .update({ active, end_date })
     .eq('id', planId)
-    .select('trainee_id')
+    .select('trainee_id, template_id')
     .single();
   if (error) throw error;
   if (active) {
-    await deactivateOtherPlans(data.trainee_id, planId);
+    await deactivateOtherPlans(data.trainee_id, planId, data.template_id == null);
   }
 }
 
@@ -808,7 +815,7 @@ export async function createCalculatedNutritionPlan(
     .select()
     .single();
   if (error) throw error;
-  await deactivateOtherPlans(traineeId, data.id);
+  await deactivateOtherPlans(traineeId, data.id, true);
   return data;
 }
 
