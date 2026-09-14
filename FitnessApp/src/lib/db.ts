@@ -1102,12 +1102,14 @@ export async function awardMedal(userId: string, medalId: string) {
 
 // Re-evaluates the objectively computable medal rules against current stats and
 // awards any newly-qualified ones. Returns the medal ids newly earned this call.
+// 'First Workout' (id 1) and 'New Adventure' (id 7) are deliberately excluded —
+// they used to fire on sessionsCount >= 1, i.e. for finishing a single
+// workout, which per feedback is no longer how achievements work (see
+// evaluateWeeklyCompletion below for the replacement weekly-completion reward).
 export async function evaluateAndAwardMedals(userId: string, sessionsCount: number, streak: number): Promise<string[]> {
   const existing = await getUserMedals(userId);
   const earnedIds = new Set(existing.map(m => m.medal_id));
   const checks: [string, boolean][] = [
-    ['1', sessionsCount >= 1],   // First Workout
-    ['7', sessionsCount >= 1],   // New Adventure
     ['2', streak >= 7],          // 7-Day Streak
     ['3', streak >= 30],         // 30-Day Streak
     ['4', sessionsCount >= 100], // 100 Workouts
@@ -1120,6 +1122,81 @@ export async function evaluateAndAwardMedals(userId: string, sessionsCount: numb
     }
   }
   return newlyEarned;
+}
+
+const WEEKLY_COMPLETION_XP = 10;
+
+function startOfWeek(d: Date): Date {
+  const copy = new Date(d);
+  copy.setHours(0, 0, 0, 0);
+  copy.setDate(copy.getDate() - copy.getDay());
+  return copy;
+}
+function dateStr(d: Date) {
+  return d.toISOString().split('T')[0];
+}
+
+// Replaces the old flat per-workout XP (previously +250×progress on every
+// finish) — finishing a single workout no longer awards XP at all. Instead,
+// once every scheduled day of every one of a trainee's active, scheduled
+// workouts has a completed session for the current calendar week (Sun–Sat),
+// this credits a weekly streak and reports +10 XP for the caller to fold
+// into its own xp/level update (deliberately doesn't write xp/level itself,
+// so it can't race with the caller's own profile write for medal-bonus XP —
+// it only persists the weekly_streak/last_completed_week_start bookkeeping,
+// which is otherwise untouched by that call). Safe to call after every
+// workout completion — it's a no-op until the week is actually fully
+// covered, and won't double-credit the same week twice.
+export async function evaluateWeeklyCompletion(userId: string): Promise<{ awarded: boolean; weeklyStreak: number; xpAwarded: number }> {
+  const [profile, workouts] = await Promise.all([getProfile(userId), getWorkoutsForTrainee(userId)]);
+  const noAward = { awarded: false, weeklyStreak: profile?.weekly_streak ?? 0, xpAwarded: 0 };
+  if (!profile) return noAward;
+
+  // Only workouts with an explicit weekly schedule count — an unrestricted
+  // (any-day) workout has no defined weekly cadence to check against.
+  const scheduledWorkouts = workouts.filter(w => w.active && w.scheduled_days && w.scheduled_days.length > 0);
+  if (scheduledWorkouts.length === 0) return noAward;
+
+  const today = new Date();
+  const todayDow = today.getDay();
+  const weekStart = startOfWeek(today);
+  const weekStartStr = dateStr(weekStart);
+
+  if (profile.last_completed_week_start === weekStartStr) return noAward;
+
+  // The week can only be judged "fully completed" once every scheduled day
+  // for every one of these workouts has already occurred (today or earlier)
+  // — otherwise a day is still pending and it's too early to tell.
+  const weekFullyElapsedForAll = scheduledWorkouts.every(w => Math.max(...w.scheduled_days!) <= todayDow);
+  if (!weekFullyElapsedForAll) return noAward;
+
+  const { data: sessions, error } = await supabase
+    .from('workout_sessions')
+    .select('workout_id, completed_at')
+    .eq('trainee_id', userId)
+    .gte('completed_at', weekStart.toISOString());
+  if (error) return noAward;
+
+  const completedDaysByWorkout = new Map<string, Set<number>>();
+  for (const s of sessions ?? []) {
+    const dow = new Date(s.completed_at).getDay();
+    if (!completedDaysByWorkout.has(s.workout_id)) completedDaysByWorkout.set(s.workout_id, new Set());
+    completedDaysByWorkout.get(s.workout_id)!.add(dow);
+  }
+
+  const allCompleted = scheduledWorkouts.every(w =>
+    w.scheduled_days!.every(d => completedDaysByWorkout.get(w.id)?.has(d))
+  );
+  if (!allCompleted) return noAward;
+
+  const prevWeekStr = dateStr(new Date(weekStart.getTime() - 7 * 86400000));
+  const newWeeklyStreak = profile.last_completed_week_start === prevWeekStr ? (profile.weekly_streak ?? 0) + 1 : 1;
+  await updateProfile(userId, {
+    weekly_streak: newWeeklyStreak,
+    last_completed_week_start: weekStartStr,
+  });
+
+  return { awarded: true, weeklyStreak: newWeeklyStreak, xpAwarded: WEEKLY_COMPLETION_XP };
 }
 
 // ── Leaderboard ───────────────────────────────────────────────────────────────
@@ -1136,12 +1213,16 @@ export async function getLeaderboard(): Promise<DBUser[]> {
   return data ?? [];
 }
 
+// Unlike getLeaderboard's Global tab (which deliberately hides 0-XP users to
+// avoid a giant list of nobodies), a gym is a small, coach-curated roster —
+// every member the coach added should show up here regardless of XP. Was
+// previously filtered the same way as Global, which silently dropped any
+// newly-assigned member who hadn't logged XP yet.
 export async function getGymLeaderboard(gymId: string): Promise<DBUser[]> {
   const { data, error } = await supabase
     .from('users')
     .select('*')
     .eq('gym_id', gymId)
-    .gt('xp', 0)
     .order('xp', { ascending: false });
   if (error) return [];
   return data ?? [];

@@ -27,7 +27,6 @@ import {
   getTodayMetrics,
   setTodaySteps,
   addTodayWater,
-  setTodayHeartRate,
   getNutritionPlans,
   getFoodLogEntries,
   getMealCompletions,
@@ -95,8 +94,6 @@ export default function TrainerDashboard({ onLogout, userId, navigation }: Props
   const [foodEntries, setFoodEntries] = useState<DBFoodLogEntry[]>([]);
   const [mealCompletionsByPlan, setMealCompletionsByPlan] = useState<Record<string, DBMealCompletion[]>>({});
   const [pedometerAvailable, setPedometerAvailable] = useState(false);
-  const [hrInput, setHrInput] = useState('');
-  const [savingHr, setSavingHr] = useState(false);
   const [loggingWaterAmount, setLoggingWaterAmount] = useState<number | null>(null);
   const [workouts, setWorkouts] = useState<DBWorkout[]>([]);
   const [completedTodayIds, setCompletedTodayIds] = useState<Set<string>>(new Set());
@@ -165,21 +162,6 @@ export default function TrainerDashboard({ onLogout, userId, navigation }: Props
       setLoggingWaterAmount(null);
     }
   }, [userId, loggingWaterAmount]);
-
-  const handleSaveHeartRate = useCallback(async () => {
-    const bpm = parseInt(hrInput, 10);
-    if (!bpm || savingHr) return;
-    setSavingHr(true);
-    try {
-      await setTodayHeartRate(userId, bpm);
-      setDailyMetrics(prev => ({ ...prev, heart_rate: bpm }));
-      setHrInput('');
-    } catch (e) {
-      console.warn('setTodayHeartRate error', e);
-    } finally {
-      setSavingHr(false);
-    }
-  }, [userId, hrInput, savingHr]);
 
   // Refetch every time the Home tab regains focus (not just on first mount) —
   // otherwise finishing a workout on the Workout tab (which updates xp/level/streak)
@@ -364,11 +346,12 @@ export default function TrainerDashboard({ onLogout, userId, navigation }: Props
           </View>
         </View>
 
-        {/* Today's Activity — steps auto-sync from the phone; weight, water,
-            and heart rate are logged manually right here. */}
+        {/* Today's Activity — steps auto-sync from the phone; weight and
+            water are logged manually right here. Heart rate is removed for
+            now (not in use yet) — see CLAUDE.md. */}
         <View style={styles.biometricsCard}>
           <Text style={styles.biometricsTitle}>Today's Activity</Text>
-          <Text style={styles.biometricsSubtitle}>Steps, weight, water & heart rate</Text>
+          <Text style={styles.biometricsSubtitle}>Steps, weight & water</Text>
 
           <View style={styles.activityStatsRow}>
             <View style={styles.activityStat}>
@@ -385,11 +368,6 @@ export default function TrainerDashboard({ onLogout, userId, navigation }: Props
               <Ionicons name="water-outline" size={20} color={colors.accent} />
               <Text style={styles.activityStatValue}>{dailyMetrics.water_ml}ml</Text>
               <Text style={styles.activityStatLabel}>Water</Text>
-            </View>
-            <View style={styles.activityStat}>
-              <Ionicons name="heart-outline" size={20} color={colors.streak} />
-              <Text style={styles.activityStatValue}>{dailyMetrics.heart_rate ?? '—'}</Text>
-              <Text style={styles.activityStatLabel}>BPM</Text>
             </View>
           </View>
           {!pedometerAvailable && (
@@ -439,30 +417,6 @@ export default function TrainerDashboard({ onLogout, userId, navigation }: Props
                 )}
               </TouchableOpacity>
             ))}
-          </View>
-
-          <View style={[styles.hrRow, styles.logRow, { marginTop: 16 }]}>
-            <Text style={styles.logRowLabel} numberOfLines={1}>LOG HEART RATE</Text>
-            <TextInput
-              style={styles.hrInput}
-              value={hrInput}
-              onChangeText={v => setHrInput(v.replace(/[^0-9]/g, ''))}
-              placeholder="0"
-              placeholderTextColor={colors.textSecondary}
-              keyboardType="number-pad"
-            />
-            <Text style={styles.weightUnit}>bpm</Text>
-            <TouchableOpacity
-              style={[styles.hrSaveBtn, (!hrInput || savingHr) && { opacity: 0.5 }]}
-              onPress={handleSaveHeartRate}
-              disabled={!hrInput || savingHr}
-            >
-              {savingHr ? (
-                <ActivityIndicator size="small" color={colors.text} />
-              ) : (
-                <Ionicons name="checkmark" size={15} color={colors.text} />
-              )}
-            </TouchableOpacity>
           </View>
         </View>
 
@@ -793,15 +747,6 @@ const styles = StyleSheet.create({
     borderWidth: 1, borderColor: colors.border,
   },
   waterBtnText: { fontSize: 12, fontWeight: '700', color: colors.primary },
-  hrRow: { flexDirection: 'row', alignItems: 'center', gap: 10 },
-  hrInput: {
-    width: 72, height: 44, backgroundColor: colors.secondary, borderRadius: 12, padding: 10,
-    color: colors.text, fontSize: 14, borderWidth: 1, borderColor: colors.border,
-  },
-  hrSaveBtn: {
-    width: 34, height: 34, borderRadius: 10, backgroundColor: colors.primary,
-    alignItems: 'center', justifyContent: 'center',
-  },
   weightInputRow: { flexDirection: 'row', alignItems: 'center', gap: 10, marginBottom: 12 },
   weightInput: {
     width: 72,

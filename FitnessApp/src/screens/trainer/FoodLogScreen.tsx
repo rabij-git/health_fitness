@@ -237,17 +237,29 @@ function MealHistory({ plan, completions }: { plan: DBNutritionPlan; completions
   );
 }
 
-function NutritionPlanCard({ userId, plan, inactive, completions, onCompletionsChange }: {
+function NutritionPlanCard({ userId, plan, inactive, completions, onCompletionsChange, manualCalories, todayWaterMl }: {
   userId: string;
   plan: DBNutritionPlan;
   inactive?: boolean;
   completions: DBMealCompletion[];
   onCompletionsChange: (planId: string, completions: DBMealCompletion[]) => void;
+  // Only meaningful (and only passed) for an active plan — a "today's
+  // progress" summary doesn't apply to inactive/past plans.
+  manualCalories?: number;
+  todayWaterMl?: number;
 }) {
   const hasTargets = plan.target_calories || plan.target_protein || plan.target_carbs || plan.target_fat || plan.target_water_ml;
   const trackable = !inactive && !!plan.meals && plan.meals.length > 0;
 
   const [showHistory, setShowHistory] = useState(false);
+
+  // This plan's own share of today's macros — manual food-log entries aren't
+  // tied to a specific plan, so they're added on top of whatever this plan's
+  // own tracked meals ("As Planned" today) contribute.
+  const mealNutrition = trackable
+    ? sumTodayAsPlannedNutrition([plan], { [plan.id]: completions }, todayStr())
+    : { calories: 0, protein: 0, carbs: 0, fat: 0 };
+  const planCalories = (manualCalories ?? 0) + mealNutrition.calories;
 
   const completionsBySlot = useMemo(() => {
     const map = new Map<number, DBMealCompletion>();
@@ -309,6 +321,50 @@ function NutritionPlanCard({ userId, plan, inactive, completions, onCompletionsC
           )}
         </View>
       ) : null}
+
+      {/* Today's progress against THIS plan's own targets — manual entries
+          plus (if this plan has a generated meal breakdown) its own tracked
+          meals today. Only shown for the active plan(s), never for history. */}
+      {!inactive && plan.target_calories != null && (
+        <View style={styles.planTodayBlock}>
+          <Text style={styles.planTodayLabel}>TODAY</Text>
+          <Text style={styles.todayProgressText}>
+            {planCalories} / {plan.target_calories} kcal
+          </Text>
+          <DualBar consumed={planCalories} target={plan.target_calories} baseColor={colors.success} bgStyle={styles.progressBg} />
+          {trackable && (plan.target_protein != null || plan.target_carbs != null || plan.target_fat != null) && (
+            <View style={styles.macroTargetRow}>
+              {[
+                { label: 'Protein', consumed: mealNutrition.protein, target: plan.target_protein, color: colors.primary },
+                { label: 'Carbs', consumed: mealNutrition.carbs, target: plan.target_carbs, color: '#4A9EFF' },
+                { label: 'Fat', consumed: mealNutrition.fat, target: plan.target_fat, color: colors.gold },
+              ].filter(m => m.target != null).map(m => (
+                <View key={m.label} style={styles.macroBarRow}>
+                  <View style={styles.macroBarLabelRow}>
+                    <Text style={[styles.macroBarLabel, { color: m.color }]}>{m.label}</Text>
+                    <Text style={styles.macroBarVal}>{m.consumed}g / {m.target}g</Text>
+                  </View>
+                  <DualBar consumed={m.consumed} target={m.target!} baseColor={colors.success} bgStyle={styles.macroBarBg} />
+                </View>
+              ))}
+            </View>
+          )}
+        </View>
+      )}
+      {!inactive && plan.target_water_ml != null && (
+        <View style={[styles.planTodayBlock, plan.target_calories == null && { marginTop: 4 }]}>
+          {plan.target_calories == null && <Text style={styles.planTodayLabel}>TODAY</Text>}
+          <Text style={styles.todayProgressText}>{todayWaterMl ?? 0} / {plan.target_water_ml}ml water</Text>
+          <View style={styles.progressBg}>
+            <View style={[
+              styles.progressFill,
+              styles.progressFillWater,
+              { width: `${Math.min(100, ((todayWaterMl ?? 0) / plan.target_water_ml) * 100)}%` as any },
+            ]} />
+          </View>
+        </View>
+      )}
+
       {plan.notes && <Text style={styles.planNotes}>{plan.notes}</Text>}
       {plan.meals && plan.meals.length > 0 && (
         <View style={{ marginTop: 8, marginBottom: 4 }}>
@@ -404,13 +460,6 @@ export default function FoodLogScreen({ userId }: { userId: string }) {
 
   const activePlans = plans.filter(p => p.active);
   const pastPlans = plans.filter(p => !p.active);
-  // A trainee can have an active Nutrition Plan and an active Calorie & Macro
-  // Plan at once — if both carry a target, the calculator-built one
-  // (template_id null) wins, mirrored on TrainerDashboard.tsx's Home card.
-  const activeWithCalorieTarget = activePlans.filter(p => p.target_calories != null);
-  const targetPlan = activeWithCalorieTarget.find(p => p.template_id == null) ?? activeWithCalorieTarget[0];
-  const activeWithWaterTarget = activePlans.filter(p => p.target_water_ml != null);
-  const waterTargetPlan = activeWithWaterTarget.find(p => p.template_id == null) ?? activeWithWaterTarget[0];
   const days = groupByDay(entries);
 
   // Real trainee activity mostly lives here, not in food_log_entries — since
@@ -436,11 +485,12 @@ export default function FoodLogScreen({ userId }: { userId: string }) {
     const set = new Set<string>([...days.map(d => d.date), ...mealHistoryByDate.keys()]);
     return Array.from(set).sort((a, b) => (a < b ? 1 : -1));
   }, [days, mealHistoryByDate]);
-  const todayMealNutrition = sumTodayAsPlannedNutrition(plans, completionsByPlan, todayStr());
-  const todayCalories = entries
+  // Manual food-log entries aren't tied to any specific plan, so they count
+  // toward every active plan's own calorie total below — each plan's meal
+  // calories (if it has meals) are added on top per-card.
+  const manualCalories = entries
     .filter(e => e.logged_at === todayStr())
-    .reduce((sum, e) => sum + (e.calories ?? 0), 0)
-    + todayMealNutrition.calories;
+    .reduce((sum, e) => sum + (e.calories ?? 0), 0);
 
   const handleDelete = useCallback(async (id: string) => {
     setEntries(prev => prev.filter(e => e.id !== id));
@@ -471,98 +521,54 @@ export default function FoodLogScreen({ userId }: { userId: string }) {
         {segment === 'nutrition' ? (
         <>
         <Text style={styles.title}>Nutrition</Text>
-        <Text style={styles.subtitle}>Your nutrition plans and daily targets</Text>
-
-        {targetPlan?.target_calories != null && (
-          <View style={styles.todayProgressCard}>
-            <Text style={[styles.todayProgressText, styles.todayProgressTextCalories]}>
-              {todayCalories} / {targetPlan.target_calories} kcal today
-            </Text>
-            <DualBar
-              consumed={todayCalories}
-              target={targetPlan.target_calories!}
-              baseColor={colors.success}
-              bgStyle={styles.progressBg}
-            />
-            {(targetPlan.target_protein != null || targetPlan.target_carbs != null || targetPlan.target_fat != null) && (
-              <View style={styles.macroTargetRow}>
-                {[
-                  { label: 'Protein', consumed: todayMealNutrition.protein, target: targetPlan.target_protein, color: colors.primary },
-                  { label: 'Carbs', consumed: todayMealNutrition.carbs, target: targetPlan.target_carbs, color: '#4A9EFF' },
-                  { label: 'Fat', consumed: todayMealNutrition.fat, target: targetPlan.target_fat, color: colors.gold },
-                ].filter(m => m.target != null).map(m => (
-                  <View key={m.label} style={styles.macroBarRow}>
-                    <View style={styles.macroBarLabelRow}>
-                      <Text style={[styles.macroBarLabel, { color: m.color }]}>{m.label}</Text>
-                      <Text style={styles.macroBarVal}>{m.consumed}g / {m.target}g</Text>
-                    </View>
-                    <DualBar consumed={m.consumed} target={m.target!} baseColor={colors.success} bgStyle={styles.macroBarBg} />
-                  </View>
-                ))}
-              </View>
-            )}
-          </View>
-        )}
-
-        {waterTargetPlan?.target_water_ml != null && (
-          <View style={styles.todayProgressCard}>
-            <Text style={styles.todayProgressText}>
-              {todayWaterMl} / {waterTargetPlan.target_water_ml}ml water today
-            </Text>
-            <View style={styles.progressBg}>
-              <View style={[
-                styles.progressFill,
-                styles.progressFillWater,
-                { width: `${Math.min(100, (todayWaterMl / waterTargetPlan.target_water_ml) * 100)}%` as any },
-              ]} />
-            </View>
-          </View>
-        )}
+        <Text style={styles.subtitle}>Your current plan{activePlans.length !== 1 ? 's' : ''} and today's progress</Text>
 
         {plans.length === 0 && !loading ? (
           <View style={styles.emptyPlan}>
             <Ionicons name="restaurant-outline" size={32} color={colors.textSecondary} />
             <Text style={styles.emptyPlanText}>Your coach hasn't set up a nutrition plan yet</Text>
           </View>
+        ) : activePlans.length === 0 ? (
+          <View style={styles.emptyPlan}>
+            <Ionicons name="restaurant-outline" size={32} color={colors.textSecondary} />
+            <Text style={styles.emptyPlanText}>No active plan right now — see History for past plans</Text>
+          </View>
         ) : (
-          <>
-            {activePlans.length > 0 && (
-              <>
-                <Text style={styles.sectionLabel}>ACTIVE PLANS</Text>
-                {activePlans.map(plan => (
-                  <NutritionPlanCard
-                    key={plan.id}
-                    userId={userId}
-                    plan={plan}
-                    completions={completionsByPlan[plan.id] ?? []}
-                    onCompletionsChange={handleCompletionsChange}
-                  />
-                ))}
-              </>
-            )}
-            {pastPlans.length > 0 && (
-              <>
-                <Text style={[styles.sectionLabel, { marginTop: activePlans.length > 0 ? 8 : 0 }]}>PAST PLANS</Text>
-                {pastPlans.map(plan => (
-                  <NutritionPlanCard
-                    key={plan.id}
-                    userId={userId}
-                    plan={plan}
-                    inactive
-                    completions={completionsByPlan[plan.id] ?? []}
-                    onCompletionsChange={handleCompletionsChange}
-                  />
-                ))}
-              </>
-            )}
-          </>
+          activePlans.map(plan => (
+            <NutritionPlanCard
+              key={plan.id}
+              userId={userId}
+              plan={plan}
+              completions={completionsByPlan[plan.id] ?? []}
+              onCompletionsChange={handleCompletionsChange}
+              manualCalories={manualCalories}
+              todayWaterMl={todayWaterMl}
+            />
+          ))
         )}
         </>
         ) : (
         <>
         <Text style={styles.title}>History</Text>
-        <Text style={styles.subtitle}>Everything you've logged, by day</Text>
+        <Text style={styles.subtitle}>Past plans and everything you've logged, by day</Text>
 
+        {pastPlans.length > 0 && (
+          <>
+            <Text style={styles.sectionLabel}>PAST PLANS</Text>
+            {pastPlans.map(plan => (
+              <NutritionPlanCard
+                key={plan.id}
+                userId={userId}
+                plan={plan}
+                inactive
+                completions={completionsByPlan[plan.id] ?? []}
+                onCompletionsChange={handleCompletionsChange}
+              />
+            ))}
+          </>
+        )}
+
+        <Text style={[styles.sectionLabel, pastPlans.length > 0 && { marginTop: 8 }]}>FOOD LOG HISTORY</Text>
         {historyDates.length === 0 ? (
           <View style={styles.emptyPlan}>
             <Ionicons name="time-outline" size={32} color={colors.textSecondary} />
@@ -692,12 +698,9 @@ const styles = StyleSheet.create({
     paddingTop: 14, borderTopWidth: 1, borderTopColor: colors.border,
   },
   planDocText: { flex: 1, fontSize: 13, fontWeight: '600', color: colors.text },
-  todayProgressCard: {
-    backgroundColor: colors.card, borderRadius: 14, padding: 16, marginBottom: 16,
-    borderWidth: 1, borderColor: colors.border,
-  },
+  planTodayBlock: { marginTop: 14, paddingTop: 14, borderTopWidth: 1, borderTopColor: colors.border },
+  planTodayLabel: { fontSize: 11, fontWeight: '700', color: colors.textSecondary, letterSpacing: 1, marginBottom: 8 },
   todayProgressText: { fontSize: 13, fontWeight: '600', color: colors.text, marginBottom: 8 },
-  todayProgressTextCalories: { color: colors.textSecondary },
   progressBg: { height: 8, backgroundColor: colors.secondary, borderRadius: 4, overflow: 'hidden' },
   progressFill: { height: '100%', backgroundColor: colors.xpBar, borderRadius: 4 },
   progressFillWater: { backgroundColor: colors.primary },

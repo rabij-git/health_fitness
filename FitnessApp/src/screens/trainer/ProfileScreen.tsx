@@ -1,4 +1,4 @@
-import React, { useState, useCallback } from 'react';
+import React, { useState, useCallback, useMemo } from 'react';
 import {
   View,
   Text,
@@ -133,6 +133,91 @@ function WeightChart({ logs }: { logs: DBWeightLog[] }) {
         </View>
         <Text style={[styles.chartChange, { color: change <= 0 ? colors.xpBar : colors.primary }]}>
           {change > 0 ? '+' : ''}{change.toFixed(1)} kg
+        </Text>
+      </View>
+    </View>
+  );
+}
+
+// Sunday-start week, matching scheduled_days' 0=Sun..6=Sat convention used
+// elsewhere in the app (e.g. buildWeekBuckets in ExerciseLogScreen.tsx).
+function startOfWeek(d: Date): Date {
+  const copy = new Date(d);
+  copy.setHours(0, 0, 0, 0);
+  copy.setDate(copy.getDate() - copy.getDay());
+  return copy;
+}
+
+interface WeekWeightBucket { start: Date; avgWeight: number | null }
+
+function buildWeeklyWeightBuckets(logs: DBWeightLog[], weeksBack: number): WeekWeightBucket[] {
+  const thisWeekStart = startOfWeek(new Date());
+  const buckets: WeekWeightBucket[] = Array.from({ length: weeksBack }, (_, i) => {
+    const start = new Date(thisWeekStart);
+    start.setDate(start.getDate() - (weeksBack - 1 - i) * 7);
+    return { start, avgWeight: null };
+  });
+  const sums = new Map<number, { total: number; count: number }>();
+  for (const log of logs) {
+    const wStart = startOfWeek(new Date(log.logged_at)).getTime();
+    const bucket = buckets.find(b => b.start.getTime() === wStart);
+    if (!bucket) continue;
+    const entry = sums.get(wStart) ?? { total: 0, count: 0 };
+    entry.total += log.weight_kg;
+    entry.count += 1;
+    sums.set(wStart, entry);
+  }
+  return buckets.map(b => {
+    const entry = sums.get(b.start.getTime());
+    return { start: b.start, avgWeight: entry ? entry.total / entry.count : null };
+  });
+}
+
+// Groups raw entries into a weekly average trend (up to the last 8 weeks
+// that actually have data), separate from WeightChart's raw last-7-entries
+// view above it — useful once a trainee has been logging for a while and the
+// day-to-day noise matters less than the week-over-week direction.
+function WeeklyWeightChart({ logs }: { logs: DBWeightLog[] }) {
+  const buckets = useMemo(() => buildWeeklyWeightBuckets(logs, 8), [logs]);
+  const withData = buckets.filter((b): b is { start: Date; avgWeight: number } => b.avgWeight != null);
+
+  if (withData.length < 2) return null;
+
+  const weights = withData.map(b => b.avgWeight);
+  const maxW = Math.max(...weights);
+  const minW = Math.min(...weights);
+  const range = maxW - minW || 1;
+  const totalChange = weights[weights.length - 1] - weights[0];
+
+  return (
+    <View style={styles.chartContainer}>
+      <Text style={styles.chartTitle}>Weekly Weight Trend</Text>
+      <View style={styles.chart}>
+        {withData.map((b, index) => {
+          const normalized = (b.avgWeight - minW) / range;
+          const barHeight = 20 + normalized * 80;
+          const label = `${b.start.getMonth() + 1}/${b.start.getDate()}`;
+          return (
+            <View key={b.start.toISOString()} style={styles.chartBar}>
+              <Text style={styles.chartValue}>{b.avgWeight.toFixed(1)}</Text>
+              <View
+                style={[
+                  styles.bar,
+                  { height: barHeight, backgroundColor: index === withData.length - 1 ? colors.xpBar : colors.accent },
+                ]}
+              />
+              <Text style={styles.chartDate}>{label}</Text>
+            </View>
+          );
+        })}
+      </View>
+      <View style={styles.chartFooter}>
+        <View style={styles.chartLegend}>
+          <Ionicons name="calendar-outline" size={12} color={colors.textSecondary} />
+          <Text style={styles.legendText}>Weekly avg, last {withData.length} weeks</Text>
+        </View>
+        <Text style={[styles.chartChange, { color: totalChange <= 0 ? colors.xpBar : colors.primary }]}>
+          {totalChange > 0 ? '+' : ''}{totalChange.toFixed(1)} kg
         </Text>
       </View>
     </View>
@@ -285,6 +370,9 @@ export default function ProfileScreen({ onLogout, userId }: Props) {
   const level = profile?.level ?? 1;
   const xp = profile?.xp ?? 0;
   const streak = profile?.streak ?? 0;
+  // Consecutive weeks with every scheduled workout day completed — separate
+  // from the daily "Day Streak" above. Only weekly completion earns XP now.
+  const weeklyStreak = profile?.weekly_streak ?? 0;
 
   const xpForNext = getXpForNextLevel(level);
   const currentLevelXp = getCurrentLevelXp(xp);
@@ -292,6 +380,7 @@ export default function ProfileScreen({ onLogout, userId }: Props) {
 
   const stats = [
     { label: 'Day Streak', value: `${streak}d`, icon: 'flame', color: colors.streak },
+    { label: 'Weekly Streak', value: `${weeklyStreak}wk`, icon: 'calendar', color: colors.accent },
     { label: 'Total XP', value: xp.toLocaleString(), icon: 'star', color: colors.gold },
     { label: 'Level', value: String(level), icon: 'trophy', color: colors.xpBar },
     { label: 'Weight Logs', value: String(weightLogs.length), icon: 'scale', color: colors.primary },
@@ -344,8 +433,9 @@ export default function ProfileScreen({ onLogout, userId }: Props) {
           ))}
         </View>
 
-        {/* Weight Chart */}
+        {/* Weight Charts */}
         <WeightChart logs={weightLogs} />
+        <WeeklyWeightChart logs={weightLogs} />
 
         {/* Nutrition Documents — quick access to any uploaded PDFs; full plan
             details (targets, notes, active/inactive) live on the Nutrition
@@ -531,74 +621,98 @@ export default function ProfileScreen({ onLogout, userId }: Props) {
       {/* Settings — biometric profile used by the coach's calorie/macro calculator */}
       <Modal visible={showSettings} transparent animationType="slide" onRequestClose={() => setShowSettings(false)}>
         <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={styles.overlay}>
-          <View style={styles.sheet}>
+          <View style={[styles.sheet, styles.settingsSheet]}>
             <View style={styles.sheetHeader}>
               <Text style={styles.sheetTitle}>Settings</Text>
               <TouchableOpacity onPress={() => setShowSettings(false)}>
                 <Ionicons name="close" size={22} color={colors.textSecondary} />
               </TouchableOpacity>
             </View>
+            <Text style={styles.settingsSectionCaption}>BIOMETRICS</Text>
             <ScrollView showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
-              <Text style={styles.detailLabel}>YEAR OF BIRTH</Text>
-              <TextInput
-                style={styles.searchInput}
-                value={birthYear}
-                onChangeText={v => setBirthYear(sanitizeYear(v))}
-                keyboardType="number-pad"
-                placeholder="e.g. 1995"
-                placeholderTextColor={colors.textSecondary}
-              />
-              {!birthYearValid && (
-                <Text style={styles.fieldError}>Enter a year between {MIN_BIRTH_YEAR} and {MAX_BIRTH_YEAR}.</Text>
-              )}
+              <View style={styles.settingsField}>
+                <View style={styles.settingsFieldLabelRow}>
+                  <Ionicons name="calendar-outline" size={16} color={colors.textSecondary} />
+                  <Text style={styles.settingsFieldLabel}>Year of Birth</Text>
+                </View>
+                <TextInput
+                  style={styles.settingsInput}
+                  value={birthYear}
+                  onChangeText={v => setBirthYear(sanitizeYear(v))}
+                  keyboardType="number-pad"
+                  placeholder="e.g. 1995"
+                  placeholderTextColor={colors.textSecondary}
+                />
+                {!birthYearValid && (
+                  <Text style={styles.fieldError}>Enter a year between {MIN_BIRTH_YEAR} and {MAX_BIRTH_YEAR}.</Text>
+                )}
+              </View>
 
-              <Text style={[styles.detailLabel, { marginTop: 12 }]}>SEX</Text>
-              <View style={styles.rowChips}>
-                {(['female', 'male'] as Sex[]).map(s => (
+              <View style={styles.settingsField}>
+                <View style={styles.settingsFieldLabelRow}>
+                  <Ionicons name="person-outline" size={16} color={colors.textSecondary} />
+                  <Text style={styles.settingsFieldLabel}>Sex</Text>
+                </View>
+                <View style={styles.rowChips}>
+                  {(['female', 'male'] as Sex[]).map(s => (
+                    <TouchableOpacity
+                      key={s}
+                      style={[styles.chip, sex === s && styles.chipActive]}
+                      onPress={() => setSex(s)}
+                    >
+                      <Text style={[styles.chipText, sex === s && styles.chipTextActive]}>
+                        {s === 'female' ? 'Female' : 'Male'}
+                      </Text>
+                    </TouchableOpacity>
+                  ))}
+                </View>
+              </View>
+
+              <View style={styles.settingsField}>
+                <View style={styles.settingsFieldLabelRow}>
+                  <Ionicons name="resize-outline" size={16} color={colors.textSecondary} />
+                  <Text style={styles.settingsFieldLabel}>Height (cm)</Text>
+                </View>
+                <TextInput
+                  style={styles.settingsInput}
+                  value={heightCm}
+                  onChangeText={v => setHeightCm(sanitizeHeight(v))}
+                  keyboardType="decimal-pad"
+                  placeholder="e.g. 175"
+                  placeholderTextColor={colors.textSecondary}
+                />
+                {!heightValid && (
+                  <Text style={styles.fieldError}>Enter a height between {MIN_HEIGHT_CM}–{MAX_HEIGHT_CM} cm.</Text>
+                )}
+              </View>
+
+              <View style={[styles.settingsField, { marginBottom: 0 }]}>
+                <View style={styles.settingsFieldLabelRow}>
+                  <Ionicons name="walk-outline" size={16} color={colors.textSecondary} />
+                  <Text style={styles.settingsFieldLabel}>Activity Level</Text>
+                </View>
+                {ACTIVITY_LEVELS.map(level => (
                   <TouchableOpacity
-                    key={s}
-                    style={[styles.chip, sex === s && styles.chipActive]}
-                    onPress={() => setSex(s)}
+                    key={level}
+                    style={[styles.activityRow, activityLevel === level && styles.activityRowActive]}
+                    onPress={() => setActivityLevel(level)}
                   >
-                    <Text style={[styles.chipText, sex === s && styles.chipTextActive]}>
-                      {s === 'female' ? 'Female' : 'Male'}
-                    </Text>
+                    <Ionicons
+                      name={activityLevel === level ? 'radio-button-on' : 'radio-button-off'}
+                      size={18}
+                      color={activityLevel === level ? colors.xpBar : colors.textSecondary}
+                    />
+                    <Text style={styles.activityRowText}>{ACTIVITY_LABELS[level]}</Text>
                   </TouchableOpacity>
                 ))}
               </View>
 
-              <Text style={[styles.detailLabel, { marginTop: 12 }]}>HEIGHT (CM)</Text>
-              <TextInput
-                style={styles.searchInput}
-                value={heightCm}
-                onChangeText={v => setHeightCm(sanitizeHeight(v))}
-                keyboardType="decimal-pad"
-                placeholder="e.g. 175"
-                placeholderTextColor={colors.textSecondary}
-              />
-              {!heightValid && (
-                <Text style={styles.fieldError}>Enter a height between {MIN_HEIGHT_CM}–{MAX_HEIGHT_CM} cm.</Text>
-              )}
-
-              <Text style={[styles.detailLabel, { marginTop: 12 }]}>ACTIVITY LEVEL</Text>
-              {ACTIVITY_LEVELS.map(level => (
-                <TouchableOpacity
-                  key={level}
-                  style={[styles.activityRow, activityLevel === level && styles.activityRowActive]}
-                  onPress={() => setActivityLevel(level)}
-                >
-                  <Ionicons
-                    name={activityLevel === level ? 'radio-button-on' : 'radio-button-off'}
-                    size={18}
-                    color={activityLevel === level ? colors.xpBar : colors.textSecondary}
-                  />
-                  <Text style={styles.activityRowText}>{ACTIVITY_LABELS[level]}</Text>
-                </TouchableOpacity>
-              ))}
-
-              <Text style={styles.settingsHint}>
-                Used by your coach to calculate your daily calorie and macro targets.
-              </Text>
+              <View style={styles.settingsHintRow}>
+                <Ionicons name="information-circle-outline" size={14} color={colors.textSecondary} />
+                <Text style={styles.settingsHint}>
+                  Used by your coach to calculate your daily calorie and macro targets.
+                </Text>
+              </View>
 
               <TouchableOpacity
                 style={[styles.saveSettingsBtn, (savingSettings || !birthYearValid || !heightValid) && { opacity: 0.6 }]}
@@ -827,6 +941,27 @@ const styles = StyleSheet.create({
   },
   sheetHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 },
   sheetTitle: { fontSize: 18, fontWeight: '800', color: colors.text },
+  settingsSheet: { maxHeight: '85%' },
+  settingsSectionCaption: {
+    fontSize: 11, fontWeight: '700', color: colors.textSecondary,
+    letterSpacing: 1.5, marginBottom: 12,
+  },
+  settingsField: {
+    backgroundColor: colors.secondary, borderRadius: 14, padding: 14,
+    marginBottom: 12, borderWidth: 1, borderColor: colors.border,
+  },
+  settingsFieldLabelRow: { flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 10 },
+  settingsFieldLabel: { fontSize: 13, fontWeight: '700', color: colors.text },
+  settingsInput: {
+    backgroundColor: colors.card,
+    borderRadius: 12, padding: 14,
+    color: colors.text, fontSize: 15,
+    borderWidth: 1, borderColor: colors.border,
+  },
+  settingsHintRow: {
+    flexDirection: 'row', alignItems: 'flex-start', gap: 6,
+    marginTop: 16, paddingHorizontal: 2,
+  },
   searchInput: {
     backgroundColor: colors.secondary,
     borderRadius: 12, padding: 14,
@@ -894,7 +1029,7 @@ const styles = StyleSheet.create({
   },
   activityRowActive: { borderColor: colors.xpBar },
   activityRowText: { color: colors.text, fontSize: 13, flexShrink: 1 },
-  settingsHint: { fontSize: 12, color: colors.textSecondary, marginTop: 16, lineHeight: 18 },
+  settingsHint: { flex: 1, fontSize: 12, color: colors.textSecondary, lineHeight: 18 },
   fieldError: { fontSize: 12, color: colors.warning, marginTop: 6 },
   saveSettingsBtn: {
     backgroundColor: colors.primary, borderRadius: 12, paddingVertical: 14,

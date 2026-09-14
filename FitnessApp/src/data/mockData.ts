@@ -44,6 +44,12 @@ export const getXpForNextLevel = (level: number) => level * 500;
 export const getCurrentLevelXp = (xp: number) => xp % 500;
 export const computeLevelFromXp = (xp: number) => Math.floor(xp / 500) + 1;
 
+// XP rewards are scaled 10-50 across the whole catalog (common lowest,
+// ultra_rare highest) — previously ranged 50-3000, wildly out of proportion
+// with a single workout's own XP. 'First Workout' and 'New Adventure' are no
+// longer auto-awarded (evaluateAndAwardMedals in db.ts) since they're
+// single-workout achievements; kept here only so a trainee who already
+// earned one keeps seeing it on their profile.
 export const mockMedals: Medal[] = [
   {
     id: '1',
@@ -52,7 +58,7 @@ export const mockMedals: Medal[] = [
     icon: 'fitness',
     earned: false,
     rarity: 'common',
-    xpReward: 100,
+    xpReward: 10,
   },
   {
     id: '2',
@@ -61,7 +67,7 @@ export const mockMedals: Medal[] = [
     icon: 'flame',
     earned: false,
     rarity: 'rare',
-    xpReward: 500,
+    xpReward: 25,
   },
   {
     id: '3',
@@ -70,7 +76,7 @@ export const mockMedals: Medal[] = [
     icon: 'trophy',
     earned: false,
     rarity: 'ultra_rare',
-    xpReward: 2000,
+    xpReward: 50,
   },
   {
     id: '4',
@@ -79,7 +85,7 @@ export const mockMedals: Medal[] = [
     icon: 'medal',
     earned: false,
     rarity: 'rare',
-    xpReward: 1000,
+    xpReward: 35,
   },
   {
     id: '5',
@@ -88,7 +94,7 @@ export const mockMedals: Medal[] = [
     icon: 'star',
     earned: false,
     rarity: 'ultra_rare',
-    xpReward: 3000,
+    xpReward: 45,
   },
   {
     id: '6',
@@ -97,7 +103,7 @@ export const mockMedals: Medal[] = [
     icon: 'sunny',
     earned: false,
     rarity: 'common',
-    xpReward: 250,
+    xpReward: 15,
   },
   {
     id: '7',
@@ -106,6 +112,6 @@ export const mockMedals: Medal[] = [
     icon: 'rocket',
     earned: false,
     rarity: 'common',
-    xpReward: 50,
+    xpReward: 10,
   },
 ];

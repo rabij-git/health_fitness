@@ -7,6 +7,7 @@ import {
   TouchableOpacity,
   Modal,
   ActivityIndicator,
+  AppState,
 } from 'react-native';
 import { useFocusEffect, useRoute, useNavigation } from '@react-navigation/native';
 import { Ionicons } from '@expo/vector-icons';
@@ -22,6 +23,7 @@ import {
   updateProfile,
   getTraineeHistory,
   evaluateAndAwardMedals,
+  evaluateWeeklyCompletion,
   sendMessage,
   logExerciseWeight,
 } from '../../lib/db';
@@ -81,7 +83,14 @@ interface RestTimerState {
   exerciseId: string;
   exerciseName: string;
   setIndex: number;
-  secondsLeft: number;
+  // Countdown to a fixed end timestamp rather than a decrementing counter —
+  // RN fully suspends JS timers while the app is backgrounded, so a
+  // decrement-per-tick counter just stops advancing and "freezes" until the
+  // app resumes. Deriving the remaining time from Date.now() instead means
+  // the moment the app comes back to the foreground, the display jumps
+  // straight to the correct real-elapsed value instead of resuming from
+  // wherever it was paused.
+  endAt: number;
   totalSeconds: number;
 }
 
@@ -125,15 +134,10 @@ export default function WorkoutScreen({ userId }: Props) {
 
   // Deep-link from the Home screen's "Workout Today" list — same
   // openXId route-param pattern CoachDashboard uses to jump into a specific
-  // trainee on CoachTrainees.
+  // trainee on CoachTrainees. Guarded further down (once `sessionActive` is
+  // known) so it can't yank the trainee into a different workout mid-session.
   const route = useRoute<any>();
   const navigation = useNavigation<any>();
-  useEffect(() => {
-    const openId = route.params?.openWorkoutId;
-    if (!openId) return;
-    setSelectedWorkoutId(openId);
-    navigation.setParams({ openWorkoutId: undefined });
-  }, [route.params?.openWorkoutId, navigation]);
 
   useFocusEffect(useCallback(() => {
     let cancelled = false;
@@ -184,27 +188,48 @@ export default function WorkoutScreen({ userId }: Props) {
   const [modalXp, setModalXp] = useState(0);
   const [modalIsComplete, setModalIsComplete] = useState(false);
   const [newlyEarnedMedalIds, setNewlyEarnedMedalIds] = useState<string[]>([]);
+  const [weeklyCompletion, setWeeklyCompletion] = useState<{ weeklyStreak: number; xpAwarded: number } | null>(null);
 
   // ── Rest timer (between sets) ──
   const [restTimer, setRestTimer] = useState<RestTimerState | null>(null);
+  const [restSecondsLeft, setRestSecondsLeft] = useState(0);
   const tickPlayer = useAudioPlayer(require('../../../assets/sounds/tick.wav'));
 
+  // Keyed on endAt (fixed once a rest period starts) rather than a
+  // decrementing value, so this effect only (re)subscribes once per rest
+  // period instead of tearing down and rebuilding every second.
   useEffect(() => {
-    if (!restTimer) return;
-    if (restTimer.secondsLeft <= 0) {
-      setRestTimer(null);
+    if (!restTimer) {
+      setRestSecondsLeft(0);
       return;
     }
-    // Tick once per second for the final 5 seconds so the trainee knows to start the next set.
-    if (restTimer.secondsLeft <= 5) {
-      tickPlayer.seekTo(0);
-      tickPlayer.play();
-    }
-    const timeout = setTimeout(() => {
-      setRestTimer(prev => (prev ? { ...prev, secondsLeft: prev.secondsLeft - 1 } : prev));
-    }, 1000);
-    return () => clearTimeout(timeout);
-  }, [restTimer]);
+    const update = () => {
+      const left = Math.max(0, Math.ceil((restTimer.endAt - Date.now()) / 1000));
+      setRestSecondsLeft(left);
+      if (left <= 0) {
+        setRestTimer(null);
+        return;
+      }
+      // Tick once per second for the final 5 seconds so the trainee knows to start the next set.
+      if (left <= 5) {
+        tickPlayer.seekTo(0);
+        tickPlayer.play();
+      }
+    };
+    update();
+    const interval = setInterval(update, 1000);
+    // The interval above is suspended while the app is backgrounded (RN
+    // fully halts JS timers), so force an immediate recompute the moment the
+    // app comes back — otherwise the display would sit frozen for up to a
+    // second more before the next interval tick corrects it.
+    const subscription = AppState.addEventListener('change', (state) => {
+      if (state === 'active') update();
+    });
+    return () => {
+      clearInterval(interval);
+      subscription.remove();
+    };
+  }, [restTimer?.endAt]);
 
   useEffect(() => {
     if (!selectedWorkoutId) {
@@ -213,6 +238,7 @@ export default function WorkoutScreen({ userId }: Props) {
       setSubmitted(false);
       setShowMedal(false);
       setNewlyEarnedMedalIds([]);
+      setWeeklyCompletion(null);
       return;
     }
     let cancelled = false;
@@ -297,9 +323,26 @@ export default function WorkoutScreen({ userId }: Props) {
     return idx === -1 ? exercises.length : idx;
   }, [exercises]);
 
+  // A session is "active" once at least one set has a logged effort and the
+  // workout hasn't been finished yet — while true, the trainee is locked into
+  // this workout and can't switch to or start a different one.
+  const sessionActive = loggedSets > 0 && !submitted;
+
+  useEffect(() => {
+    const openId = route.params?.openWorkoutId;
+    if (!openId) return;
+    if (selectedWorkoutId && selectedWorkoutId !== openId && sessionActive) {
+      // Blocked — a different workout is already in progress. Just clear the
+      // param so it doesn't keep re-firing; stay on the active session.
+      navigation.setParams({ openWorkoutId: undefined });
+      return;
+    }
+    setSelectedWorkoutId(openId);
+    navigation.setParams({ openWorkoutId: undefined });
+  }, [route.params?.openWorkoutId, navigation, selectedWorkoutId, sessionActive]);
+
   const handleSubmit = async () => {
     if (submitted || loggedSets === 0 || !selectedWorkoutId) return;
-    const workoutXp = Math.round(250 * progress);
     setModalIsComplete(isFullyComplete);
     setSubmitted(true);
     setShowMedal(true);
@@ -325,7 +368,10 @@ export default function WorkoutScreen({ userId }: Props) {
         trainee_id: userId,
         workout_id: selectedWorkoutId,
         completion_pct: Math.round(progress * 100),
-        xp_awarded: workoutXp,
+        // Finishing a single workout no longer awards XP directly — see the
+        // weekly-completion bonus below, which is a week-level reward, not
+        // attributable to any one session.
+        xp_awarded: 0,
         details,
       });
       // Locks this workout for the rest of today — it reopens tomorrow.
@@ -346,9 +392,9 @@ export default function WorkoutScreen({ userId }: Props) {
       console.warn('Workout completion: failed to write exercise log entries', e);
     }
 
-    // Evaluate medals before the XP write so a newly-earned medal's reward
-    // can be folded into the same update as the workout XP — medal cards
-    // advertise "+N XP", so earning one should actually grant that XP.
+    // Evaluate medals (7-day/30-day streak, 100 workouts — no longer includes
+    // single-workout achievements) and the weekly-completion bonus before the
+    // XP write, so both can be folded into one combined profile update.
     let newStreak = profile?.streak ?? 0;
     let newlyEarned: string[] = [];
     try {
@@ -359,8 +405,17 @@ export default function WorkoutScreen({ userId }: Props) {
       console.warn('Workout completion: failed to evaluate medals', e);
     }
 
+    let weeklyXp = 0;
+    try {
+      const weekly = await evaluateWeeklyCompletion(userId);
+      weeklyXp = weekly.xpAwarded;
+      setWeeklyCompletion(weekly.awarded ? weekly : null);
+    } catch (e) {
+      console.warn('Workout completion: failed to evaluate weekly completion', e);
+    }
+
     const medalBonusXp = newlyEarned.reduce((sum, id) => sum + (mockMedals.find(m => m.id === id)?.xpReward ?? 0), 0);
-    const totalXp = workoutXp + medalBonusXp;
+    const totalXp = medalBonusXp + weeklyXp;
     setModalXp(totalXp);
 
     try {
@@ -373,10 +428,11 @@ export default function WorkoutScreen({ userId }: Props) {
 
     try {
       if (profile?.coach_id) {
+        const xpNote = totalXp > 0 ? `, +${totalXp} XP` : '';
         await sendMessage(
           userId,
           profile.coach_id,
-          `🏋️ ${profile.name} completed "${dbWorkout?.name}" — ${Math.round(progress * 100)}% done, +${totalXp} XP`
+          `🏋️ ${profile.name} completed "${dbWorkout?.name}" — ${Math.round(progress * 100)}% done${xpNote}`
         );
       }
     } catch (e) {
@@ -618,15 +674,22 @@ export default function WorkoutScreen({ userId }: Props) {
           <Ionicons name="time" size={20} color={colors.text} />
           <View style={{ flex: 1 }}>
             <Text style={styles.restTimerLabel}>Resting — {restTimer.exerciseName}</Text>
-            <Text style={styles.restTimerTime}>{formatRestTime(restTimer.secondsLeft)}</Text>
+            <Text style={styles.restTimerTime}>{formatRestTime(restSecondsLeft)}</Text>
           </View>
         </View>
       )}
       <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.scrollContent}>
-        <TouchableOpacity style={styles.backRow} onPress={() => setSelectedWorkoutId(null)}>
-          <Ionicons name="chevron-back" size={20} color={colors.xpBar} />
-          <Text style={styles.backRowText}>All Workouts</Text>
-        </TouchableOpacity>
+        {sessionActive ? (
+          <View style={[styles.backRow, styles.backRowLocked]}>
+            <Ionicons name="lock-closed" size={14} color={colors.textSecondary} />
+            <Text style={styles.backRowLockedText}>Workout in progress — finish to switch</Text>
+          </View>
+        ) : (
+          <TouchableOpacity style={styles.backRow} onPress={() => setSelectedWorkoutId(null)}>
+            <Ionicons name="chevron-back" size={20} color={colors.xpBar} />
+            <Text style={styles.backRowText}>All Workouts</Text>
+          </TouchableOpacity>
+        )}
 
         {/* Header */}
         <View style={styles.header}>
@@ -753,7 +816,7 @@ export default function WorkoutScreen({ userId }: Props) {
                               exerciseId: exercise.id,
                               exerciseName: exercise.name,
                               setIndex,
-                              secondsLeft: exercise.restSeconds,
+                              endAt: Date.now() + exercise.restSeconds * 1000,
                               totalSeconds: exercise.restSeconds,
                             });
                           }
@@ -855,6 +918,19 @@ export default function WorkoutScreen({ userId }: Props) {
               <Ionicons name="star" size={18} color={colors.xpBar} />
               <Text style={styles.xpAwardText}>+{modalXp} XP Awarded</Text>
             </View>
+            {weeklyCompletion && (
+              <View style={styles.medalUnlocked}>
+                <View style={styles.medalUnlockedIcon}>
+                  <Ionicons name="calendar" size={24} color={colors.gold} />
+                </View>
+                <View>
+                  <Text style={styles.medalUnlockedLabel}>Full Week Completed!</Text>
+                  <Text style={styles.medalUnlockedName}>
+                    {weeklyCompletion.weeklyStreak} week{weeklyCompletion.weeklyStreak !== 1 ? 's' : ''} in a row
+                  </Text>
+                </View>
+              </View>
+            )}
             {newlyEarnedMedalIds.length > 0 && (() => {
               const medal = mockMedals.find(m => m.id === newlyEarnedMedalIds[0]);
               if (!medal) return null;
@@ -904,6 +980,8 @@ const styles = StyleSheet.create({
   // Back row (returns to workout picker)
   backRow: { flexDirection: 'row', alignItems: 'center', gap: 2, marginBottom: 12, marginTop: 4, alignSelf: 'flex-start' },
   backRowText: { fontSize: 14, fontWeight: '600', color: colors.xpBar },
+  backRowLocked: { gap: 6 },
+  backRowLockedText: { fontSize: 13, fontWeight: '600', color: colors.textSecondary },
 
   // Workout picker cards
   workoutPickCard: {
