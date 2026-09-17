@@ -1124,7 +1124,7 @@ export async function evaluateAndAwardMedals(userId: string, sessionsCount: numb
   return newlyEarned;
 }
 
-const WEEKLY_COMPLETION_XP = 10;
+const XP_PER_COMPLETED_WORKOUT = 1;
 
 function startOfWeek(d: Date): Date {
   const copy = new Date(d);
@@ -1137,16 +1137,20 @@ function dateStr(d: Date) {
 }
 
 // Replaces the old flat per-workout XP (previously +250×progress on every
-// finish) — finishing a single workout no longer awards XP at all. Instead,
-// once every scheduled day of every one of a trainee's active, scheduled
-// workouts has a completed session for the current calendar week (Sun–Sat),
-// this credits a weekly streak and reports +10 XP for the caller to fold
-// into its own xp/level update (deliberately doesn't write xp/level itself,
-// so it can't race with the caller's own profile write for medal-bonus XP —
-// it only persists the weekly_streak/last_completed_week_start bookkeeping,
-// which is otherwise untouched by that call). Safe to call after every
-// workout completion — it's a no-op until the week is actually fully
-// covered, and won't double-credit the same week twice.
+// finish) — finishing a single workout no longer awards XP on its own.
+// Instead, once every scheduled day of every one of a trainee's active,
+// scheduled workouts has a completed session for the current calendar week
+// (Sun–Sat), this credits a weekly streak and reports XP for the caller to
+// fold into its own xp/level update — 1 XP per completed daily workout that
+// week (`XP_PER_COMPLETED_WORKOUT`), i.e. a 3-workout week nets 3 XP, a
+// 5-workout week nets 5, all released together only once the whole week's
+// schedule is done, not per-day as each one is completed. Deliberately
+// doesn't write xp/level itself, so it can't race with the caller's own
+// profile write for medal-bonus XP — it only persists the
+// weekly_streak/last_completed_week_start bookkeeping, which is otherwise
+// untouched by that call. Safe to call after every workout completion —
+// it's a no-op until the week is actually fully covered, and won't
+// double-credit the same week twice.
 export async function evaluateWeeklyCompletion(userId: string): Promise<{ awarded: boolean; weeklyStreak: number; xpAwarded: number }> {
   const [profile, workouts] = await Promise.all([getProfile(userId), getWorkoutsForTrainee(userId)]);
   const noAward = { awarded: false, weeklyStreak: profile?.weekly_streak ?? 0, xpAwarded: 0 };
@@ -1189,6 +1193,12 @@ export async function evaluateWeeklyCompletion(userId: string): Promise<{ awarde
   );
   if (!allCompleted) return noAward;
 
+  // Every scheduled day of every qualifying workout is confirmed completed
+  // above, so the count of daily workouts this week is just the sum of each
+  // workout's own scheduled-day count.
+  const completedWorkoutCount = scheduledWorkouts.reduce((sum, w) => sum + w.scheduled_days!.length, 0);
+  const xpAwarded = completedWorkoutCount * XP_PER_COMPLETED_WORKOUT;
+
   const prevWeekStr = dateStr(new Date(weekStart.getTime() - 7 * 86400000));
   const newWeeklyStreak = profile.last_completed_week_start === prevWeekStr ? (profile.weekly_streak ?? 0) + 1 : 1;
   await updateProfile(userId, {
@@ -1196,7 +1206,7 @@ export async function evaluateWeeklyCompletion(userId: string): Promise<{ awarde
     last_completed_week_start: weekStartStr,
   });
 
-  return { awarded: true, weeklyStreak: newWeeklyStreak, xpAwarded: WEEKLY_COMPLETION_XP };
+  return { awarded: true, weeklyStreak: newWeeklyStreak, xpAwarded };
 }
 
 // ── Leaderboard ───────────────────────────────────────────────────────────────

@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo, useCallback } from 'react';
+import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import {
   View,
   Text,
@@ -28,6 +28,7 @@ import {
   logExerciseWeight,
 } from '../../lib/db';
 import { DBWorkout } from '../../lib/supabase';
+import { scheduleRestEndNotification, cancelRestEndNotification } from '../../lib/restNotifications';
 
 const DAY_ABBR = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 
@@ -194,6 +195,7 @@ export default function WorkoutScreen({ userId }: Props) {
   const [restTimer, setRestTimer] = useState<RestTimerState | null>(null);
   const [restSecondsLeft, setRestSecondsLeft] = useState(0);
   const tickPlayer = useAudioPlayer(require('../../../assets/sounds/tick.wav'));
+  const restNotificationId = useRef<string | null>(null);
 
   // Keyed on endAt (fixed once a rest period starts) rather than a
   // decrementing value, so this effect only (re)subscribes once per rest
@@ -203,6 +205,13 @@ export default function WorkoutScreen({ userId }: Props) {
       setRestSecondsLeft(0);
       return;
     }
+    // Local notification so the trainee is alerted even if they've left the
+    // app during rest (email, social media, etc.) — see restNotifications.ts
+    // for why this needs a dev-client/EAS build for the custom tick sound
+    // (it still fires in Expo Go, just with the default system sound).
+    scheduleRestEndNotification(restTimer.exerciseName, restTimer.totalSeconds).then(id => {
+      restNotificationId.current = id;
+    });
     const update = () => {
       const left = Math.max(0, Math.ceil((restTimer.endAt - Date.now()) / 1000));
       setRestSecondsLeft(left);
@@ -210,10 +219,21 @@ export default function WorkoutScreen({ userId }: Props) {
         setRestTimer(null);
         return;
       }
-      // Tick once per second for the final 5 seconds so the trainee knows to start the next set.
-      if (left <= 5) {
-        tickPlayer.seekTo(0);
-        tickPlayer.play();
+      // Tick once per second for the final 5 seconds so the trainee knows to
+      // start the next set. Only attempted while genuinely foregrounded —
+      // iOS refuses to activate the audio session while backgrounded or
+      // mid-transition, and that failure throws synchronously through
+      // Expo's native bridge (uncaught, crashes the app) rather than
+      // rejecting a promise — so this is also wrapped in a try/catch as a
+      // second line of defense against that same race (e.g. backgrounding
+      // starts in the instant between this check and the native call).
+      if (left <= 5 && AppState.currentState === 'active') {
+        try {
+          tickPlayer.seekTo(0);
+          tickPlayer.play();
+        } catch (e) {
+          console.warn('Rest timer tick sound failed', e);
+        }
       }
     };
     update();
@@ -228,6 +248,8 @@ export default function WorkoutScreen({ userId }: Props) {
     return () => {
       clearInterval(interval);
       subscription.remove();
+      cancelRestEndNotification(restNotificationId.current);
+      restNotificationId.current = null;
     };
   }, [restTimer?.endAt]);
 
@@ -428,11 +450,12 @@ export default function WorkoutScreen({ userId }: Props) {
 
     try {
       if (profile?.coach_id) {
-        const xpNote = totalXp > 0 ? `, +${totalXp} XP` : '';
+        // Coaches don't need XP/points detail — just that the client did the
+        // work. See CLAUDE.md's Coach Notifications section.
         await sendMessage(
           userId,
           profile.coach_id,
-          `🏋️ ${profile.name} completed "${dbWorkout?.name}" — ${Math.round(progress * 100)}% done${xpNote}`
+          `🏋️ ${profile.name} completed "${dbWorkout?.name}" — ${Math.round(progress * 100)}% done`
         );
       }
     } catch (e) {
