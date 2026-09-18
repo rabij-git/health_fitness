@@ -928,6 +928,24 @@ export async function sendCoachRequest(coachId: string, traineeId: string, initi
     .from('coach_requests')
     .insert({ coach_id: coachId, trainee_id: traineeId, initiated_by: initiatedBy, status: 'pending' });
   if (error) throw error;
+
+  // Notify the coach — otherwise a trainee-initiated request just sits
+  // invisible in the "Requests" section of CoachTrainees.tsx until the coach
+  // happens to check it. Reuses the same in-app messages-table mechanism as
+  // the workout-completion notification (see Coach Notifications in
+  // CLAUDE.md), so it shows up in the coach's notification bell like any
+  // other. Isolated in its own try/catch so a failure here never blocks the
+  // request itself from being sent.
+  if (initiatedBy === 'trainee') {
+    try {
+      const trainee = await getProfile(traineeId);
+      if (trainee) {
+        await sendMessage(traineeId, coachId, `👋 ${trainee.name} wants to connect with you as their coach`);
+      }
+    } catch (e) {
+      console.warn('sendCoachRequest: failed to notify coach', e);
+    }
+  }
 }
 
 export async function getCoachRequestStatus(coachId: string, traineeId: string): Promise<'none' | 'pending' | 'accepted'> {

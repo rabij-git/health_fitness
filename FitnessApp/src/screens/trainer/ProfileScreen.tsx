@@ -234,6 +234,7 @@ export default function ProfileScreen({ onLogout, userId }: Props) {
   const [incomingRequest, setIncomingRequest] = useState<(DBCoachRequest & { coach: DBUser }) | null>(null);
   const [outgoingRequest, setOutgoingRequest] = useState<(DBCoachRequest & { coach: DBUser }) | null>(null);
   const [respondingRequest, setRespondingRequest] = useState(false);
+  const [cancelingRequest, setCancelingRequest] = useState(false);
 
   const [showFindCoach, setShowFindCoach] = useState(false);
   const [coachSearchQuery, setCoachSearchQuery] = useState('');
@@ -354,6 +355,25 @@ export default function ProfileScreen({ onLogout, userId }: Props) {
       setRespondingRequest(false);
     }
   }, [incomingRequest]);
+
+  // Lets a trainee un-send a request they initiated — reuses the same
+  // decline mechanism a coach uses to reject an incoming one (just marks the
+  // row 'declined'), since getOutgoingCoachRequestForTrainee only ever
+  // returns 'pending' rows, so this makes it disappear from this screen and
+  // frees the trainee to search again, including re-requesting the same
+  // coach later.
+  const handleCancelRequest = useCallback(async () => {
+    if (!outgoingRequest) return;
+    setCancelingRequest(true);
+    try {
+      await declineCoachRequest(outgoingRequest.id);
+      setOutgoingRequest(null);
+    } catch (e) {
+      console.warn('cancel coach request error', e);
+    } finally {
+      setCancelingRequest(false);
+    }
+  }, [outgoingRequest]);
 
   if (loading) {
     return (
@@ -507,14 +527,30 @@ export default function ProfileScreen({ onLogout, userId }: Props) {
               </View>
             </View>
           ) : outgoingRequest ? (
-            <View style={styles.coachRow}>
-              <View style={styles.coachAvatar}>
-                <Text style={styles.coachAvatarText}>{outgoingRequest.coach.avatar}</Text>
+            <View>
+              <View style={styles.coachRow}>
+                <View style={styles.coachAvatar}>
+                  <Text style={styles.coachAvatarText}>{outgoingRequest.coach.avatar}</Text>
+                </View>
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.coachName}>{outgoingRequest.coach.name}</Text>
+                  <Text style={styles.coachSub}>Request sent — waiting for approval</Text>
+                </View>
               </View>
-              <View style={{ flex: 1 }}>
-                <Text style={styles.coachName}>{outgoingRequest.coach.name}</Text>
-                <Text style={styles.coachSub}>Request sent — waiting for approval</Text>
-              </View>
+              <TouchableOpacity
+                style={styles.cancelRequestBtn}
+                onPress={handleCancelRequest}
+                disabled={cancelingRequest}
+              >
+                {cancelingRequest ? (
+                  <ActivityIndicator size="small" color={colors.primary} />
+                ) : (
+                  <>
+                    <Ionicons name="close-circle-outline" size={16} color={colors.primary} />
+                    <Text style={styles.cancelRequestBtnText}>Cancel Request</Text>
+                  </>
+                )}
+              </TouchableOpacity>
             </View>
           ) : !incomingRequest ? (
             <>
@@ -906,6 +942,12 @@ const styles = StyleSheet.create({
     backgroundColor: colors.primary, borderRadius: 12, paddingVertical: 12, marginTop: 14,
   },
   findCoachBtnText: { fontSize: 14, fontWeight: '700', color: colors.text },
+  cancelRequestBtn: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6,
+    borderRadius: 10, paddingVertical: 10, marginTop: 12,
+    borderWidth: 1, borderColor: colors.primary,
+  },
+  cancelRequestBtnText: { fontSize: 13, fontWeight: '700', color: colors.primary },
 
   requestBanner: {
     backgroundColor: colors.xpBar + '11',
