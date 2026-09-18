@@ -87,7 +87,7 @@ PGPASSFILE=/tmp/pgpass_sb /opt/homebrew/opt/libpq/bin/psql "host=aws-0-eu-west-1
 
 | Table | Purpose |
 |---|---|
-| `public.users` | All users (admin, coach, trainee). Has `coach_id`, `gym_id`, `xp`, `streak`, `level`, `status`, `weekly_streak`, `last_completed_week_start` |
+| `public.users` | All users (admin, coach, trainee). Has `coach_id`, `gym_id`, `xp`, `streak`, `level`, `status` |
 | `public.programs` | Coach-created program **templates** — reusable, own exercise list via `program_exercises` |
 | `public.program_exercises` | Exercise template (name/sets/reps/weight) attached to a `programs` row |
 | `public.exercise_library` | Shared, global exercise picker list (name/category/default sets/reps/weight). Any coach can add/edit/delete — not admin-gated |
@@ -95,7 +95,6 @@ PGPASSFILE=/tmp/pgpass_sb /opt/homebrew/opt/libpq/bin/psql "host=aws-0-eu-west-1
 | `public.workouts` | A specific trainee's active workout instance (created when a program is assigned to them) |
 | `public.exercises` | Exercises belonging to a `workouts` row (copied from the program template at assignment time, then editable per-trainee) |
 | `public.workout_sessions` | Completed workout logs (completion_pct, xp_awarded) |
-| `public.weight_logs` | Daily body weight entries per trainee |
 | `public.exercise_weight_logs` | Per-exercise weight/reps logs |
 | `public.nutrition_plans` | Coach-uploaded PDF nutrition plans per trainee (metadata; file lives in Storage) |
 | `public.user_medals` | Real earned-medal records per trainee (`medal_id`, `earned_at`) — medals were 100% mock/static before this was added |
@@ -288,7 +287,7 @@ Fully reworked — no more partial-save/resume semantics.
 
 ## XP & Leveling System
 
-Reworked twice this session, converging on the "Fitness App Gamification & Leveling System" + "Fitness App Achievements & XP Values" specs. Superseded prior sessions' models: a flat 250×progress-per-workout system, then briefly a weekly-gated system (`evaluateWeeklyCompletion`, `users.weekly_streak`/`last_completed_week_start` — **fully removed**; the DB columns are still there, unused and harmless, not worth a migration to drop for cleanup alone, but don't reintroduce code that reads/writes them).
+Reworked twice this session, converging on the "Fitness App Gamification & Leveling System" + "Fitness App Achievements & XP Values" specs. Superseded prior sessions' models: a flat 250×progress-per-workout system, then briefly a weekly-gated system (`evaluateWeeklyCompletion`, `users.weekly_streak`/`last_completed_week_start`) — **fully removed**, code and columns both (the columns were dropped in a later cleanup pass, migration `/private/tmp/scratch/drop_unused_weight_logs_and_streak_cols.sql`, already run) — don't reintroduce code that reads/writes them.
 
 ### Earning XP (immediate — nothing is gated on weekly completion anymore)
 

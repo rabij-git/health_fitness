@@ -28,7 +28,7 @@ You are an expert Apps Developer, UI/UX Designer, and Systems Architect maintain
 
 ### 2.3 Vitals (steps / water / heart rate / weight)
 - Generic `vitals` table: one row per **(trainee, metric_name, day)** — columns `metric_name` / `metric_value` / `metric_uom` / `created_date`. Adding a new metric type never needs a schema change, just a new `metric_name`.
-- Weight was migrated off the old single-purpose `weight_logs` table into `vitals` (old table left in place, untouched, as a backup — not read by the app anymore).
+- Weight was migrated off the old single-purpose `weight_logs` table into `vitals`. The old table was left in place as an unused backup for a while, then dropped entirely in a later cleanup pass — it no longer exists.
 - Write semantics differ per metric and live in `db.ts`, not the schema: steps/heart-rate/weight **overwrite** the day's value; water **accumulates** (read-then-upsert on each "+250ml" style log).
 
 ### 2.4 Workout Management
