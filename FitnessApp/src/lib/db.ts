@@ -1216,25 +1216,53 @@ export async function evaluateAndAwardMedals(userId: string, streak: number): Pr
   const earnedIds = new Set(existing.map(m => m.medal_id));
   const profileComplete = !!(profile?.birth_year && profile?.sex && profile?.height_cm && profile?.activity_level);
 
+  // sessionsCount >= 1 (first ever completed workout) — several achievements
+  // from the 100-item list are genuinely this exact same event under this
+  // app's model (no coached/self-directed or workout-type distinction
+  // exists), so they're all awarded together the moment it's true.
+  const firstWorkout = sessionsCount >= 1;
+  const tenWorkouts = sessionsCount >= 10;
+  const twentyFiveWorkouts = sessionsCount >= 25;
+  const fiftyWorkouts = sessionsCount >= 50;
+  const hundredWorkouts = sessionsCount >= 100;
+
   const checks: [string, boolean][] = [
-    ['1', sessionsCount >= 1],        // First Step
+    ['1', firstWorkout],              // First Step
+    ['23', firstWorkout],             // Welcome Aboard (first coached workout — same event, no self-directed workouts exist)
+    ['28', firstWorkout],             // Logged & Done
+    ['34', firstWorkout],             // Plan Starter
+    ['42', firstWorkout],             // First Rep (every workout here is strength-based)
+    ['91', firstWorkout],             // Coach Approved (every workout is coach-assigned)
     ['6', isMorning],                 // Early Bird
     ['8', isEvening],                 // Night Owl
     ['9', profileComplete],           // Profile Complete
     ['11', weightLogs.length >= 1],   // Progress Logged
+    ['79', weightLogs.length >= 1],   // Progress Check (same event — no distinct "check-in" vs "log")
+    ['25', workoutsAssigned.length >= 1], // Plan Activated (first workout ever ASSIGNED, not completed)
     ['12', streak >= 3],              // 3-Day Streak
     ['13', sessionsCount >= 5],       // Plan Follower
     ['14', maxSteps >= 10000],        // 10K Steps
     ['15', activeDays >= 10],         // Daily Doer
     ['2', streak >= 7],               // 7-Day Streak
-    ['16', sessionsCount >= 10],      // 10 Workouts Strong
+    ['16', tenWorkouts],              // 10 Workouts Strong
+    ['29', tenWorkouts],              // Consistency King
+    ['44', tenWorkouts],              // Strength Builder
+    ['81', tenWorkouts],              // Data Driven
+    ['95', tenWorkouts],              // Coached Consistency (every workout is coached)
     ['17', workoutsAssigned.length >= 2], // Next Level
     ['18', streak >= 14],             // 14-Day Streak
     ['19', streak >= 21],             // 21-Day Streak
-    ['20', sessionsCount >= 25],      // 25 Workouts Strong
+    ['20', twentyFiveWorkouts],       // 25 Workouts Strong
+    ['30', twentyFiveWorkouts],       // Consistency Pro
+    ['45', twentyFiveWorkouts],       // Strength Machine
+    ['82', twentyFiveWorkouts],       // Tracking Pro
     ['3', streak >= 30],              // 30-Day Streak
-    ['4', sessionsCount >= 100],      // 100 Workouts
-    ['21', sessionsCount >= 50],      // 50 Workouts Strong
+    ['4', hundredWorkouts],           // 100 Workouts
+    ['32', hundredWorkouts],          // Century Club
+    ['97', hundredWorkouts],          // 100 Workouts Strong
+    ['21', fiftyWorkouts],            // 50 Workouts Strong
+    ['31', fiftyWorkouts],            // Halfway There
+    ['84', fiftyWorkouts],            // Data Devotee
     ['22', activeDays >= 100],        // Always Moving
   ];
   const newlyEarned: string[] = [];
