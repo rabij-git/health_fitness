@@ -16,7 +16,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { useFocusEffect } from '@react-navigation/native';
 import { Ionicons } from '@expo/vector-icons';
 import { colors } from '../../theme/colors';
-import { getXpForNextLevel, getCurrentLevelXp } from '../../data/mockData';
+import { getXpForNextLevel, getCurrentLevelXp, getLevelTitle } from '../../data/mockData';
 import {
   getProfile,
   getWeightLogs,
@@ -370,9 +370,6 @@ export default function ProfileScreen({ onLogout, userId }: Props) {
   const level = profile?.level ?? 1;
   const xp = profile?.xp ?? 0;
   const streak = profile?.streak ?? 0;
-  // Consecutive weeks with every scheduled workout day completed — separate
-  // from the daily "Day Streak" above. Only weekly completion earns XP now.
-  const weeklyStreak = profile?.weekly_streak ?? 0;
 
   const xpForNext = getXpForNextLevel(level);
   const currentLevelXp = getCurrentLevelXp(xp);
@@ -380,7 +377,6 @@ export default function ProfileScreen({ onLogout, userId }: Props) {
 
   const stats = [
     { label: 'Day Streak', value: `${streak}d`, icon: 'flame', color: colors.streak },
-    { label: 'Weekly Streak', value: `${weeklyStreak}wk`, icon: 'calendar', color: colors.accent },
     { label: 'Total XP', value: xp.toLocaleString(), icon: 'star', color: colors.gold },
     { label: 'Level', value: String(level), icon: 'trophy', color: colors.xpBar },
     { label: 'Weight Logs', value: String(weightLogs.length), icon: 'scale', color: colors.primary },
@@ -403,7 +399,7 @@ export default function ProfileScreen({ onLogout, userId }: Props) {
 
           <View style={styles.titleBadge}>
             <Ionicons name="star" size={12} color={colors.textSecondary} />
-            <Text style={styles.titleText}>New Adventurer</Text>
+            <Text style={styles.titleText}>{getLevelTitle(level)}</Text>
           </View>
 
           {/* XP Bar */}

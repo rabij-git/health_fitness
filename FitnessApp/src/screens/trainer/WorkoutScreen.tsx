@@ -23,7 +23,6 @@ import {
   updateProfile,
   getTraineeHistory,
   evaluateAndAwardMedals,
-  evaluateWeeklyCompletion,
   sendMessage,
   logExerciseWeight,
 } from '../../lib/db';
@@ -41,11 +40,22 @@ function scheduledDaysLabel(days: number[]): string {
   return [...days].sort((a, b) => a - b).map(d => DAY_ABBR[d]).join(', ');
 }
 
+// XP earning rates — see the "Gamification & Leveling System" spec in
+// CLAUDE.md. Running/distance-based rewards (per-km, speed records,
+// marathon) are deliberately out of scope — the app has no GPS/distance
+// tracking at all yet.
+const WORKOUT_COMPLETE_XP = 10;
+const DURATION_BONUS_XP_PER_10_MIN = 2;
+const DAILY_STREAK_XP = 2;
+
+function toDayStr(d: Date | string): string {
+  return new Date(d).toISOString().split('T')[0];
+}
+
 function computeNewStreak(currentStreak: number, priorHistory: { completed_at: string }[]): number {
   if (priorHistory.length === 0) return 1;
-  const toDayStr = (d: Date) => d.toISOString().split('T')[0];
   const sorted = [...priorHistory].sort((a, b) => new Date(b.completed_at).getTime() - new Date(a.completed_at).getTime());
-  const lastDayStr = toDayStr(new Date(sorted[0].completed_at));
+  const lastDayStr = toDayStr(sorted[0].completed_at);
   const today = new Date();
   const yesterday = new Date(today.getTime() - 86400000);
   if (lastDayStr === toDayStr(today)) return currentStreak || 1;
@@ -189,7 +199,11 @@ export default function WorkoutScreen({ userId }: Props) {
   const [modalXp, setModalXp] = useState(0);
   const [modalIsComplete, setModalIsComplete] = useState(false);
   const [newlyEarnedMedalIds, setNewlyEarnedMedalIds] = useState<string[]>([]);
-  const [weeklyCompletion, setWeeklyCompletion] = useState<{ weeklyStreak: number; xpAwarded: number } | null>(null);
+  // When the current workout screen was opened — used for the duration XP
+  // bonus at Finish (every full 10 minutes since open). A proxy for actual
+  // exercise time, not a dedicated in/out stopwatch, but close enough
+  // without building separate start/pause UI.
+  const sessionStartedAt = useRef<number | null>(null);
 
   // ── Rest timer (between sets) ──
   const [restTimer, setRestTimer] = useState<RestTimerState | null>(null);
@@ -260,9 +274,10 @@ export default function WorkoutScreen({ userId }: Props) {
       setSubmitted(false);
       setShowMedal(false);
       setNewlyEarnedMedalIds([]);
-      setWeeklyCompletion(null);
+      sessionStartedAt.current = null;
       return;
     }
+    sessionStartedAt.current = Date.now();
     let cancelled = false;
     setLoadingDetail(true);
     getWorkoutWithExercises(selectedWorkoutId).then((result) => {
@@ -379,6 +394,13 @@ export default function WorkoutScreen({ userId }: Props) {
       console.warn('Workout completion: failed to load prior history/profile', e);
     }
 
+    // Base completion XP plus a bonus for actual time spent — one
+    // DURATION_BONUS_XP_PER_10_MIN for every full 10 minutes since the
+    // workout screen was opened (floored, so a 9-minute session gets none).
+    const elapsedMinutes = sessionStartedAt.current != null ? (Date.now() - sessionStartedAt.current) / 60000 : 0;
+    const durationBonusXp = Math.floor(elapsedMinutes / 10) * DURATION_BONUS_XP_PER_10_MIN;
+    const workoutXp = WORKOUT_COMPLETE_XP + durationBonusXp;
+
     try {
       const details = exercises
         .filter(ex => ex.sets.some(s => s.effort !== null))
@@ -390,10 +412,7 @@ export default function WorkoutScreen({ userId }: Props) {
         trainee_id: userId,
         workout_id: selectedWorkoutId,
         completion_pct: Math.round(progress * 100),
-        // Finishing a single workout no longer awards XP directly — see the
-        // weekly-completion bonus below, which is a week-level reward, not
-        // attributable to any one session.
-        xp_awarded: 0,
+        xp_awarded: workoutXp,
         details,
       });
       // Locks this workout for the rest of today — it reopens tomorrow.
@@ -414,30 +433,28 @@ export default function WorkoutScreen({ userId }: Props) {
       console.warn('Workout completion: failed to write exercise log entries', e);
     }
 
-    // Evaluate medals (7-day/30-day streak, 100 workouts — no longer includes
-    // single-workout achievements) and the weekly-completion bonus before the
-    // XP write, so both can be folded into one combined profile update.
+    // Daily-streak XP only fires the first time today's streak actually
+    // advances — a second workout the same day doesn't re-trigger it, since
+    // the streak counter itself doesn't move on a same-day repeat either.
+    const alreadyCompletedToday = priorHistory.some(h => toDayStr(h.completed_at) === toDayStr(new Date()));
+    const dailyStreakXp = alreadyCompletedToday ? 0 : DAILY_STREAK_XP;
+
+    // Evaluate medals (includes the full achievement catalog — streaks,
+    // workout-count milestones, "First Step", etc. — see Medals in
+    // CLAUDE.md) before the XP write, so newly-earned medal rewards can be
+    // folded into the same combined profile update.
     let newStreak = profile?.streak ?? 0;
     let newlyEarned: string[] = [];
     try {
       newStreak = computeNewStreak(profile?.streak ?? 0, priorHistory);
-      newlyEarned = await evaluateAndAwardMedals(userId, priorHistory.length + 1, newStreak);
+      newlyEarned = await evaluateAndAwardMedals(userId, newStreak);
       setNewlyEarnedMedalIds(newlyEarned);
     } catch (e) {
       console.warn('Workout completion: failed to evaluate medals', e);
     }
 
-    let weeklyXp = 0;
-    try {
-      const weekly = await evaluateWeeklyCompletion(userId);
-      weeklyXp = weekly.xpAwarded;
-      setWeeklyCompletion(weekly.awarded ? weekly : null);
-    } catch (e) {
-      console.warn('Workout completion: failed to evaluate weekly completion', e);
-    }
-
     const medalBonusXp = newlyEarned.reduce((sum, id) => sum + (mockMedals.find(m => m.id === id)?.xpReward ?? 0), 0);
-    const totalXp = medalBonusXp + weeklyXp;
+    const totalXp = workoutXp + dailyStreakXp + medalBonusXp;
     setModalXp(totalXp);
 
     try {
@@ -941,19 +958,6 @@ export default function WorkoutScreen({ userId }: Props) {
               <Ionicons name="star" size={18} color={colors.xpBar} />
               <Text style={styles.xpAwardText}>+{modalXp} XP Awarded</Text>
             </View>
-            {weeklyCompletion && (
-              <View style={styles.medalUnlocked}>
-                <View style={styles.medalUnlockedIcon}>
-                  <Ionicons name="calendar" size={24} color={colors.gold} />
-                </View>
-                <View>
-                  <Text style={styles.medalUnlockedLabel}>Full Week Completed!</Text>
-                  <Text style={styles.medalUnlockedName}>
-                    {weeklyCompletion.weeklyStreak} week{weeklyCompletion.weeklyStreak !== 1 ? 's' : ''} in a row
-                  </Text>
-                </View>
-              </View>
-            )}
             {newlyEarnedMedalIds.length > 0 && (() => {
               const medal = mockMedals.find(m => m.id === newlyEarnedMedalIds[0]);
               if (!medal) return null;

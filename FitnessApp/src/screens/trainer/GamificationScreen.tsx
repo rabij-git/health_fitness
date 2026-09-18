@@ -9,7 +9,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { useFocusEffect } from '@react-navigation/native';
 import { Ionicons } from '@expo/vector-icons';
 import { colors } from '../../theme/colors';
-import { mockMedals, getXpForNextLevel, getCurrentLevelXp } from '../../data/mockData';
+import { mockMedals, getXpForNextLevel, getCurrentLevelXp, getLevelTitle } from '../../data/mockData';
 import { getProfile, getUserMedals } from '../../lib/db';
 import { DBUser } from '../../lib/supabase';
 
@@ -122,9 +122,7 @@ export default function GamificationScreen({ userId }: { userId?: string }) {
             </View>
             <View style={styles.xpCardInfo}>
               <Text style={styles.xpCardName}>{user.name}</Text>
-              <Text style={styles.xpCardTitle}>
-                {user.level >= 20 ? 'Elite Athlete' : user.level >= 10 ? 'Consistent Athlete' : user.level >= 5 ? 'Rising Star' : 'New Adventurer'}
-              </Text>
+              <Text style={styles.xpCardTitle}>{getLevelTitle(user.level)}</Text>
               <Text style={styles.xpTotal}>{user.xp.toLocaleString()} Total XP</Text>
             </View>
           </View>

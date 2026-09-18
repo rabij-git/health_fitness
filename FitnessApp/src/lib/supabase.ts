@@ -24,13 +24,6 @@ export interface DBUser {
   level: number;
   xp: number;
   streak: number;
-  // Consecutive weeks (Sun–Sat) with every scheduled day of every active,
-  // scheduled workout completed — separate from `streak` above, which is a
-  // daily (any-workout-that-day) consecutive-day count. `last_completed_week_start`
-  // is the ISO date of the most recent week credited, used to detect both
-  // double-crediting the same week and whether a streak is still consecutive.
-  weekly_streak: number;
-  last_completed_week_start: string | null;
   status: 'pending' | 'assigned';
   created_at: string;
   // Biometric profile, used for calorie/macro calculations. Year of birth

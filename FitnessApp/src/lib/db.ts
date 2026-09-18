@@ -1,4 +1,5 @@
 import { supabase, SUPABASE_URL, SUPABASE_ANON_KEY, DBUser, DBProgram, DBWorkout, DBExercise, DBWeightLog, DBExerciseWeightLog, DBMessage, DBWorkoutSession, DBGym, DBFriendship, DBNutritionPlan, DBNutritionPlanTemplate, DBCoachRequest, DBCoachInvite, DBVital, DBProgramExercise, DBLibraryExercise, DBUserMedal, DBFoodLogEntry, DBMealCompletion } from './supabase';
+import { computeLevelFromXp, mockMedals } from '../data/mockData';
 // Reading a just-created expo-print file into JS (as a Blob via fetch(), as
 // an ArrayBuffer via the new File class, or as base64 via the legacy
 // readAsStringAsync) has all three failed with permission/readability
@@ -1001,6 +1002,16 @@ export async function acceptCoachRequest(requestId: string, coachId: string, tra
   const { error } = await supabase.from('coach_requests').update({ status: 'accepted' }).eq('id', requestId);
   if (error) throw error;
   await assignTraineeToCoach(traineeId, coachId);
+  // "Coach Connected" achievement — awarded here (the moment a connection is
+  // actually made) rather than in evaluateAndAwardMedals, since a trainee
+  // can't have completed any workout at all without a coach already
+  // assigned, so checking it at workout-completion time would always
+  // co-fire with "First Step" and never mean anything on its own.
+  try {
+    await awardMedalIfNew(traineeId, '10');
+  } catch (e) {
+    console.warn('acceptCoachRequest: failed to award Coach Connected medal', e);
+  }
 }
 
 export async function declineCoachRequest(requestId: string) {
@@ -1100,19 +1111,131 @@ export async function awardMedal(userId: string, medalId: string) {
   if (error) throw error;
 }
 
-// Re-evaluates the objectively computable medal rules against current stats and
-// awards any newly-qualified ones. Returns the medal ids newly earned this call.
-// 'First Workout' (id 1) and 'New Adventure' (id 7) are deliberately excluded —
-// they used to fire on sessionsCount >= 1, i.e. for finishing a single
-// workout, which per feedback is no longer how achievements work (see
-// evaluateWeeklyCompletion below for the replacement weekly-completion reward).
-export async function evaluateAndAwardMedals(userId: string, sessionsCount: number, streak: number): Promise<string[]> {
+// Awards a medal AND grants its XP in one step, for medals earned outside
+// the workout-completion flow (which folds medal XP into its own combined
+// xp/level write instead — see WorkoutScreen.handleSubmit). Used by
+// acceptCoachRequest for "Coach Connected". No-ops (returns false) if
+// already earned, so callers can call this unconditionally every time.
+async function awardMedalIfNew(userId: string, medalId: string): Promise<boolean> {
   const existing = await getUserMedals(userId);
+  if (existing.some(m => m.medal_id === medalId)) return false;
+  await awardMedal(userId, medalId);
+  const medal = mockMedals.find(m => m.id === medalId);
+  if (medal) {
+    const profile = await getProfile(userId);
+    const newXp = (profile?.xp ?? 0) + medal.xpReward;
+    await updateProfile(userId, { xp: newXp, level: computeLevelFromXp(newXp) });
+  }
+  return true;
+}
+
+// Accurate lifetime completed-workout count — NOT the same as
+// getTraineeHistory(...).length, which is capped by that function's default
+// limit (20) and would make the higher workout-count achievements (25/50/100)
+// impossible to ever trigger correctly past that cap.
+export async function getWorkoutSessionCount(traineeId: string): Promise<number> {
+  const { count, error } = await supabase
+    .from('workout_sessions')
+    .select('*', { count: 'exact', head: true })
+    .eq('trainee_id', traineeId);
+  if (error) return 0;
+  return count ?? 0;
+}
+
+// Distinct calendar days (by completed_at) with at least one completed
+// session — for "N different active days" achievements (Daily Doer, Always
+// Moving), as opposed to a raw session count (two workouts the same day
+// only count as one active day).
+export async function getDistinctActiveDayCount(traineeId: string): Promise<number> {
+  const { data, error } = await supabase
+    .from('workout_sessions')
+    .select('completed_at')
+    .eq('trainee_id', traineeId);
+  if (error || !data) return 0;
+  const days = new Set(data.map((s: any) => new Date(s.completed_at).toISOString().split('T')[0]));
+  return days.size;
+}
+
+// Whether the trainee has ever completed a workout with a local completion
+// hour in [minHour, maxHour) — e.g. 0-12 for "morning", 18-24 for "evening".
+// Includes the session currently being saved, since this always runs after
+// saveWorkoutSession in the completion flow.
+export async function hasCompletedInHourRange(traineeId: string, minHour: number, maxHour: number): Promise<boolean> {
+  const { data, error } = await supabase
+    .from('workout_sessions')
+    .select('completed_at')
+    .eq('trainee_id', traineeId);
+  if (error || !data) return false;
+  return data.some((s: any) => {
+    const h = new Date(s.completed_at).getHours();
+    return h >= minHour && h < maxHour;
+  });
+}
+
+// Highest single-day step count ever logged, across all history (not just
+// getVitalsHistory's default recent-30-day window) — for "10K Steps".
+export async function getMaxDailySteps(traineeId: string): Promise<number> {
+  const { data, error } = await supabase
+    .from('vitals')
+    .select('metric_value')
+    .eq('trainee_id', traineeId)
+    .eq('metric_name', 'steps');
+  if (error || !data) return 0;
+  return data.reduce((max: number, r: any) => Math.max(max, r.metric_value ?? 0), 0);
+}
+
+// Re-evaluates the objectively computable medal rules against current stats
+// and awards any newly-qualified ones. Returns the medal ids newly earned
+// this call. Recomputes sessionsCount itself (getWorkoutSessionCount) rather
+// than trusting a caller-supplied count, since the previous approach
+// (priorHistory.length + 1, with priorHistory capped at 20 by
+// getTraineeHistory's default limit) could never correctly detect the
+// 25/50/100-workout milestones past that cap.
+//
+// 'Coach Connected' (id 10) is NOT checked here — it's awarded directly in
+// acceptCoachRequest at the moment a coach connection is actually made,
+// since by definition a trainee can't have completed any workout at all
+// without a coach already assigned, so checking it here would always
+// co-fire with 'First Step' and never mean anything on its own.
+//
+// 'Top Ranker' (id 5, needs a leaderboard-rank query) and 'New Adventure'
+// (id 7, would duplicate 'First Step's exact trigger) are deliberately
+// excluded — see the Medals section in CLAUDE.md.
+export async function evaluateAndAwardMedals(userId: string, streak: number): Promise<string[]> {
+  const [existing, sessionsCount, profile, activeDays, maxSteps, isMorning, isEvening, weightLogs, workoutsAssigned] = await Promise.all([
+    getUserMedals(userId),
+    getWorkoutSessionCount(userId),
+    getProfile(userId),
+    getDistinctActiveDayCount(userId),
+    getMaxDailySteps(userId),
+    hasCompletedInHourRange(userId, 0, 12),
+    hasCompletedInHourRange(userId, 18, 24),
+    getWeightLogs(userId),
+    getWorkoutsForTrainee(userId),
+  ]);
   const earnedIds = new Set(existing.map(m => m.medal_id));
+  const profileComplete = !!(profile?.birth_year && profile?.sex && profile?.height_cm && profile?.activity_level);
+
   const checks: [string, boolean][] = [
-    ['2', streak >= 7],          // 7-Day Streak
-    ['3', streak >= 30],         // 30-Day Streak
-    ['4', sessionsCount >= 100], // 100 Workouts
+    ['1', sessionsCount >= 1],        // First Step
+    ['6', isMorning],                 // Early Bird
+    ['8', isEvening],                 // Night Owl
+    ['9', profileComplete],           // Profile Complete
+    ['11', weightLogs.length >= 1],   // Progress Logged
+    ['12', streak >= 3],              // 3-Day Streak
+    ['13', sessionsCount >= 5],       // Plan Follower
+    ['14', maxSteps >= 10000],        // 10K Steps
+    ['15', activeDays >= 10],         // Daily Doer
+    ['2', streak >= 7],               // 7-Day Streak
+    ['16', sessionsCount >= 10],      // 10 Workouts Strong
+    ['17', workoutsAssigned.length >= 2], // Next Level
+    ['18', streak >= 14],             // 14-Day Streak
+    ['19', streak >= 21],             // 21-Day Streak
+    ['20', sessionsCount >= 25],      // 25 Workouts Strong
+    ['3', streak >= 30],              // 30-Day Streak
+    ['4', sessionsCount >= 100],      // 100 Workouts
+    ['21', sessionsCount >= 50],      // 50 Workouts Strong
+    ['22', activeDays >= 100],        // Always Moving
   ];
   const newlyEarned: string[] = [];
   for (const [medalId, qualifies] of checks) {
@@ -1122,91 +1245,6 @@ export async function evaluateAndAwardMedals(userId: string, sessionsCount: numb
     }
   }
   return newlyEarned;
-}
-
-const XP_PER_COMPLETED_WORKOUT = 1;
-
-function startOfWeek(d: Date): Date {
-  const copy = new Date(d);
-  copy.setHours(0, 0, 0, 0);
-  copy.setDate(copy.getDate() - copy.getDay());
-  return copy;
-}
-function dateStr(d: Date) {
-  return d.toISOString().split('T')[0];
-}
-
-// Replaces the old flat per-workout XP (previously +250×progress on every
-// finish) — finishing a single workout no longer awards XP on its own.
-// Instead, once every scheduled day of every one of a trainee's active,
-// scheduled workouts has a completed session for the current calendar week
-// (Sun–Sat), this credits a weekly streak and reports XP for the caller to
-// fold into its own xp/level update — 1 XP per completed daily workout that
-// week (`XP_PER_COMPLETED_WORKOUT`), i.e. a 3-workout week nets 3 XP, a
-// 5-workout week nets 5, all released together only once the whole week's
-// schedule is done, not per-day as each one is completed. Deliberately
-// doesn't write xp/level itself, so it can't race with the caller's own
-// profile write for medal-bonus XP — it only persists the
-// weekly_streak/last_completed_week_start bookkeeping, which is otherwise
-// untouched by that call. Safe to call after every workout completion —
-// it's a no-op until the week is actually fully covered, and won't
-// double-credit the same week twice.
-export async function evaluateWeeklyCompletion(userId: string): Promise<{ awarded: boolean; weeklyStreak: number; xpAwarded: number }> {
-  const [profile, workouts] = await Promise.all([getProfile(userId), getWorkoutsForTrainee(userId)]);
-  const noAward = { awarded: false, weeklyStreak: profile?.weekly_streak ?? 0, xpAwarded: 0 };
-  if (!profile) return noAward;
-
-  // Only workouts with an explicit weekly schedule count — an unrestricted
-  // (any-day) workout has no defined weekly cadence to check against.
-  const scheduledWorkouts = workouts.filter(w => w.active && w.scheduled_days && w.scheduled_days.length > 0);
-  if (scheduledWorkouts.length === 0) return noAward;
-
-  const today = new Date();
-  const todayDow = today.getDay();
-  const weekStart = startOfWeek(today);
-  const weekStartStr = dateStr(weekStart);
-
-  if (profile.last_completed_week_start === weekStartStr) return noAward;
-
-  // The week can only be judged "fully completed" once every scheduled day
-  // for every one of these workouts has already occurred (today or earlier)
-  // — otherwise a day is still pending and it's too early to tell.
-  const weekFullyElapsedForAll = scheduledWorkouts.every(w => Math.max(...w.scheduled_days!) <= todayDow);
-  if (!weekFullyElapsedForAll) return noAward;
-
-  const { data: sessions, error } = await supabase
-    .from('workout_sessions')
-    .select('workout_id, completed_at')
-    .eq('trainee_id', userId)
-    .gte('completed_at', weekStart.toISOString());
-  if (error) return noAward;
-
-  const completedDaysByWorkout = new Map<string, Set<number>>();
-  for (const s of sessions ?? []) {
-    const dow = new Date(s.completed_at).getDay();
-    if (!completedDaysByWorkout.has(s.workout_id)) completedDaysByWorkout.set(s.workout_id, new Set());
-    completedDaysByWorkout.get(s.workout_id)!.add(dow);
-  }
-
-  const allCompleted = scheduledWorkouts.every(w =>
-    w.scheduled_days!.every(d => completedDaysByWorkout.get(w.id)?.has(d))
-  );
-  if (!allCompleted) return noAward;
-
-  // Every scheduled day of every qualifying workout is confirmed completed
-  // above, so the count of daily workouts this week is just the sum of each
-  // workout's own scheduled-day count.
-  const completedWorkoutCount = scheduledWorkouts.reduce((sum, w) => sum + w.scheduled_days!.length, 0);
-  const xpAwarded = completedWorkoutCount * XP_PER_COMPLETED_WORKOUT;
-
-  const prevWeekStr = dateStr(new Date(weekStart.getTime() - 7 * 86400000));
-  const newWeeklyStreak = profile.last_completed_week_start === prevWeekStr ? (profile.weekly_streak ?? 0) + 1 : 1;
-  await updateProfile(userId, {
-    weekly_streak: newWeeklyStreak,
-    last_completed_week_start: weekStartStr,
-  });
-
-  return { awarded: true, weeklyStreak: newWeeklyStreak, xpAwarded };
 }
 
 // ── Leaderboard ───────────────────────────────────────────────────────────────
@@ -1281,6 +1319,8 @@ export async function sendFriendRequest(userId: string, targetId: string) {
   if (error) throw error;
 }
 
+const INVITE_FRIEND_XP = 2;
+
 export async function acceptFriendRequest(userId: string, requesterId: string) {
   const { error } = await supabase
     .from('friendships')
@@ -1288,6 +1328,20 @@ export async function acceptFriendRequest(userId: string, requesterId: string) {
     .eq('user_id', requesterId)
     .eq('friend_id', userId);
   if (error) throw error;
+
+  // "Invite a Friend" XP — the original sender earns it once accepted, not
+  // just for sending the request (avoids rewarding spam invites that never
+  // land). Isolated in its own try/catch so a failure here never blocks the
+  // friendship itself from being accepted.
+  try {
+    const inviter = await getProfile(requesterId);
+    if (inviter) {
+      const newXp = (inviter.xp ?? 0) + INVITE_FRIEND_XP;
+      await updateProfile(requesterId, { xp: newXp, level: computeLevelFromXp(newXp) });
+    }
+  } catch (e) {
+    console.warn('acceptFriendRequest: failed to award invite XP', e);
+  }
 }
 
 export async function getPendingFriendRequests(userId: string): Promise<(DBFriendship & { from: DBUser })[]> {
