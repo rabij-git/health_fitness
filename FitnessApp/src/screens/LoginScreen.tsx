@@ -76,7 +76,7 @@ export default function LoginScreen({ onLogin }: Props) {
       if (suRole === 'coach') {
         await signUpCoach(suEmail.trim().toLowerCase(), suPassword, suName.trim(), suInviteCode.trim());
       } else {
-        await signUp(suEmail.trim().toLowerCase(), suPassword, suName.trim(), suRole);
+        await signUp(suEmail.trim().toLowerCase(), suPassword, suName.trim());
       }
       setSignedUpMsg(
         suRole === 'trainee'

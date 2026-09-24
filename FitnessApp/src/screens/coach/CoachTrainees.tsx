@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import {
   View,
   Text,
@@ -18,6 +18,7 @@ import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context'
 import { useRoute, useNavigation, useFocusEffect } from '@react-navigation/native';
 import { Ionicons } from '@expo/vector-icons';
 import { colors } from '../../theme/colors';
+import { useKeyboardOffset } from '../../lib/useKeyboardOffset';
 import {
   getMyTrainees,
   getIncomingCoachRequests,
@@ -188,6 +189,12 @@ export default function CoachTrainees({ coachId }: Props) {
   const route = useRoute<any>();
   const navigation = useNavigation<any>();
   const insets = useSafeAreaInsets();
+  const keyboardOffset = useKeyboardOffset();
+  const chatScrollRef = useRef<ScrollView>(null);
+  // Measured (not guessed) height of the chat tab's content area, captured
+  // via onLayout while nothing is shrinking it — see the note by its use
+  // below for why this replaced a margin-based approach.
+  const [chatAreaHeight, setChatAreaHeight] = useState(0);
   const [trainees, setTrainees] = useState<DBUser[]>([]);
   const [programs, setPrograms] = useState<DBProgram[]>([]);
   const [incomingRequests, setIncomingRequests] = useState<(DBCoachRequest & { trainee: DBUser })[]>([]);
@@ -238,6 +245,19 @@ export default function CoachTrainees({ coachId }: Props) {
   const [selectedTraineeMessages, setSelectedTraineeMessages] = useState<DBMessage[]>([]);
   const [chatInput, setChatInput] = useState('');
   const [loadingDetail, setLoadingDetail] = useState(false);
+
+  // Keep the conversation's tail in view — the message list never showed
+  // this until now, it just happened to have enough height to show
+  // everything at once. Now that it correctly shrinks to make room for the
+  // keyboard, a short box with no scroll position management would default
+  // to the top (oldest messages) instead of what's actually being chatted
+  // about. Re-scrolls on new messages and whenever the keyboard opens
+  // (since that's when the visible window gets smallest).
+  useEffect(() => {
+    if (detailTab === 'chat') {
+      requestAnimationFrame(() => chatScrollRef.current?.scrollToEnd({ animated: false }));
+    }
+  }, [selectedTraineeMessages, detailTab, keyboardOffset]);
 
   // ── Nutrition plan editor (inline within the "Nutrition" tab — editing an
   // already-assigned plan's copied values, not creating a new one) ──
@@ -629,6 +649,19 @@ export default function CoachTrainees({ coachId }: Props) {
   }, []);
 
   // ── Assign flow ──
+  // Closing (whether via X, Android back, or "Done") reopens the
+  // trainee-detail modal for the trainee just assigned to, instead of
+  // dropping the coach back at the Trainees list — mirrors the nutrition
+  // assign/calculator modals' closeAssignPlanPicker/closeCalorieCalculator,
+  // which already do this. Reopening re-triggers the detail-load effect
+  // (keyed on selectedTrainee), which refetches workouts and so picks up
+  // the one just assigned.
+  const closeAssignModal = useCallback(() => {
+    setShowAssignModal(false);
+    setSelectedTrainee(assigningTrainee);
+    setAssigningTrainee(null);
+  }, [assigningTrainee]);
+
   const openAssignModal = (trainee: DBUser) => {
     setAssigningTrainee(trainee);
     setAssignStep(1);
@@ -1047,11 +1080,33 @@ export default function CoachTrainees({ coachId }: Props) {
                 <ActivityIndicator size="large" color={colors.primary} />
               </View>
             ) : detailTab === 'chat' ? (
+              // Neither KeyboardAvoidingView's own Android resize nor a
+              // marginBottom-on-this-container guess worked reliably here —
+              // both left chatMessages collapsed with a large dead gap
+              // between the input row and the real keyboard, which strongly
+              // suggests something upstream (possibly the Activity's own
+              // adjustResize) is ALSO shrinking this screen, so a second,
+              // separate keyboard-height deduction on top of it overshoots.
+              // Sidestepping that ambiguity entirely: measure this
+              // container's real resting height via onLayout (a ground
+              // truth, unaffected by any of that), then give chatMessages
+              // an explicit (not flex, not margined) height computed from
+              // it — chatInputRow naturally lands right below at the
+              // correct spot since nothing above it changed.
               <KeyboardAvoidingView
-                behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+                behavior={Platform.OS === 'ios' ? 'padding' : undefined}
                 style={{ flex: 1 }}
+                onLayout={e => setChatAreaHeight(e.nativeEvent.layout.height)}
               >
-                <ScrollView style={styles.chatMessages} showsVerticalScrollIndicator={false}>
+                <ScrollView
+                  ref={chatScrollRef}
+                  style={
+                    keyboardOffset > 0 && chatAreaHeight > 0
+                      ? { height: Math.max(80, chatAreaHeight - keyboardOffset - 64), marginBottom: 12 }
+                      : styles.chatMessages
+                  }
+                  showsVerticalScrollIndicator={false}
+                >
                   {selectedTraineeMessages.length === 0 && (
                     <Text style={{ color: colors.textSecondary, textAlign: 'center', marginTop: 20 }}>
                       No messages yet. Say hi!
@@ -1851,7 +1906,7 @@ export default function CoachTrainees({ coachId }: Props) {
         visible={showAssignModal}
         transparent
         animationType="slide"
-        onRequestClose={() => setShowAssignModal(false)}
+        onRequestClose={closeAssignModal}
       >
         <KeyboardAvoidingView
           style={styles.modalOverlay}
@@ -1865,7 +1920,7 @@ export default function CoachTrainees({ coachId }: Props) {
                   {assignStep === 1 ? 'Select Program' : assignStep === 2 ? 'Build Workout' : 'All Set!'}
                 </Text>
               </View>
-              <TouchableOpacity style={styles.closeBtn} onPress={() => setShowAssignModal(false)}>
+              <TouchableOpacity style={styles.closeBtn} onPress={closeAssignModal}>
                 <Ionicons name="close" size={22} color={colors.textSecondary} />
               </TouchableOpacity>
             </View>
@@ -2145,7 +2200,7 @@ export default function CoachTrainees({ coachId }: Props) {
                   </TouchableOpacity>
                 </>
               ) : (
-                <TouchableOpacity style={styles.nextBtn} onPress={() => setShowAssignModal(false)}>
+                <TouchableOpacity style={styles.nextBtn} onPress={closeAssignModal}>
                   <Text style={styles.nextBtnText}>Done</Text>
                   <Ionicons name="checkmark" size={18} color={colors.text} />
                 </TouchableOpacity>
@@ -2671,6 +2726,7 @@ const styles = StyleSheet.create({
   },
   chatInput: {
     flex: 1,
+    minHeight: 40,
     backgroundColor: colors.secondary,
     borderRadius: 20,
     paddingHorizontal: 16,

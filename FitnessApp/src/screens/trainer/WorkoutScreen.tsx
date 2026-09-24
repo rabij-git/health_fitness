@@ -22,6 +22,7 @@ import {
   saveWorkoutSession,
   updateProfile,
   getTraineeHistory,
+  recalculateStreak,
   evaluateAndAwardMedals,
   sendMessage,
   logExerciseWeight,
@@ -50,17 +51,6 @@ const DAILY_STREAK_XP = 2;
 
 function toDayStr(d: Date | string): string {
   return new Date(d).toISOString().split('T')[0];
-}
-
-function computeNewStreak(currentStreak: number, priorHistory: { completed_at: string }[]): number {
-  if (priorHistory.length === 0) return 1;
-  const sorted = [...priorHistory].sort((a, b) => new Date(b.completed_at).getTime() - new Date(a.completed_at).getTime());
-  const lastDayStr = toDayStr(sorted[0].completed_at);
-  const today = new Date();
-  const yesterday = new Date(today.getTime() - 86400000);
-  if (lastDayStr === toDayStr(today)) return currentStreak || 1;
-  if (lastDayStr === toDayStr(yesterday)) return (currentStreak || 0) + 1;
-  return 1;
 }
 
 // Effort scale
@@ -446,7 +436,7 @@ export default function WorkoutScreen({ userId }: Props) {
     let newStreak = profile?.streak ?? 0;
     let newlyEarned: string[] = [];
     try {
-      newStreak = computeNewStreak(profile?.streak ?? 0, priorHistory);
+      newStreak = await recalculateStreak(userId);
       newlyEarned = await evaluateAndAwardMedals(userId, newStreak);
       setNewlyEarnedMedalIds(newlyEarned);
     } catch (e) {
@@ -460,7 +450,8 @@ export default function WorkoutScreen({ userId }: Props) {
     try {
       const newXp = (profile?.xp ?? 0) + totalXp;
       const newLevel = computeLevelFromXp(newXp);
-      await updateProfile(userId, { xp: newXp, level: newLevel, streak: newStreak });
+      // streak was already persisted by recalculateStreak() above.
+      await updateProfile(userId, { xp: newXp, level: newLevel });
     } catch (e) {
       console.warn('Workout completion: failed to update xp/level/streak', e);
     }

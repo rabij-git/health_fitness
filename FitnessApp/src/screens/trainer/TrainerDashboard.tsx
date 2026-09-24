@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo, useCallback } from 'react';
+import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import {
   View,
   Text,
@@ -11,11 +11,13 @@ import {
   Platform,
   ActivityIndicator,
 } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useFocusEffect } from '@react-navigation/native';
 import { Ionicons } from '@expo/vector-icons';
 import { Pedometer } from 'expo-sensors';
 import { colors } from '../../theme/colors';
+import { useKeyboardOffset } from '../../lib/useKeyboardOffset';
+import { useIsUserOnline } from '../../lib/presence';
 import { getXpForNextLevel, getCurrentLevelXp } from '../../data/mockData';
 import {
   getProfile,
@@ -76,11 +78,14 @@ interface Props {
 }
 
 export default function TrainerDashboard({ onLogout, userId, navigation }: Props) {
+  const keyboardOffset = useKeyboardOffset();
+  const insets = useSafeAreaInsets();
   const [profile, setProfile] = useState<DBUser | null>(null);
   const [coachProfile, setCoachProfile] = useState<DBUser | null>(null);
   const [weightLogs, setWeightLogs] = useState<DBWeightLog[]>([]);
   const [dbMessages, setDbMessages] = useState<DBMessage[]>([]);
   const [coachId, setCoachId] = useState<string | null>(null);
+  const coachOnline = useIsUserOnline(coachId);
   const [loadingProfile, setLoadingProfile] = useState(true);
 
   const [weight, setWeight] = useState('');
@@ -88,6 +93,18 @@ export default function TrainerDashboard({ onLogout, userId, navigation }: Props
   const [showMsgModal, setShowMsgModal] = useState(false);
   const [msgInput, setMsgInput] = useState('');
   const [dismissedNotifs, setDismissedNotifs] = useState<string[]>([]);
+  const chatScrollRef = useRef<ScrollView>(null);
+  // Measured (not guessed) chat area height — see CoachTrainees.tsx's Chat
+  // tab, the confirmed-working reference this modal now mirrors exactly.
+  const [chatAreaHeight, setChatAreaHeight] = useState(0);
+
+  // Keep the conversation's tail in view once the keyboard shrinks the
+  // visible message area — see the matching note in CoachTrainees.tsx.
+  useEffect(() => {
+    if (showMsgModal) {
+      requestAnimationFrame(() => chatScrollRef.current?.scrollToEnd({ animated: false }));
+    }
+  }, [dbMessages, showMsgModal, keyboardOffset]);
 
   const [dailyMetrics, setDailyMetrics] = useState<TodayVitals>({ steps: 0, water_ml: 0, heart_rate: null });
   const [nutritionPlans, setNutritionPlans] = useState<DBNutritionPlan[]>([]);
@@ -505,27 +522,45 @@ export default function TrainerDashboard({ onLogout, userId, navigation }: Props
 
       </ScrollView>
 
-      {/* Message Coach Modal */}
-      <Modal visible={showMsgModal} transparent animationType="slide" onRequestClose={() => setShowMsgModal(false)}>
-        <KeyboardAvoidingView
-          behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
-          style={{ flex: 1 }}
-        >
-          <View style={styles.overlay}>
-            <View style={[styles.sheet, { maxHeight: '78%' }]}>
-              <View style={styles.chatHeader}>
-                <View style={styles.coachAvatar}>
-                  <Text style={styles.coachAvatarText}>{coachProfile?.avatar ?? '?'}</Text>
-                </View>
-                <View style={{ flex: 1 }}>
-                  <Text style={styles.sheetTitle}>{coachProfile?.name ?? 'Your Coach'}</Text>
-                  <Text style={styles.chatOnline}>● Online</Text>
-                </View>
-                <TouchableOpacity onPress={() => setShowMsgModal(false)}>
-                  <Ionicons name="close" size={22} color={colors.textSecondary} />
-                </TouchableOpacity>
+      {/* Message Coach Modal — full-screen, not a small transparent sheet.
+          Mirrors CoachTrainees.tsx's Chat tab exactly (confirmed working
+          there): a genuine full-screen Modal sidesteps the whole class of
+          Android transparent-Modal-shrinks-to-content bugs the small sheet
+          version kept hitting (see CLAUDE.md's "Chat keyboard-avoidance"
+          note) — no overlay/backdrop/rounded sheet needed since there's no
+          background screen to dim in the first place. */}
+      <Modal visible={showMsgModal} animationType="slide" onRequestClose={() => setShowMsgModal(false)}>
+        <View style={[styles.fullScreenContainer, { paddingTop: insets.top, paddingBottom: insets.bottom }]}>
+          <View style={styles.fullScreenSheet}>
+            <View style={styles.chatHeader}>
+              <View style={styles.coachAvatar}>
+                <Text style={styles.coachAvatarText}>{coachProfile?.avatar ?? '?'}</Text>
               </View>
-              <ScrollView style={styles.chatMessages} showsVerticalScrollIndicator={false}>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.sheetTitle}>{coachProfile?.name ?? 'Your Coach'}</Text>
+                <Text style={[styles.chatOnline, !coachOnline && styles.chatOffline]}>
+                  {coachOnline ? '● Online' : 'Offline'}
+                </Text>
+              </View>
+              <TouchableOpacity style={styles.closeBtn} onPress={() => setShowMsgModal(false)}>
+                <Ionicons name="close" size={22} color={colors.textSecondary} />
+              </TouchableOpacity>
+            </View>
+
+            <KeyboardAvoidingView
+              behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+              style={{ flex: 1 }}
+              onLayout={e => setChatAreaHeight(e.nativeEvent.layout.height)}
+            >
+              <ScrollView
+                ref={chatScrollRef}
+                style={
+                  keyboardOffset > 0 && chatAreaHeight > 0
+                    ? { height: Math.max(80, chatAreaHeight - keyboardOffset - 64), marginBottom: 12 }
+                    : styles.fullScreenChatMessages
+                }
+                showsVerticalScrollIndicator={false}
+              >
                 {dbMessages.length === 0 && (
                   <Text style={{ color: colors.textSecondary, textAlign: 'center', marginTop: 20 }}>
                     No messages yet. Say hi!
@@ -554,9 +589,9 @@ export default function TrainerDashboard({ onLogout, userId, navigation }: Props
                   <Ionicons name="send" size={18} color={colors.text} />
                 </TouchableOpacity>
               </View>
-            </View>
+            </KeyboardAvoidingView>
           </View>
-        </KeyboardAvoidingView>
+        </View>
       </Modal>
     </SafeAreaView>
   );
@@ -774,13 +809,6 @@ const styles = StyleSheet.create({
   lastWeightText: { fontSize: 12, color: colors.textSecondary },
 
   // Modals
-  overlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.7)', justifyContent: 'flex-end' },
-  sheet: {
-    backgroundColor: colors.card,
-    borderTopLeftRadius: 28,
-    borderTopRightRadius: 28,
-    padding: 24,
-  },
   sheetTitle: { fontSize: 18, fontWeight: '800', color: colors.text, marginBottom: 4 },
 
   // Chat
@@ -797,7 +825,15 @@ const styles = StyleSheet.create({
   },
   coachAvatarText: { color: colors.text, fontSize: 14, fontWeight: '700' },
   chatOnline: { fontSize: 12, color: colors.success, marginTop: 2, fontWeight: '600' },
+  chatOffline: { color: colors.textSecondary },
   chatMessages: { maxHeight: 280, marginBottom: 16 },
+  fullScreenContainer: { flex: 1, backgroundColor: colors.background },
+  fullScreenSheet: { flex: 1, paddingHorizontal: 20, paddingTop: 14, paddingBottom: 20 },
+  fullScreenChatMessages: { flex: 1, marginBottom: 16 },
+  closeBtn: {
+    width: 36, height: 36, borderRadius: 10,
+    backgroundColor: colors.secondary, alignItems: 'center', justifyContent: 'center',
+  },
   bubble: {
     maxWidth: '80%',
     padding: 12,
@@ -827,6 +863,7 @@ const styles = StyleSheet.create({
   },
   chatInput: {
     flex: 1,
+    minHeight: 40,
     backgroundColor: colors.secondary,
     borderRadius: 20,
     paddingHorizontal: 16,

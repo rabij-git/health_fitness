@@ -16,7 +16,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { useFocusEffect } from '@react-navigation/native';
 import { Ionicons } from '@expo/vector-icons';
 import { colors } from '../../theme/colors';
-import { getNutritionPlans, getFoodLogEntries, deleteFoodLogEntry, getMealCompletions, upsertMealCompletion, getTodayMetrics } from '../../lib/db';
+import { getNutritionPlans, getFoodLogEntries, deleteFoodLogEntry, getMealCompletions, upsertMealCompletion, getTodayMetrics, recalculateStreak } from '../../lib/db';
 import { DBNutritionPlan, DBFoodLogEntry, DBMealCompletion, MealSlot } from '../../lib/supabase';
 import { sumTodayAsPlannedNutrition } from '../../lib/nutritionCalc';
 
@@ -86,6 +86,9 @@ function MealRow({
       setSubstituting(false);
       setNote('');
       setChanging(false);
+      // Tracking a meal (any status) counts as a nutrition-active day for
+      // the streak, same as a completed workout — see recalculateStreak.
+      recalculateStreak(userId).catch(e => console.warn('recalculateStreak error', e));
     } catch (e) {
       console.warn('upsertMealCompletion error', e);
     } finally {

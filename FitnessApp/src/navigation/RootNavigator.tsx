@@ -4,6 +4,7 @@ import { NavigationContainer } from '@react-navigation/native';
 import { UserRole } from '../data/mockData';
 import { supabase } from '../lib/supabase';
 import { getProfile } from '../lib/db';
+import { useTrackOwnPresence } from '../lib/presence';
 import { colors } from '../theme/colors';
 import LoginScreen from '../screens/LoginScreen';
 import AdminTabs from './AdminTabs';
@@ -18,6 +19,11 @@ export default function RootNavigator() {
   // session underneath is untouched; "Logout" from that view just exits
   // back to Admin instead of signing out for real.
   const [viewAsCoachId, setViewAsCoachId] = useState<string | null>(null);
+
+  // Marks this session's own user as online (real Supabase Presence, not a
+  // DB flag) for as long as anyone is logged in, regardless of role/tab —
+  // see src/lib/presence.ts.
+  useTrackOwnPresence(userId);
 
   // Restore session on app launch
   useEffect(() => {

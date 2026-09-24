@@ -26,25 +26,29 @@ async function uploadFileToStorage(localFileUri: string, bucket: string, storage
 
 // ── Auth ──────────────────────────────────────────────────────────────────────
 
-export async function signUp(email: string, password: string, name: string, role: 'admin' | 'coach' | 'trainee') {
+// `role` is never accepted from the caller — the users table's own INSERT
+// policy forces role='trainee' server-side regardless of what's sent here,
+// since a client-supplied role was the app's original privilege-escalation
+// hole (any account could self-elevate to admin/coach). Coach accounts can
+// only be created via signUpCoach below.
+export async function signUp(email: string, password: string, name: string) {
   const initials = name.split(' ').map(w => w[0]).join('').slice(0, 2).toUpperCase();
 
   const { data, error } = await supabase.auth.signUp({
     email,
     password,
     options: {
-      data: { name, role, avatar: initials },
+      data: { name, role: 'trainee', avatar: initials },
     },
   });
   if (error) throw error;
 
-  // Insert profile row
   if (data.user) {
     const { error: profileError } = await supabase.from('users').insert({
       id: data.user.id,
       name,
       email,
-      role,
+      role: 'trainee',
       avatar: initials,
       level: 1,
       xp: 0,
@@ -56,29 +60,34 @@ export async function signUp(email: string, password: string, name: string, role
   return data;
 }
 
-// Coach signup requires a valid, unused invite code from an admin — this is
-// the only path that's allowed to create a coach-role account, so a trainee
-// can't accidentally self-assign the coach role at signup.
+// Coach signup requires a valid, unused invite code from an admin. Validation
+// and redemption happen atomically server-side (redeem_coach_invite, a
+// SECURITY DEFINER RPC) rather than via a client-side read+update of
+// coach_invites, which any signed-in user could otherwise race or forge.
+// This necessarily runs auth.signUp() *before* validating the code (the RPC
+// needs an authenticated caller to record who redeemed it) — an invalid code
+// still leaves behind an auth user with no profile row, same as any other
+// mid-signUp failure already can.
 export async function signUpCoach(email: string, password: string, name: string, inviteCode: string) {
-  const code = inviteCode.trim().toUpperCase();
-  const { data: invite, error: inviteError } = await supabase
-    .from('coach_invites')
-    .select('id')
-    .eq('code', code)
-    .is('used_by', null)
-    .maybeSingle();
-  if (inviteError) throw inviteError;
-  if (!invite) throw new Error('That invite code is invalid or has already been used.');
+  const initials = name.split(' ').map(w => w[0]).join('').slice(0, 2).toUpperCase();
+  const { data, error } = await supabase.auth.signUp({
+    email,
+    password,
+    options: {
+      data: { name, role: 'coach', avatar: initials },
+    },
+  });
+  if (error) throw error;
 
-  const result = await signUp(email, password, name, 'coach');
-  if (result.user) {
-    const { error: redeemError } = await supabase
-      .from('coach_invites')
-      .update({ used_by: result.user.id, used_at: new Date().toISOString() })
-      .eq('id', invite.id);
-    if (redeemError) throw redeemError;
-  }
-  return result;
+  const { error: redeemError } = await supabase.rpc('redeem_coach_invite', {
+    p_code: inviteCode.trim().toUpperCase(),
+    p_name: name,
+    p_email: email,
+    p_avatar: initials,
+  });
+  if (redeemError) throw redeemError;
+
+  return data;
 }
 
 export async function signIn(email: string, password: string) {
@@ -136,14 +145,6 @@ export async function getPendingTrainees(): Promise<DBUser[]> {
     .order('created_at', { ascending: false });
   if (error) throw error;
   return data ?? [];
-}
-
-export async function assignTraineeToCoach(traineeId: string, coachId: string) {
-  const { error } = await supabase
-    .from('users')
-    .update({ coach_id: coachId, status: 'assigned' })
-    .eq('id', traineeId);
-  if (error) throw error;
 }
 
 // ── Programs ──────────────────────────────────────────────────────────────────
@@ -1016,10 +1017,15 @@ export async function getOutgoingCoachRequestForTrainee(traineeId: string): Prom
   return data as any;
 }
 
+// Accepting a request has to flip the trainee's coach_id even though the
+// accepting party (whichever side didn't initiate) doesn't own that row
+// under RLS yet — that's exactly what this call is establishing. Done via
+// accept_coach_request, a SECURITY DEFINER RPC that re-validates the request
+// row itself (coach_id/trainee_id, status='pending', caller is one of the
+// two parties) rather than trusting these client-supplied ids directly.
 export async function acceptCoachRequest(requestId: string, coachId: string, traineeId: string) {
-  const { error } = await supabase.from('coach_requests').update({ status: 'accepted' }).eq('id', requestId);
+  const { error } = await supabase.rpc('accept_coach_request', { p_request_id: requestId });
   if (error) throw error;
-  await assignTraineeToCoach(traineeId, coachId);
   // "Coach Connected" achievement — awarded here (the moment a connection is
   // actually made) rather than in evaluateAndAwardMedals, since a trainee
   // can't have completed any workout at all without a coach already
@@ -1158,6 +1164,48 @@ export async function getWorkoutSessionCount(traineeId: string): Promise<number>
     .eq('trainee_id', traineeId);
   if (error) return 0;
   return count ?? 0;
+}
+
+// Calendar days (YYYY-MM-DD) on which the trainee did anything that counts
+// toward the daily streak — a completed workout, or any nutrition tracking
+// (a meal marked as_planned/substituted/skipped, or a manual food log entry).
+async function getStreakActiveDays(traineeId: string): Promise<Set<string>> {
+  const [sessions, meals, foodLog] = await Promise.all([
+    supabase.from('workout_sessions').select('completed_at').eq('trainee_id', traineeId),
+    supabase.from('meal_completions').select('log_date').eq('trainee_id', traineeId),
+    supabase.from('food_log_entries').select('logged_at').eq('trainee_id', traineeId),
+  ]);
+  const days = new Set<string>();
+  (sessions.data ?? []).forEach((r: any) => days.add(new Date(r.completed_at).toISOString().split('T')[0]));
+  (meals.data ?? []).forEach((r: any) => days.add(r.log_date));
+  (foodLog.data ?? []).forEach((r: any) => days.add(r.logged_at));
+  return days;
+}
+
+// Consecutive active days ending today. A single active day is not itself
+// a "streak" — per feedback, this returns 0 until there are at least 2
+// consecutive active days, then the real count (2, 3, 4, ...). A gap
+// (today active but yesterday wasn't) restarts at 0, same as before.
+function computeStreakFromActiveDays(activeDays: Set<string>, today: Date = new Date()): number {
+  let count = 0;
+  const cursor = new Date(today);
+  while (activeDays.has(cursor.toISOString().split('T')[0])) {
+    count++;
+    cursor.setDate(cursor.getDate() - 1);
+  }
+  return count >= 2 ? count : 0;
+}
+
+// Recomputes the trainee's streak from their full activity history and
+// persists it — rather than incrementing a stored counter, which can't
+// self-correct if an update is ever missed. Call after any streak-eligible
+// event: workout completion (WorkoutScreen) or nutrition tracking
+// (FoodLogScreen's meal-status buttons).
+export async function recalculateStreak(traineeId: string): Promise<number> {
+  const activeDays = await getStreakActiveDays(traineeId);
+  const streak = computeStreakFromActiveDays(activeDays);
+  await updateProfile(traineeId, { streak });
+  return streak;
 }
 
 // Distinct calendar days (by completed_at) with at least one completed
