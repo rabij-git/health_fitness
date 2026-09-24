@@ -173,7 +173,7 @@ Up/down chevron controls exist on exercise rows in `CoachTrainees.tsx`'s assign-
 Previously entirely non-functional — hardcoded "Coach Taylor" profile card and 5 menu rows with no `onPress` at all. Now takes `coachId` + `navigation` props (wired in `CoachTabs.tsx`):
 - Profile card and "Profile" menu item load the real coach via `getProfile(coachId)` and open a modal showing actual name/email.
 - "Notifications" navigates to the Dashboard tab (where the real notification bell/reply flow lives).
-- "Privacy" / "Help & Support" / "About FitPro" open small honest info modals (app name/version from `app.json`, plain descriptions of actual app behavior) — deliberately not fabricated legal/policy text.
+- "Privacy" / "Help & Support" / "About Athera" open small honest info modals (app name/version from `app.json`, plain descriptions of actual app behavior) — deliberately not fabricated legal/policy text.
 
 ### Trainee Profile Screen — Coach Card
 Header renamed "Your Trainer" → "Your Coach"; removed the redundant "Your coach" caption that repeated directly under the coach's name once the card title already said it.

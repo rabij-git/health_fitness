@@ -602,52 +602,54 @@ export default function ProfileScreen({ onLogout, userId }: Props) {
         animationType="slide"
         onRequestClose={() => { setShowFindCoach(false); setCoachSearchQuery(''); setCoachSearchResults([]); }}
       >
-        <View style={styles.overlay}>
-          <View style={styles.sheet}>
-            <View style={styles.sheetHeader}>
-              <Text style={styles.sheetTitle}>Find a Coach</Text>
-              <TouchableOpacity onPress={() => { setShowFindCoach(false); setCoachSearchQuery(''); setCoachSearchResults([]); }}>
-                <Ionicons name="close" size={22} color={colors.textSecondary} />
-              </TouchableOpacity>
+        <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={{ flex: 1 }}>
+          <View style={styles.overlay}>
+            <View style={styles.sheet}>
+              <View style={styles.sheetHeader}>
+                <Text style={styles.sheetTitle}>Find a Coach</Text>
+                <TouchableOpacity onPress={() => { setShowFindCoach(false); setCoachSearchQuery(''); setCoachSearchResults([]); }}>
+                  <Ionicons name="close" size={22} color={colors.textSecondary} />
+                </TouchableOpacity>
+              </View>
+              <TextInput
+                style={styles.searchInput}
+                placeholder="Search by name or email..."
+                placeholderTextColor={colors.textSecondary}
+                value={coachSearchQuery}
+                onChangeText={handleSearchCoaches}
+                autoFocus
+              />
+              {searchingCoaches && <ActivityIndicator color={colors.primary} style={{ marginTop: 16 }} />}
+              {!searchingCoaches && coachSearchQuery.length >= 2 && coachSearchResults.length === 0 && (
+                <Text style={styles.noResults}>No coaches found</Text>
+              )}
+              <ScrollView>
+                {coachSearchResults.map(coach => (
+                  <View key={coach.id} style={styles.searchRow}>
+                    <View style={styles.coachAvatar}>
+                      <Text style={styles.coachAvatarText}>{coach.avatar}</Text>
+                    </View>
+                    <View style={{ flex: 1 }}>
+                      <Text style={styles.coachName}>{coach.name}</Text>
+                      <Text style={styles.coachSub}>{coach.email}</Text>
+                    </View>
+                    <TouchableOpacity
+                      style={styles.sendRequestBtn}
+                      onPress={() => handleSendCoachRequest(coach)}
+                      disabled={sendingRequestTo === coach.id}
+                    >
+                      {sendingRequestTo === coach.id ? (
+                        <ActivityIndicator size="small" color={colors.text} />
+                      ) : (
+                        <Ionicons name="person-add" size={16} color={colors.text} />
+                      )}
+                    </TouchableOpacity>
+                  </View>
+                ))}
+              </ScrollView>
             </View>
-            <TextInput
-              style={styles.searchInput}
-              placeholder="Search by name or email..."
-              placeholderTextColor={colors.textSecondary}
-              value={coachSearchQuery}
-              onChangeText={handleSearchCoaches}
-              autoFocus
-            />
-            {searchingCoaches && <ActivityIndicator color={colors.primary} style={{ marginTop: 16 }} />}
-            {!searchingCoaches && coachSearchQuery.length >= 2 && coachSearchResults.length === 0 && (
-              <Text style={styles.noResults}>No coaches found</Text>
-            )}
-            <ScrollView>
-              {coachSearchResults.map(coach => (
-                <View key={coach.id} style={styles.searchRow}>
-                  <View style={styles.coachAvatar}>
-                    <Text style={styles.coachAvatarText}>{coach.avatar}</Text>
-                  </View>
-                  <View style={{ flex: 1 }}>
-                    <Text style={styles.coachName}>{coach.name}</Text>
-                    <Text style={styles.coachSub}>{coach.email}</Text>
-                  </View>
-                  <TouchableOpacity
-                    style={styles.sendRequestBtn}
-                    onPress={() => handleSendCoachRequest(coach)}
-                    disabled={sendingRequestTo === coach.id}
-                  >
-                    {sendingRequestTo === coach.id ? (
-                      <ActivityIndicator size="small" color={colors.text} />
-                    ) : (
-                      <Ionicons name="person-add" size={16} color={colors.text} />
-                    )}
-                  </TouchableOpacity>
-                </View>
-              ))}
-            </ScrollView>
           </View>
-        </View>
+        </KeyboardAvoidingView>
       </Modal>
 
       {/* Settings — biometric profile used by the coach's calorie/macro calculator */}

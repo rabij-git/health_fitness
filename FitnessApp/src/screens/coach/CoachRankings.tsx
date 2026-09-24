@@ -7,6 +7,8 @@ import {
   TouchableOpacity,
   Modal,
   TextInput,
+  KeyboardAvoidingView,
+  Platform,
   ActivityIndicator,
   Alert,
 } from 'react-native';
@@ -226,34 +228,36 @@ export default function CoachRankings({ coachId }: Props) {
         animationType="slide"
         onRequestClose={() => setShowCreateGym(false)}
       >
-        <View style={styles.overlay}>
-          <View style={styles.sheet}>
-            <View style={styles.sheetHeader}>
-              <Text style={styles.sheetTitle}>Create a Gym</Text>
-              <TouchableOpacity onPress={() => setShowCreateGym(false)}>
-                <Ionicons name="close" size={22} color={colors.textSecondary} />
+        <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={{ flex: 1 }}>
+          <View style={styles.overlay}>
+            <View style={styles.sheet}>
+              <View style={styles.sheetHeader}>
+                <Text style={styles.sheetTitle}>Create a Gym</Text>
+                <TouchableOpacity onPress={() => setShowCreateGym(false)}>
+                  <Ionicons name="close" size={22} color={colors.textSecondary} />
+                </TouchableOpacity>
+              </View>
+              <TextInput
+                style={styles.input}
+                placeholder="Gym name..."
+                placeholderTextColor={colors.textSecondary}
+                value={gymName}
+                onChangeText={setGymName}
+                autoFocus
+              />
+              <TouchableOpacity
+                style={[styles.primaryBtn, (!gymName.trim() || creating) && styles.primaryBtnDisabled]}
+                onPress={handleCreateGym}
+                disabled={!gymName.trim() || creating}
+              >
+                {creating
+                  ? <ActivityIndicator color={colors.text} />
+                  : <Text style={styles.primaryBtnText}>Create Gym</Text>
+                }
               </TouchableOpacity>
             </View>
-            <TextInput
-              style={styles.input}
-              placeholder="Gym name..."
-              placeholderTextColor={colors.textSecondary}
-              value={gymName}
-              onChangeText={setGymName}
-              autoFocus
-            />
-            <TouchableOpacity
-              style={[styles.primaryBtn, (!gymName.trim() || creating) && styles.primaryBtnDisabled]}
-              onPress={handleCreateGym}
-              disabled={!gymName.trim() || creating}
-            >
-              {creating
-                ? <ActivityIndicator color={colors.text} />
-                : <Text style={styles.primaryBtnText}>Create Gym</Text>
-              }
-            </TouchableOpacity>
           </View>
-        </View>
+        </KeyboardAvoidingView>
       </Modal>
 
       {/* Add Member Modal */}
@@ -263,47 +267,49 @@ export default function CoachRankings({ coachId }: Props) {
         animationType="slide"
         onRequestClose={() => { setShowAddMember(false); setSearchQuery(''); setSearchResults([]); }}
       >
-        <View style={styles.overlay}>
-          <View style={styles.sheet}>
-            <View style={styles.sheetHeader}>
-              <Text style={styles.sheetTitle}>Add to {gym?.name}</Text>
-              <TouchableOpacity onPress={() => { setShowAddMember(false); setSearchQuery(''); setSearchResults([]); }}>
-                <Ionicons name="close" size={22} color={colors.textSecondary} />
-              </TouchableOpacity>
+        <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={{ flex: 1 }}>
+          <View style={styles.overlay}>
+            <View style={styles.sheet}>
+              <View style={styles.sheetHeader}>
+                <Text style={styles.sheetTitle}>Add to {gym?.name}</Text>
+                <TouchableOpacity onPress={() => { setShowAddMember(false); setSearchQuery(''); setSearchResults([]); }}>
+                  <Ionicons name="close" size={22} color={colors.textSecondary} />
+                </TouchableOpacity>
+              </View>
+              <TextInput
+                style={styles.input}
+                placeholder="Search trainee by name or email..."
+                placeholderTextColor={colors.textSecondary}
+                value={searchQuery}
+                onChangeText={handleSearch}
+                autoFocus
+              />
+              {searching && <ActivityIndicator color={colors.primary} style={{ marginTop: 12 }} />}
+              {!searching && searchQuery.length >= 2 && searchResults.length === 0 && (
+                <Text style={styles.noResults}>No users found</Text>
+              )}
+              <ScrollView>
+                {searchResults
+                  .filter(u => !gymMembers.find(m => m.id === u.id))
+                  .map((user) => (
+                    <View key={user.id} style={styles.searchRow}>
+                      <View style={styles.memberAvatar}>
+                        <Text style={styles.memberAvatarText}>{user.avatar}</Text>
+                      </View>
+                      <View style={{ flex: 1 }}>
+                        <Text style={styles.memberName}>{user.name}</Text>
+                        <Text style={styles.memberLevel}>Level {user.level}</Text>
+                      </View>
+                      <TouchableOpacity style={styles.addBtn} onPress={() => handleAddToGym(user)}>
+                        <Ionicons name="add" size={18} color={colors.text} />
+                      </TouchableOpacity>
+                    </View>
+                  ))
+                }
+              </ScrollView>
             </View>
-            <TextInput
-              style={styles.input}
-              placeholder="Search trainee by name or email..."
-              placeholderTextColor={colors.textSecondary}
-              value={searchQuery}
-              onChangeText={handleSearch}
-              autoFocus
-            />
-            {searching && <ActivityIndicator color={colors.primary} style={{ marginTop: 12 }} />}
-            {!searching && searchQuery.length >= 2 && searchResults.length === 0 && (
-              <Text style={styles.noResults}>No users found</Text>
-            )}
-            <ScrollView>
-              {searchResults
-                .filter(u => !gymMembers.find(m => m.id === u.id))
-                .map((user) => (
-                  <View key={user.id} style={styles.searchRow}>
-                    <View style={styles.memberAvatar}>
-                      <Text style={styles.memberAvatarText}>{user.avatar}</Text>
-                    </View>
-                    <View style={{ flex: 1 }}>
-                      <Text style={styles.memberName}>{user.name}</Text>
-                      <Text style={styles.memberLevel}>Level {user.level}</Text>
-                    </View>
-                    <TouchableOpacity style={styles.addBtn} onPress={() => handleAddToGym(user)}>
-                      <Ionicons name="add" size={18} color={colors.text} />
-                    </TouchableOpacity>
-                  </View>
-                ))
-              }
-            </ScrollView>
           </View>
-        </View>
+        </KeyboardAvoidingView>
       </Modal>
     </SafeAreaView>
   );

@@ -909,51 +909,53 @@ export default function CoachPrograms({ coachId }: Props) {
         animationType="slide"
         onRequestClose={closeNamePicker}
       >
-        <View style={styles.namePickerOverlay}>
-          <View style={styles.namePickerSheet}>
-            <View style={styles.modalHeader}>
-              <Text style={styles.modalTitle}>Select {namePickerCategory} Exercise</Text>
-              <TouchableOpacity style={styles.closeBtn} onPress={closeNamePicker}>
-                <Ionicons name="close" size={22} color={colors.textSecondary} />
-              </TouchableOpacity>
+        <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={{ flex: 1 }}>
+          <View style={styles.namePickerOverlay}>
+            <View style={styles.namePickerSheet}>
+              <View style={styles.modalHeader}>
+                <Text style={styles.modalTitle}>Select {namePickerCategory} Exercise</Text>
+                <TouchableOpacity style={styles.closeBtn} onPress={closeNamePicker}>
+                  <Ionicons name="close" size={22} color={colors.textSecondary} />
+                </TouchableOpacity>
+              </View>
+              <TextInput
+                style={styles.textInput}
+                placeholder="Search or type a new exercise name..."
+                placeholderTextColor={colors.textSecondary}
+                value={namePickerQuery}
+                onChangeText={setNamePickerQuery}
+                autoFocus
+              />
+              <ScrollView keyboardShouldPersistTaps="handled" style={{ maxHeight: 340 }}>
+                {filteredLibraryNames.map(name => (
+                  <TouchableOpacity key={name} style={styles.namePickerRow} onPress={() => handlePickName(name)}>
+                    <Ionicons name="barbell-outline" size={16} color={colors.textSecondary} />
+                    <Text style={styles.namePickerRowText}>{name}</Text>
+                  </TouchableOpacity>
+                ))}
+                {namePickerQuery.trim().length > 0 && !namePickerExactMatch && (
+                  <TouchableOpacity
+                    style={[styles.namePickerRow, styles.namePickerAddRow]}
+                    onPress={handleAddNewName}
+                    disabled={savingNewName}
+                  >
+                    {savingNewName ? (
+                      <ActivityIndicator size="small" color={colors.xpBar} />
+                    ) : (
+                      <Ionicons name="add-circle-outline" size={16} color={colors.xpBar} />
+                    )}
+                    <Text style={styles.namePickerAddText}>Add "{namePickerQuery.trim()}" as a new exercise</Text>
+                  </TouchableOpacity>
+                )}
+                {filteredLibraryNames.length === 0 && namePickerQuery.trim().length === 0 && (
+                  <Text style={{ color: colors.textSecondary, textAlign: 'center', paddingVertical: 20 }}>
+                    No {namePickerCategory} exercises in the library yet — type a name above to add one.
+                  </Text>
+                )}
+              </ScrollView>
             </View>
-            <TextInput
-              style={styles.textInput}
-              placeholder="Search or type a new exercise name..."
-              placeholderTextColor={colors.textSecondary}
-              value={namePickerQuery}
-              onChangeText={setNamePickerQuery}
-              autoFocus
-            />
-            <ScrollView keyboardShouldPersistTaps="handled" style={{ maxHeight: 340 }}>
-              {filteredLibraryNames.map(name => (
-                <TouchableOpacity key={name} style={styles.namePickerRow} onPress={() => handlePickName(name)}>
-                  <Ionicons name="barbell-outline" size={16} color={colors.textSecondary} />
-                  <Text style={styles.namePickerRowText}>{name}</Text>
-                </TouchableOpacity>
-              ))}
-              {namePickerQuery.trim().length > 0 && !namePickerExactMatch && (
-                <TouchableOpacity
-                  style={[styles.namePickerRow, styles.namePickerAddRow]}
-                  onPress={handleAddNewName}
-                  disabled={savingNewName}
-                >
-                  {savingNewName ? (
-                    <ActivityIndicator size="small" color={colors.xpBar} />
-                  ) : (
-                    <Ionicons name="add-circle-outline" size={16} color={colors.xpBar} />
-                  )}
-                  <Text style={styles.namePickerAddText}>Add "{namePickerQuery.trim()}" as a new exercise</Text>
-                </TouchableOpacity>
-              )}
-              {filteredLibraryNames.length === 0 && namePickerQuery.trim().length === 0 && (
-                <Text style={{ color: colors.textSecondary, textAlign: 'center', paddingVertical: 20 }}>
-                  No {namePickerCategory} exercises in the library yet — type a name above to add one.
-                </Text>
-              )}
-            </ScrollView>
           </View>
-        </View>
+        </KeyboardAvoidingView>
       </Modal>
     </SafeAreaView>
   );

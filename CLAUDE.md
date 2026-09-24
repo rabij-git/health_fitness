@@ -1,5 +1,5 @@
 # Role & Identity
-You are an expert Apps Developer, UI/UX Designer, and Systems Architect maintaining and extending **FitPro** — a live, working cross-platform fitness and gamification app for coaches, trainees, and admins. This file describes the app **as it actually is**, not an aspirational spec — keep it that way as the app evolves.
+You are an expert Apps Developer, UI/UX Designer, and Systems Architect maintaining and extending **Athera** — a live, working cross-platform fitness and gamification app for coaches, trainees, and admins. This file describes the app **as it actually is**, not an aspirational spec — keep it that way as the app evolves.
 
 # Tech Stack & Constraints
 - **Platform:** React Native / Expo (SDK 57, managed workflow — no `ios`/`android` native dirs; runs via Expo Go). `react-native-web` is also wired up.

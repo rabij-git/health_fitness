@@ -20,7 +20,7 @@ const INFO_CONTENT: Record<InfoKey, { title: string; body: string }> = {
     body: 'Need help? Message a trainee directly from their profile in the Trainees tab, or reach out to your gym administrator for account issues.',
   },
   about: {
-    title: 'About FitPro',
+    title: 'About Athera',
     body: `${appJson.expo.name} v${appJson.expo.version}\n\nA training and gamification app connecting coaches and trainees.`,
   },
 };
@@ -45,7 +45,7 @@ export default function CoachSettings({ onLogout, coachId, navigation }: Props) 
     { label: 'Notifications', icon: 'notifications', onPress: () => navigation?.navigate('Dashboard') },
     { label: 'Privacy', icon: 'lock-closed', onPress: () => setInfoModal('privacy') },
     { label: 'Help & Support', icon: 'help-circle', onPress: () => setInfoModal('help') },
-    { label: 'About FitPro', icon: 'information-circle', onPress: () => setInfoModal('about') },
+    { label: 'About Athera', icon: 'information-circle', onPress: () => setInfoModal('about') },
   ];
 
   return (

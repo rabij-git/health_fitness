@@ -7,6 +7,8 @@ import {
   TouchableOpacity,
   Modal,
   TextInput,
+  KeyboardAvoidingView,
+  Platform,
   ActivityIndicator,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -303,58 +305,60 @@ export default function SocialScreen({ userId }: Props) {
         animationType="slide"
         onRequestClose={() => { setShowSearch(false); setSearchQuery(''); setSearchResults([]); }}
       >
-        <View style={styles.overlay}>
-          <View style={styles.sheet}>
-            <View style={styles.sheetHeader}>
-              <Text style={styles.sheetTitle}>Find Friends</Text>
-              <TouchableOpacity onPress={() => { setShowSearch(false); setSearchQuery(''); setSearchResults([]); }}>
-                <Ionicons name="close" size={22} color={colors.textSecondary} />
-              </TouchableOpacity>
+        <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={{ flex: 1 }}>
+          <View style={styles.overlay}>
+            <View style={styles.sheet}>
+              <View style={styles.sheetHeader}>
+                <Text style={styles.sheetTitle}>Find Friends</Text>
+                <TouchableOpacity onPress={() => { setShowSearch(false); setSearchQuery(''); setSearchResults([]); }}>
+                  <Ionicons name="close" size={22} color={colors.textSecondary} />
+                </TouchableOpacity>
+              </View>
+              <TextInput
+                style={styles.searchInput}
+                placeholder="Search by name or email..."
+                placeholderTextColor={colors.textSecondary}
+                value={searchQuery}
+                onChangeText={handleSearch}
+                autoFocus
+              />
+              {searching && <ActivityIndicator color={colors.primary} style={{ marginTop: 16 }} />}
+              {!searching && searchQuery.length >= 2 && searchResults.length === 0 && (
+                <Text style={styles.noResults}>No users found</Text>
+              )}
+              <ScrollView>
+                {searchResults.map((user: any) => {
+                  const sent = requestSent[user.id] || user.friendStatus === 'pending';
+                  const accepted = user.friendStatus === 'accepted';
+                  return (
+                    <View key={user.id} style={styles.searchRow}>
+                      <View style={styles.leaderAvatar}>
+                        <Text style={styles.leaderAvatarText}>{user.avatar}</Text>
+                      </View>
+                      <View style={{ flex: 1 }}>
+                        <Text style={styles.leaderName}>{user.name}</Text>
+                        <Text style={styles.leaderLevel}>Level {user.level}</Text>
+                      </View>
+                      {accepted ? (
+                        <View style={styles.friendBadge}>
+                          <Text style={styles.friendBadgeText}>Friends</Text>
+                        </View>
+                      ) : sent ? (
+                        <View style={styles.pendingBadge}>
+                          <Text style={styles.pendingBadgeText}>Sent</Text>
+                        </View>
+                      ) : (
+                        <TouchableOpacity style={styles.addBtn} onPress={() => handleAddFriend(user.id)}>
+                          <Ionicons name="person-add" size={16} color={colors.text} />
+                        </TouchableOpacity>
+                      )}
+                    </View>
+                  );
+                })}
+              </ScrollView>
             </View>
-            <TextInput
-              style={styles.searchInput}
-              placeholder="Search by name or email..."
-              placeholderTextColor={colors.textSecondary}
-              value={searchQuery}
-              onChangeText={handleSearch}
-              autoFocus
-            />
-            {searching && <ActivityIndicator color={colors.primary} style={{ marginTop: 16 }} />}
-            {!searching && searchQuery.length >= 2 && searchResults.length === 0 && (
-              <Text style={styles.noResults}>No users found</Text>
-            )}
-            <ScrollView>
-              {searchResults.map((user: any) => {
-                const sent = requestSent[user.id] || user.friendStatus === 'pending';
-                const accepted = user.friendStatus === 'accepted';
-                return (
-                  <View key={user.id} style={styles.searchRow}>
-                    <View style={styles.leaderAvatar}>
-                      <Text style={styles.leaderAvatarText}>{user.avatar}</Text>
-                    </View>
-                    <View style={{ flex: 1 }}>
-                      <Text style={styles.leaderName}>{user.name}</Text>
-                      <Text style={styles.leaderLevel}>Level {user.level}</Text>
-                    </View>
-                    {accepted ? (
-                      <View style={styles.friendBadge}>
-                        <Text style={styles.friendBadgeText}>Friends</Text>
-                      </View>
-                    ) : sent ? (
-                      <View style={styles.pendingBadge}>
-                        <Text style={styles.pendingBadgeText}>Sent</Text>
-                      </View>
-                    ) : (
-                      <TouchableOpacity style={styles.addBtn} onPress={() => handleAddFriend(user.id)}>
-                        <Ionicons name="person-add" size={16} color={colors.text} />
-                      </TouchableOpacity>
-                    )}
-                  </View>
-                );
-              })}
-            </ScrollView>
           </View>
-        </View>
+        </KeyboardAvoidingView>
       </Modal>
     </SafeAreaView>
   );

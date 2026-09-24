@@ -965,22 +965,27 @@ export default function CoachTrainees({ coachId }: Props) {
         animationType="slide"
         onRequestClose={() => { setShowFindTrainee(false); setTraineeSearchQuery(''); setTraineeSearchResults([]); }}
       >
-        <View style={styles.overlay}>
-          <View style={styles.sheet}>
-            <View style={styles.sheetHeader}>
-              <Text style={styles.sheetTitle}>Find Trainees</Text>
-              <TouchableOpacity onPress={() => { setShowFindTrainee(false); setTraineeSearchQuery(''); setTraineeSearchResults([]); }}>
-                <Ionicons name="close" size={22} color={colors.textSecondary} />
-              </TouchableOpacity>
-            </View>
-            <TextInput
-              style={styles.searchInput}
-              placeholder="Search by name or email..."
-              placeholderTextColor={colors.textSecondary}
-              value={traineeSearchQuery}
-              onChangeText={handleSearchTrainees}
-              autoFocus
-            />
+        {/* No KeyboardAvoidingView here at all previously — on iOS the
+            keyboard just slides up over this bottom-anchored sheet with
+            nothing pushing it up, completely burying the (autoFocus'd)
+            search input behind it the instant the modal opens. */}
+        <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={{ flex: 1 }}>
+          <View style={styles.overlay}>
+            <View style={styles.sheet}>
+              <View style={styles.sheetHeader}>
+                <Text style={styles.sheetTitle}>Find Trainees</Text>
+                <TouchableOpacity onPress={() => { setShowFindTrainee(false); setTraineeSearchQuery(''); setTraineeSearchResults([]); }}>
+                  <Ionicons name="close" size={22} color={colors.textSecondary} />
+                </TouchableOpacity>
+              </View>
+              <TextInput
+                style={styles.searchInput}
+                placeholder="Search by name or email..."
+                placeholderTextColor={colors.textSecondary}
+                value={traineeSearchQuery}
+                onChangeText={handleSearchTrainees}
+                autoFocus
+              />
             {searchingTrainees && <ActivityIndicator color={colors.primary} style={{ marginTop: 16 }} />}
             {!searchingTrainees && traineeSearchQuery.length >= 2 && traineeSearchResults.length === 0 && (
               <Text style={styles.noResults}>No unassigned trainees found</Text>
@@ -1015,6 +1020,7 @@ export default function CoachTrainees({ coachId }: Props) {
             </ScrollView>
           </View>
         </View>
+        </KeyboardAvoidingView>
       </Modal>
 
       {/* ── Trainee Detail Modal ── */}
@@ -1137,6 +1143,12 @@ export default function CoachTrainees({ coachId }: Props) {
                 </View>
               </KeyboardAvoidingView>
             ) : (
+              // Wrapped for the Nutrition tab's inline plan editor (Plan
+              // Title/Calories/Protein/Carbs/Fat/Water/Notes) — without
+              // this, the keyboard could cover the lower fields (Notes,
+              // Water) while editing, same class of bug as the Chat tab
+              // right above needed fixing for.
+              <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={{ flex: 1 }}>
               <ScrollView showsVerticalScrollIndicator={false} style={{ flex: 1 }}>
                 {/* Program tab */}
                 {detailTab === 'program' && (
@@ -1831,6 +1843,7 @@ export default function CoachTrainees({ coachId }: Props) {
                   </View>
                 )}
               </ScrollView>
+              </KeyboardAvoidingView>
             )}
           </View>
         </View>

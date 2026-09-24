@@ -1,6 +1,6 @@
 {
   "expo": {
-    "name": "FitPro",
+    "name": "Athera",
     "slug": "FitnessApp",
     "version": "1.0.0",
     "orientation": "portrait",
@@ -9,7 +9,7 @@
     "ios": {
       "supportsTablet": true,
       "infoPlist": {
-        "NSMotionUsageDescription": "FitPro reads your step count to show your daily activity."
+        "NSMotionUsageDescription": "Athera reads your step count to show your daily activity."
       }
     },
     "android": {

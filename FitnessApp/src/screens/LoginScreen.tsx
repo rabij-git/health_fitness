@@ -111,7 +111,7 @@ export default function LoginScreen({ onLogin }: Props) {
             <View style={styles.logoContainer}>
               <Ionicons name="barbell" size={40} color={colors.primary} />
             </View>
-            <Text style={styles.appName}>FitPro</Text>
+            <Text style={styles.appName}>Athera</Text>
             <Text style={styles.tagline}>Elite Performance Platform</Text>
           </View>
 

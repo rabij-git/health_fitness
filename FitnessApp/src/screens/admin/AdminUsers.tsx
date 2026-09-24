@@ -71,7 +71,7 @@ export default function AdminUsers({ adminId, onViewAsCoach }: Props) {
     try {
       const invite = await createCoachInvite(adminId);
       setInvites(prev => [invite, ...prev]);
-      Share.share({ message: `You're invited to join FitPro as a coach. Use this invite code when you sign up: ${invite.code}` });
+      Share.share({ message: `You're invited to join Athera as a coach. Use this invite code when you sign up: ${invite.code}` });
     } catch (e) {
       console.warn('createCoachInvite error', e);
     } finally {
@@ -247,7 +247,7 @@ export default function AdminUsers({ adminId, onViewAsCoach }: Props) {
                         <>
                           <TouchableOpacity
                             style={styles.inviteIconBtn}
-                            onPress={() => Share.share({ message: `You're invited to join FitPro as a coach. Use this invite code when you sign up: ${inv.code}` })}
+                            onPress={() => Share.share({ message: `You're invited to join Athera as a coach. Use this invite code when you sign up: ${inv.code}` })}
                           >
                             <Ionicons name="share-outline" size={18} color={colors.xpBar} />
                           </TouchableOpacity>
