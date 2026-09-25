@@ -1,4 +1,4 @@
-import React, { useState, useCallback, useMemo } from 'react';
+import React, { useState, useCallback, useMemo, useRef } from 'react';
 import {
   View,
   Text,
@@ -16,7 +16,8 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { useFocusEffect } from '@react-navigation/native';
 import { Ionicons } from '@expo/vector-icons';
 import { colors } from '../../theme/colors';
-import { getXpForNextLevel, getCurrentLevelXp, getLevelTitle } from '../../data/mockData';
+import { getXpForNextLevel, getCurrentLevelXp, getLevelTitle, mockMedals } from '../../data/mockData';
+import { notifyMedalsEarned } from '../../lib/restNotifications';
 import {
   getProfile,
   getWeightLogs,
@@ -240,6 +241,7 @@ export default function ProfileScreen({ onLogout, userId }: Props) {
   const [coachSearchQuery, setCoachSearchQuery] = useState('');
   const [coachSearchResults, setCoachSearchResults] = useState<DBUser[]>([]);
   const [searchingCoaches, setSearchingCoaches] = useState(false);
+  const findCoachInputRef = useRef<TextInput>(null);
   const [sendingRequestTo, setSendingRequestTo] = useState<string | null>(null);
 
   const [infoModal, setInfoModal] = useState<InfoKey | null>(null);
@@ -334,7 +336,11 @@ export default function ProfileScreen({ onLogout, userId }: Props) {
     if (!incomingRequest) return;
     setRespondingRequest(true);
     try {
-      await acceptCoachRequest(incomingRequest.id, incomingRequest.coach_id, userId);
+      const earnedNewMedal = await acceptCoachRequest(incomingRequest.id, incomingRequest.coach_id, userId);
+      if (earnedNewMedal) {
+        const name = mockMedals.find(m => m.id === '10')?.name;
+        if (name) notifyMedalsEarned([name]).catch(() => {});
+      }
       await loadAll();
     } catch (e) {
       console.warn('acceptCoachRequest error', e);
@@ -601,6 +607,7 @@ export default function ProfileScreen({ onLogout, userId }: Props) {
         transparent
         animationType="slide"
         onRequestClose={() => { setShowFindCoach(false); setCoachSearchQuery(''); setCoachSearchResults([]); }}
+        onShow={() => findCoachInputRef.current?.focus()}
       >
         <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={{ flex: 1 }}>
           <View style={styles.overlay}>
@@ -612,12 +619,12 @@ export default function ProfileScreen({ onLogout, userId }: Props) {
                 </TouchableOpacity>
               </View>
               <TextInput
+                ref={findCoachInputRef}
                 style={styles.searchInput}
                 placeholder="Search by name or email..."
                 placeholderTextColor={colors.textSecondary}
                 value={coachSearchQuery}
                 onChangeText={handleSearchCoaches}
-                autoFocus
               />
               {searchingCoaches && <ActivityIndicator color={colors.primary} style={{ marginTop: 16 }} />}
               {!searchingCoaches && coachSearchQuery.length >= 2 && coachSearchResults.length === 0 && (

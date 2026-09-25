@@ -28,7 +28,7 @@ import {
   logExerciseWeight,
 } from '../../lib/db';
 import { DBWorkout } from '../../lib/supabase';
-import { scheduleRestEndNotification, cancelRestEndNotification } from '../../lib/restNotifications';
+import { scheduleRestEndNotification, cancelRestEndNotification, notifyMedalsEarned } from '../../lib/restNotifications';
 
 const DAY_ABBR = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 
@@ -301,10 +301,6 @@ export default function WorkoutScreen({ userId }: Props) {
     return () => { cancelled = true; };
   }, [selectedWorkoutId]);
 
-  const toggleExercise = useCallback((id: string) => {
-    setExercises(prev => prev.map(ex => ex.id === id ? { ...ex, completed: !ex.completed } : ex));
-  }, []);
-
   const updateSet = useCallback((exId: string, setIndex: number, field: 'reps' | 'weight' | 'effort', value: string | number | null) => {
     setExercises(prev => prev.map(ex => {
       if (ex.id !== exId) return ex;
@@ -439,6 +435,13 @@ export default function WorkoutScreen({ userId }: Props) {
       newStreak = await recalculateStreak(userId);
       newlyEarned = await evaluateAndAwardMedals(userId, newStreak);
       setNewlyEarnedMedalIds(newlyEarned);
+      // A real notification, not just the completion modal below — that
+      // modal only ever shows the first medal if several were earned at
+      // once, and nothing at all if the trainee doesn't linger on it.
+      if (newlyEarned.length > 0) {
+        const names = newlyEarned.map(id => mockMedals.find(m => m.id === id)?.name).filter((n): n is string => !!n);
+        notifyMedalsEarned(names).catch(() => {});
+      }
     } catch (e) {
       console.warn('Workout completion: failed to evaluate medals', e);
     }
@@ -772,13 +775,13 @@ export default function WorkoutScreen({ userId }: Props) {
                   <Ionicons name="lock-closed" size={14} color={colors.textSecondary} />
                 </View>
               ) : (
-                <TouchableOpacity
-                  style={[styles.checkbox, exercise.completed && styles.checkboxDone]}
-                  onPress={() => toggleExercise(exercise.id)}
-                  disabled={isPastLocked}
-                >
+                // Status indicator only — not tappable. An exercise can only be
+                // marked done by actually logging effort on every set (see the
+                // auto-tick effect above); a trainee can no longer tick the
+                // whole exercise off early to skip filling in its sets.
+                <View style={[styles.checkbox, exercise.completed && styles.checkboxDone]}>
                   {exercise.completed && <Ionicons name="checkmark" size={18} color={colors.text} />}
-                </TouchableOpacity>
+                </View>
               )}
             </View>
 

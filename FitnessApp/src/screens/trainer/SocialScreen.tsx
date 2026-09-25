@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo, useCallback } from 'react';
+import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import {
   View,
   Text,
@@ -100,6 +100,7 @@ export default function SocialScreen({ userId }: Props) {
   const [showSearch, setShowSearch] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [searchResults, setSearchResults] = useState<DBUser[]>([]);
+  const findFriendsInputRef = useRef<TextInput>(null);
   const [searching, setSearching] = useState(false);
   const [requestSent, setRequestSent] = useState<Record<string, boolean>>({});
 
@@ -304,6 +305,7 @@ export default function SocialScreen({ userId }: Props) {
         transparent
         animationType="slide"
         onRequestClose={() => { setShowSearch(false); setSearchQuery(''); setSearchResults([]); }}
+        onShow={() => findFriendsInputRef.current?.focus()}
       >
         <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={{ flex: 1 }}>
           <View style={styles.overlay}>
@@ -315,12 +317,12 @@ export default function SocialScreen({ userId }: Props) {
                 </TouchableOpacity>
               </View>
               <TextInput
+                ref={findFriendsInputRef}
                 style={styles.searchInput}
                 placeholder="Search by name or email..."
                 placeholderTextColor={colors.textSecondary}
                 value={searchQuery}
                 onChangeText={handleSearch}
-                autoFocus
               />
               {searching && <ActivityIndicator color={colors.primary} style={{ marginTop: 16 }} />}
               {!searching && searchQuery.length >= 2 && searchResults.length === 0 && (

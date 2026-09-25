@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import {
   View,
   Text,
@@ -38,11 +38,13 @@ export default function CoachRankings({ coachId }: Props) {
   const [showCreateGym, setShowCreateGym] = useState(false);
   const [gymName, setGymName] = useState('');
   const [creating, setCreating] = useState(false);
+  const gymNameInputRef = useRef<TextInput>(null);
 
   const [showAddMember, setShowAddMember] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [searchResults, setSearchResults] = useState<DBUser[]>([]);
   const [searching, setSearching] = useState(false);
+  const addMemberInputRef = useRef<TextInput>(null);
 
   useEffect(() => {
     loadData();
@@ -227,6 +229,11 @@ export default function CoachRankings({ coachId }: Props) {
         transparent
         animationType="slide"
         onRequestClose={() => setShowCreateGym(false)}
+        // autoFocus'ing while the "slide" animation is still running fires
+        // the keyboard before KeyboardAvoidingView has stable geometry to
+        // compute 'padding' against — focus on onShow instead, once the
+        // transition has actually finished. See CLAUDE.md.
+        onShow={() => gymNameInputRef.current?.focus()}
       >
         <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={{ flex: 1 }}>
           <View style={styles.overlay}>
@@ -238,12 +245,12 @@ export default function CoachRankings({ coachId }: Props) {
                 </TouchableOpacity>
               </View>
               <TextInput
+                ref={gymNameInputRef}
                 style={styles.input}
                 placeholder="Gym name..."
                 placeholderTextColor={colors.textSecondary}
                 value={gymName}
                 onChangeText={setGymName}
-                autoFocus
               />
               <TouchableOpacity
                 style={[styles.primaryBtn, (!gymName.trim() || creating) && styles.primaryBtnDisabled]}
@@ -266,6 +273,7 @@ export default function CoachRankings({ coachId }: Props) {
         transparent
         animationType="slide"
         onRequestClose={() => { setShowAddMember(false); setSearchQuery(''); setSearchResults([]); }}
+        onShow={() => addMemberInputRef.current?.focus()}
       >
         <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={{ flex: 1 }}>
           <View style={styles.overlay}>
@@ -277,12 +285,12 @@ export default function CoachRankings({ coachId }: Props) {
                 </TouchableOpacity>
               </View>
               <TextInput
+                ref={addMemberInputRef}
                 style={styles.input}
                 placeholder="Search trainee by name or email..."
                 placeholderTextColor={colors.textSecondary}
                 value={searchQuery}
                 onChangeText={handleSearch}
-                autoFocus
               />
               {searching && <ActivityIndicator color={colors.primary} style={{ marginTop: 12 }} />}
               {!searching && searchQuery.length >= 2 && searchResults.length === 0 && (

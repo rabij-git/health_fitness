@@ -305,10 +305,12 @@ export default function CoachDashboard({ onLogout, coachId, navigation }: Props)
               </TouchableOpacity>
             </View>
 
+            {/* onLayout on this wrapping View, not on KeyboardAvoidingView
+                itself — see the matching note in TrainerDashboard.tsx. */}
+            <View style={{ flex: 1 }} onLayout={e => setChatAreaHeight(e.nativeEvent.layout.height)}>
             <KeyboardAvoidingView
               behavior={Platform.OS === 'ios' ? 'padding' : undefined}
               style={{ flex: 1 }}
-              onLayout={e => setChatAreaHeight(e.nativeEvent.layout.height)}
             >
               <ScrollView
                 ref={chatScrollRef}
@@ -348,6 +350,7 @@ export default function CoachDashboard({ onLogout, coachId, navigation }: Props)
                 </TouchableOpacity>
               </View>
             </KeyboardAvoidingView>
+            </View>
           </View>
         </View>
       </Modal>

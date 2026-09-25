@@ -49,20 +49,30 @@ function getNotifications(): typeof NotificationsType | null {
   return notificationsModule;
 }
 
+// This module owns the app's single global notification handler — only one
+// can be registered at a time (a second call elsewhere would silently
+// replace this one), so achievement notifications (below) are handled here
+// too rather than in a separate file with its own handler.
+//
 // While the app is genuinely foregrounded, WorkoutScreen's own in-app rest
-// banner + in-app tick sound already cover this (see WorkoutScreen.tsx) —
-// suppress the system notification's banner/sound there to avoid a
-// redundant double-alert. Backgrounded is the whole point of this feature,
-// so it shows and plays normally there. No-op on Expo Go Android — see above.
+// banner + in-app tick sound already cover a REST notification — suppress
+// its system banner/sound there to avoid a redundant double-alert.
+// Backgrounded is the whole point of that feature, so it shows and plays
+// normally there. ACHIEVEMENT notifications have no equivalent persistent
+// in-app banner (just a one-time completion modal), so they always show,
+// foregrounded or not. Content is tagged with `data.type` so this one
+// shared handler can tell the two apart. No-op on Expo Go Android — see above.
 const NotificationsForHandler = getNotifications();
 if (NotificationsForHandler) {
   NotificationsForHandler.setNotificationHandler({
-    handleNotification: async () => {
+    handleNotification: async notification => {
       const foregrounded = AppState.currentState === 'active';
+      const isRest = notification.request.content.data?.type === 'rest';
+      const suppress = foregrounded && isRest;
       return {
-        shouldShowBanner: !foregrounded,
-        shouldShowList: !foregrounded,
-        shouldPlaySound: !foregrounded,
+        shouldShowBanner: !suppress,
+        shouldShowList: !suppress,
+        shouldPlaySound: !suppress,
         shouldSetBadge: false,
       };
     },
@@ -112,6 +122,7 @@ export async function scheduleRestEndNotification(exerciseName: string, secondsF
         body: `Time for your next set — ${exerciseName}`,
         // Android's sound lives on the channel (set above), not here.
         sound: Platform.OS === 'ios' ? TICK_SOUND_FILE : undefined,
+        data: { type: 'rest' },
       },
       trigger: {
         type: Notifications.SchedulableTriggerInputTypes.TIME_INTERVAL,
@@ -122,6 +133,50 @@ export async function scheduleRestEndNotification(exerciseName: string, secondsF
   } catch (e) {
     console.warn('scheduleRestEndNotification failed', e);
     return null;
+  }
+}
+
+const ACHIEVEMENT_CHANNEL_ID = 'achievements';
+let achievementChannelReady = false;
+
+async function ensureAchievementChannel(Notifications: typeof NotificationsType) {
+  if (Platform.OS !== 'android' || achievementChannelReady) return;
+  await Notifications.setNotificationChannelAsync(ACHIEVEMENT_CHANNEL_ID, {
+    name: 'Achievements',
+    importance: Notifications.AndroidImportance.DEFAULT,
+    vibrationPattern: [0, 150, 100, 150],
+  });
+  achievementChannelReady = true;
+}
+
+// Fires immediately (trigger: null, not scheduled) when one or more medals
+// are newly earned — previously the only feedback was the one-time
+// "Workout Complete" modal, which only shows the first medal if several
+// were earned at once and is easy to miss if the trainee doesn't linger on
+// it. No-op if notifications aren't available (Expo Go on Android) or
+// permission was denied — the in-app modal still covers that case.
+export async function notifyMedalsEarned(medalNames: string[]): Promise<void> {
+  if (medalNames.length === 0) return;
+  const Notifications = getNotifications();
+  if (!Notifications) return;
+  const granted = await ensurePermission(Notifications);
+  if (!granted) return;
+  await ensureAchievementChannel(Notifications);
+  const title = medalNames.length === 1 ? '🏅 Achievement Unlocked!' : `🏅 ${medalNames.length} Achievements Unlocked!`;
+  try {
+    await Notifications.scheduleNotificationAsync({
+      content: {
+        title,
+        body: medalNames.join(', '),
+        data: { type: 'achievement' },
+      },
+      // ChannelAwareTriggerInput ({ channelId }) still delivers immediately
+      // (per its own doc comment) — it just also pins the Android channel,
+      // which a bare `null` trigger can't do.
+      trigger: Platform.OS === 'android' ? { channelId: ACHIEVEMENT_CHANNEL_ID } : null,
+    });
+  } catch (e) {
+    console.warn('notifyMedalsEarned failed', e);
   }
 }
 

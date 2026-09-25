@@ -1023,7 +1023,11 @@ export async function getOutgoingCoachRequestForTrainee(traineeId: string): Prom
 // accept_coach_request, a SECURITY DEFINER RPC that re-validates the request
 // row itself (coach_id/trainee_id, status='pending', caller is one of the
 // two parties) rather than trusting these client-supplied ids directly.
-export async function acceptCoachRequest(requestId: string, coachId: string, traineeId: string) {
+// Returns whether the "Coach Connected" medal was newly awarded (as opposed
+// to already held) — callers running on the trainee's own device (as
+// opposed to the coach's, which can also call this) use it to fire a local
+// achievement notification; see ProfileScreen.tsx.
+export async function acceptCoachRequest(requestId: string, coachId: string, traineeId: string): Promise<boolean> {
   const { error } = await supabase.rpc('accept_coach_request', { p_request_id: requestId });
   if (error) throw error;
   // "Coach Connected" achievement — awarded here (the moment a connection is
@@ -1032,9 +1036,10 @@ export async function acceptCoachRequest(requestId: string, coachId: string, tra
   // assigned, so checking it at workout-completion time would always
   // co-fire with "First Step" and never mean anything on its own.
   try {
-    await awardMedalIfNew(traineeId, '10');
+    return await awardMedalIfNew(traineeId, '10');
   } catch (e) {
     console.warn('acceptCoachRequest: failed to award Coach Connected medal', e);
+    return false;
   }
 }
 

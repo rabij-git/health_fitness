@@ -173,6 +173,7 @@ export default function CoachPrograms({ coachId }: Props) {
   const [namePickerQuery, setNamePickerQuery] = useState('');
   const [savingNewName, setSavingNewName] = useState(false);
   const namePickerOnSelectRef = useRef<((name: string) => void) | null>(null);
+  const namePickerInputRef = useRef<TextInput>(null);
   const [namePickerCategory, setNamePickerCategory] = useState('Push');
 
   const uniqueLibraryNames = useMemo(
@@ -908,6 +909,7 @@ export default function CoachPrograms({ coachId }: Props) {
         transparent
         animationType="slide"
         onRequestClose={closeNamePicker}
+        onShow={() => namePickerInputRef.current?.focus()}
       >
         <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={{ flex: 1 }}>
           <View style={styles.namePickerOverlay}>
@@ -919,12 +921,12 @@ export default function CoachPrograms({ coachId }: Props) {
                 </TouchableOpacity>
               </View>
               <TextInput
+                ref={namePickerInputRef}
                 style={styles.textInput}
                 placeholder="Search or type a new exercise name..."
                 placeholderTextColor={colors.textSecondary}
                 value={namePickerQuery}
                 onChangeText={setNamePickerQuery}
-                autoFocus
               />
               <ScrollView keyboardShouldPersistTaps="handled" style={{ maxHeight: 340 }}>
                 {filteredLibraryNames.map(name => (

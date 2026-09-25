@@ -547,10 +547,18 @@ export default function TrainerDashboard({ onLogout, userId, navigation }: Props
               </TouchableOpacity>
             </View>
 
+            {/* onLayout lives on this wrapping View, not on
+                KeyboardAvoidingView itself — KAV needs its OWN internal
+                onLayout to track its screen position (that's how 'padding'
+                behavior, used on iOS, computes the right offset); passing
+                a custom onLayout prop straight to it silently replaces
+                that internal handler and breaks 'padding' behavior
+                entirely. Harmless on Android (behavior is undefined there,
+                a no-op), but broke iOS for all three chat screens. */}
+            <View style={{ flex: 1 }} onLayout={e => setChatAreaHeight(e.nativeEvent.layout.height)}>
             <KeyboardAvoidingView
               behavior={Platform.OS === 'ios' ? 'padding' : undefined}
               style={{ flex: 1 }}
-              onLayout={e => setChatAreaHeight(e.nativeEvent.layout.height)}
             >
               <ScrollView
                 ref={chatScrollRef}
@@ -590,6 +598,7 @@ export default function TrainerDashboard({ onLogout, userId, navigation }: Props
                 </TouchableOpacity>
               </View>
             </KeyboardAvoidingView>
+            </View>
           </View>
         </View>
       </Modal>

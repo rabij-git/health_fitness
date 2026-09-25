@@ -209,6 +209,7 @@ export default function CoachTrainees({ coachId }: Props) {
   const [traineeSearchResults, setTraineeSearchResults] = useState<DBUser[]>([]);
   const [searchingTrainees, setSearchingTrainees] = useState(false);
   const [sendingRequestTo, setSendingRequestTo] = useState<string | null>(null);
+  const findTraineeInputRef = useRef<TextInput>(null);
 
   // ── Trainee detail modal ──
   const [selectedTrainee, setSelectedTrainee] = useState<DBUser | null>(null);
@@ -964,11 +965,20 @@ export default function CoachTrainees({ coachId }: Props) {
         transparent
         animationType="slide"
         onRequestClose={() => { setShowFindTrainee(false); setTraineeSearchQuery(''); setTraineeSearchResults([]); }}
+        // autoFocus on the TextInput fired the keyboard the instant this
+        // modal mounted — while the "slide" animation was still running and
+        // before KeyboardAvoidingView had a stable layout to compute
+        // 'padding' against, so its very first (and only) calculation came
+        // out wrong/zero and never got redone. onShow fires once the slide
+        // transition has actually finished, so focusing here instead gives
+        // KeyboardAvoidingView real geometry to measure before the keyboard
+        // shows.
+        onShow={() => findTraineeInputRef.current?.focus()}
       >
         {/* No KeyboardAvoidingView here at all previously — on iOS the
             keyboard just slides up over this bottom-anchored sheet with
-            nothing pushing it up, completely burying the (autoFocus'd)
-            search input behind it the instant the modal opens. */}
+            nothing pushing it up, completely burying the search input
+            behind it the instant the modal opens. */}
         <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={{ flex: 1 }}>
           <View style={styles.overlay}>
             <View style={styles.sheet}>
@@ -979,12 +989,12 @@ export default function CoachTrainees({ coachId }: Props) {
                 </TouchableOpacity>
               </View>
               <TextInput
+                ref={findTraineeInputRef}
                 style={styles.searchInput}
                 placeholder="Search by name or email..."
                 placeholderTextColor={colors.textSecondary}
                 value={traineeSearchQuery}
                 onChangeText={handleSearchTrainees}
-                autoFocus
               />
             {searchingTrainees && <ActivityIndicator color={colors.primary} style={{ marginTop: 16 }} />}
             {!searchingTrainees && traineeSearchQuery.length >= 2 && traineeSearchResults.length === 0 && (
@@ -1099,10 +1109,18 @@ export default function CoachTrainees({ coachId }: Props) {
               // an explicit (not flex, not margined) height computed from
               // it — chatInputRow naturally lands right below at the
               // correct spot since nothing above it changed.
+              // onLayout on this wrapping View, not on KeyboardAvoidingView
+              // itself — KAV needs its OWN internal onLayout to track its
+              // screen position (that's how 'padding' behavior, used on
+              // iOS, computes the right offset); passing a custom onLayout
+              // prop straight to it silently replaces that internal
+              // handler and breaks 'padding' behavior entirely. Harmless
+              // on Android (behavior is undefined there, a no-op), but
+              // broke iOS for all three chat screens.
+              <View style={{ flex: 1 }} onLayout={e => setChatAreaHeight(e.nativeEvent.layout.height)}>
               <KeyboardAvoidingView
                 behavior={Platform.OS === 'ios' ? 'padding' : undefined}
                 style={{ flex: 1 }}
-                onLayout={e => setChatAreaHeight(e.nativeEvent.layout.height)}
               >
                 <ScrollView
                   ref={chatScrollRef}
@@ -1142,6 +1160,7 @@ export default function CoachTrainees({ coachId }: Props) {
                   </TouchableOpacity>
                 </View>
               </KeyboardAvoidingView>
+              </View>
             ) : (
               // Wrapped for the Nutrition tab's inline plan editor (Plan
               // Title/Calories/Protein/Carbs/Fat/Water/Notes) — without
