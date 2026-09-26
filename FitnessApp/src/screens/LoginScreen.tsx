@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import {
   View,
+  Image,
   TouchableOpacity,
   StyleSheet,
   StatusBar,
@@ -115,7 +116,7 @@ export default function LoginScreen({ onLogin }: Props) {
           {/* Logo */}
           <View style={styles.logoSection}>
             <View style={styles.logoContainer}>
-              <Ionicons name="barbell" size={40} color={colors.primary} />
+              <Image source={require('../../assets/logo-mark.png')} style={styles.logoImage} resizeMode="contain" />
             </View>
             <Text style={styles.appName}>Athera</Text>
             <Text style={styles.tagline}>Elite Performance Platform</Text>
@@ -377,8 +378,9 @@ const styles = StyleSheet.create({
   logoContainer: {
     width: 88, height: 88, borderRadius: 24,
     backgroundColor: colors.card, alignItems: 'center', justifyContent: 'center',
-    marginBottom: 16, borderWidth: 2, borderColor: colors.primary,
+    marginBottom: 16, borderWidth: 2, borderColor: colors.xpBar,
   },
+  logoImage: { width: 56, height: 56 },
   appName: { fontSize: 42, fontWeight: '800', color: colors.text, letterSpacing: 2 },
   tagline: { fontSize: 13, color: colors.textSecondary, marginTop: 4, letterSpacing: 1, textTransform: 'uppercase' },
 
