@@ -278,7 +278,7 @@ export default function CoachDashboard({ onLogout, coachId, navigation }: Props)
                       onPress={() => handleDeleteNotification(msg.id)}
                       hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
                     >
-                      <Ionicons name="trash-outline" size={16} color={colors.primary} />
+                      <Ionicons name="trash-outline" size={16} color={colors.danger} />
                     </TouchableOpacity>
                   </View>
                 ))}
@@ -402,7 +402,7 @@ const styles = StyleSheet.create({
   bellDot: {
     position: 'absolute', top: 10, right: 11,
     width: 9, height: 9, borderRadius: 5,
-    backgroundColor: colors.primary, borderWidth: 1.5, borderColor: colors.background,
+    backgroundColor: colors.danger, borderWidth: 1.5, borderColor: colors.background,
   },
   notifOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.75)', justifyContent: 'flex-end' },
   notifSheet: {
@@ -416,7 +416,7 @@ const styles = StyleSheet.create({
     paddingVertical: 12, borderBottomWidth: 1, borderBottomColor: colors.border,
   },
   notifRowMain: { flex: 1, flexDirection: 'row', alignItems: 'flex-start', gap: 12 },
-  notifUnreadDot: { width: 7, height: 7, borderRadius: 3.5, backgroundColor: colors.primary },
+  notifUnreadDot: { width: 7, height: 7, borderRadius: 3.5, backgroundColor: colors.danger },
   notifDeleteBtn: { padding: 6 },
   notifName: { fontSize: 14, fontWeight: '700', color: colors.text },
   notifMessage: { fontSize: 13, color: colors.textSecondary, marginTop: 2, lineHeight: 18 },

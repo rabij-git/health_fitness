@@ -337,7 +337,7 @@ function NutritionPlanCard({ userId, plan, inactive, completions, onCompletionsC
           {trackable && (plan.target_protein != null || plan.target_carbs != null || plan.target_fat != null) && (
             <View style={styles.macroTargetRow}>
               {[
-                { label: 'Protein', consumed: mealNutrition.protein, target: plan.target_protein, color: colors.primary },
+                { label: 'Protein', consumed: mealNutrition.protein, target: plan.target_protein, color: colors.danger },
                 { label: 'Carbs', consumed: mealNutrition.carbs, target: plan.target_carbs, color: '#4A9EFF' },
                 { label: 'Fat', consumed: mealNutrition.fat, target: plan.target_fat, color: colors.gold },
               ].filter(m => m.target != null).map(m => (
@@ -416,7 +416,7 @@ function DualBar({ consumed, target, baseColor, bgStyle }: { consumed: number; t
       <View style={{ flexDirection: 'row', height: '100%' }}>
         <View style={{ width: `${baseWidthPct}%` as any, height: '100%', backgroundColor: baseColor }} />
         {overWidthPct > 0 && (
-          <View style={{ width: `${overWidthPct}%` as any, height: '100%', backgroundColor: colors.primary }} />
+          <View style={{ width: `${overWidthPct}%` as any, height: '100%', backgroundColor: colors.danger }} />
         )}
       </View>
     </View>
@@ -602,7 +602,7 @@ export default function FoodLogScreen({ userId }: { userId: string }) {
                       {entry.calories != null && <Text style={styles.foodCalories}>{entry.calories} kcal</Text>}
                     </View>
                     <TouchableOpacity onPress={() => handleDelete(entry.id)} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
-                      <Ionicons name="trash-outline" size={16} color={colors.primary} />
+                      <Ionicons name="trash-outline" size={16} color={colors.danger} />
                     </TouchableOpacity>
                   </View>
                 ))}
@@ -705,7 +705,7 @@ const styles = StyleSheet.create({
   todayProgressText: { fontSize: 13, fontWeight: '600', color: colors.text, marginBottom: 8 },
   progressBg: { height: 8, backgroundColor: colors.secondary, borderRadius: 4, overflow: 'hidden' },
   progressFill: { height: '100%', backgroundColor: colors.xpBar, borderRadius: 4 },
-  progressFillWater: { backgroundColor: colors.primary },
+  progressFillWater: { backgroundColor: colors.accent },
   macroTargetRow: { marginTop: 14, paddingTop: 14, borderTopWidth: 1, borderTopColor: colors.border },
   macroBarRow: { marginBottom: 10 },
   macroBarLabelRow: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 4 },

@@ -256,9 +256,9 @@ export default function AdminUsers({ adminId, onViewAsCoach }: Props) {
                             disabled={revokingId === inv.id}
                           >
                             {revokingId === inv.id ? (
-                              <ActivityIndicator size="small" color={colors.primary} />
+                              <ActivityIndicator size="small" color={colors.danger} />
                             ) : (
-                              <Ionicons name="trash-outline" size={18} color={colors.primary} />
+                              <Ionicons name="trash-outline" size={18} color={colors.danger} />
                             )}
                           </TouchableOpacity>
                         </>
@@ -366,14 +366,14 @@ const styles = StyleSheet.create({
   roleBadgeText: { fontSize: 11, color: colors.success, fontWeight: '700' },
   roleBadgeCoach: { backgroundColor: colors.xpBar + '22' },
   roleBadgeTextCoach: { color: colors.xpBar },
-  roleBadgeAdmin: { backgroundColor: colors.primary + '22' },
+  roleBadgeAdmin: { backgroundColor: colors.danger + '22' },
   viewAsBtn: {
     flexDirection: 'row', alignItems: 'center', gap: 3,
     paddingHorizontal: 8, paddingVertical: 4, borderRadius: 8,
     borderWidth: 1, borderColor: colors.xpBar + '55',
   },
   viewAsBtnText: { fontSize: 11, fontWeight: '700', color: colors.xpBar },
-  roleBadgeTextAdmin: { color: colors.primary },
+  roleBadgeTextAdmin: { color: colors.danger },
 
   // ── Invites modal ──
   modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.75)', justifyContent: 'flex-end' },

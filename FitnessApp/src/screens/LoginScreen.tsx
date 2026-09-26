@@ -142,7 +142,7 @@ export default function LoginScreen({ onLogin }: Props) {
           {/* Error banner */}
           {!!error && (
             <View style={styles.errorBanner}>
-              <Ionicons name="alert-circle" size={16} color={colors.primary} />
+              <Ionicons name="alert-circle" size={16} color={colors.danger} />
               <Text style={styles.errorText}>{error}</Text>
             </View>
           )}
@@ -398,10 +398,10 @@ const styles = StyleSheet.create({
 
   errorBanner: {
     flexDirection: 'row', alignItems: 'center', gap: 8,
-    backgroundColor: colors.primary + '22', borderRadius: 12,
-    padding: 12, marginBottom: 16, borderWidth: 1, borderColor: colors.primary + '44',
+    backgroundColor: colors.danger + '22', borderRadius: 12,
+    padding: 12, marginBottom: 16, borderWidth: 1, borderColor: colors.danger + '44',
   },
-  errorText: { flex: 1, fontSize: 13, color: colors.primary, lineHeight: 18 },
+  errorText: { flex: 1, fontSize: 13, color: colors.danger, lineHeight: 18 },
   successBanner: {
     flexDirection: 'row', alignItems: 'flex-start', gap: 8,
     backgroundColor: colors.success + '22', borderRadius: 12,

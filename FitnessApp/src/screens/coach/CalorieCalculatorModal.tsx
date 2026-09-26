@@ -829,7 +829,7 @@ const styles = StyleSheet.create({
   resetLink: { color: colors.xpBar, fontSize: 13, marginTop: 8, fontWeight: '600' },
   macroTotalBadge: { borderRadius: 10, paddingVertical: 10, alignItems: 'center', marginBottom: 16 },
   macroTotalOk: { backgroundColor: colors.success + '22', borderWidth: 1, borderColor: colors.success },
-  macroTotalBad: { backgroundColor: colors.primary + '22', borderWidth: 1, borderColor: colors.primary },
+  macroTotalBad: { backgroundColor: colors.danger + '22', borderWidth: 1, borderColor: colors.danger },
   macroTotalText: { color: colors.text, fontWeight: '700' },
   macroFieldRow: { flexDirection: 'row', alignItems: 'flex-end', gap: 10, marginBottom: 12 },
   exMetaLabel: { fontSize: 11, fontWeight: '700', color: colors.textSecondary, marginBottom: 6 },

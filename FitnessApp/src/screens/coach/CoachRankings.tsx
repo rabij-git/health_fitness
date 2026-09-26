@@ -167,7 +167,7 @@ export default function CoachRankings({ coachId }: Props) {
                     <Text style={styles.memberLevel}>Level {member.level} · {member.xp.toLocaleString()} XP</Text>
                   </View>
                   <TouchableOpacity onPress={() => handleRemoveFromGym(member.id)}>
-                    <Ionicons name="remove-circle-outline" size={22} color={colors.primary} />
+                    <Ionicons name="remove-circle-outline" size={22} color={colors.danger} />
                   </TouchableOpacity>
                 </View>
               ))

@@ -578,10 +578,10 @@ export default function ProfileScreen({ onLogout, userId }: Props) {
                 disabled={cancelingRequest}
               >
                 {cancelingRequest ? (
-                  <ActivityIndicator size="small" color={colors.primary} />
+                  <ActivityIndicator size="small" color={colors.danger} />
                 ) : (
                   <>
-                    <Ionicons name="close-circle-outline" size={16} color={colors.primary} />
+                    <Ionicons name="close-circle-outline" size={16} color={colors.danger} />
                     <Text style={styles.cancelRequestBtnText}>Cancel Request</Text>
                   </>
                 )}
@@ -983,9 +983,9 @@ const styles = StyleSheet.create({
   cancelRequestBtn: {
     flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6,
     borderRadius: 10, paddingVertical: 10, marginTop: 12,
-    borderWidth: 1, borderColor: colors.primary,
+    borderWidth: 1, borderColor: colors.danger,
   },
-  cancelRequestBtnText: { fontSize: 13, fontWeight: '700', color: colors.primary },
+  cancelRequestBtnText: { fontSize: 13, fontWeight: '700', color: colors.danger },
 
   requestBanner: {
     backgroundColor: colors.xpBar + '11',

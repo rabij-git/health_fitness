@@ -1,13 +1,20 @@
 // Brand palette: "Dark Indigo" (#111827) + "Neon Cyan" (#22D3EE) — see the
-// brand mood board. `xpBar` is the app's actual brand/highlight color despite
-// its name (selected states, links, badges, CTAs throughout) — it's the one
-// mapped to Neon Cyan. `primary` is left alone: it's used app-wide as the
-// delete/error/danger color (trash icons, error text), not a brand color, so
-// remapping it to cyan would misread as a positive action.
+// brand mood board. `primary` is now the main brand/CTA color (buttons, tab
+// active states, badges — the bulk of the app's UI), mapped to Neon Cyan.
+// `danger` (the old `primary` red) was split out for the genuinely
+// destructive/negative cases that need to stay red regardless of brand color:
+// delete/remove icons, error banners, unread-notification dots, "over
+// target"/negative-direction indicators (calorie & water DualBar overage,
+// weight-trend-up), and the Admin role badge (kept red so it stays visually
+// distinct from Coach's cyan). `xpBar` is left as its own token even though
+// it's now the same hex as `primary` — most of the app's "positive
+// highlight" styling already keyed off `xpBar` specifically before this
+// rebrand, so this avoids a second sweeping rename on top of this one.
 export const colors = {
   background: '#111827',
   card: '#1F2937',
-  primary: '#E94560',
+  primary: '#22D3EE',
+  danger: '#E94560',
   secondary: '#16213E',
   accent: '#0F3460',
   text: '#FFFFFF',

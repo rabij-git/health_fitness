@@ -63,7 +63,7 @@ function DualBar({ consumed, target, baseColor, bgStyle }: { consumed: number; t
       <View style={{ flexDirection: 'row', height: '100%' }}>
         <View style={{ width: `${baseWidthPct}%` as any, height: '100%', backgroundColor: baseColor }} />
         {overWidthPct > 0 && (
-          <View style={{ width: `${overWidthPct}%` as any, height: '100%', backgroundColor: colors.primary }} />
+          <View style={{ width: `${overWidthPct}%` as any, height: '100%', backgroundColor: colors.danger }} />
         )}
       </View>
     </View>
@@ -504,7 +504,7 @@ export default function TrainerDashboard({ onLogout, userId, navigation, scrollR
             <>
               <Text style={styles.macroCaption}>MACROS TODAY</Text>
               {[
-                { label: 'Protein', consumed: todayProtein, target: nutritionTargetPlan.target_protein, color: colors.primary },
+                { label: 'Protein', consumed: todayProtein, target: nutritionTargetPlan.target_protein, color: colors.danger },
                 { label: 'Carbs', consumed: todayCarbs, target: nutritionTargetPlan.target_carbs, color: '#4A9EFF' },
                 { label: 'Fat', consumed: todayFat, target: nutritionTargetPlan.target_fat, color: colors.gold },
               ].filter(m => m.target != null).map(m => (
@@ -641,7 +641,7 @@ const styles = StyleSheet.create({
     width: 8,
     height: 8,
     borderRadius: 4,
-    backgroundColor: colors.primary,
+    backgroundColor: colors.danger,
     borderWidth: 1,
     borderColor: colors.background,
   },

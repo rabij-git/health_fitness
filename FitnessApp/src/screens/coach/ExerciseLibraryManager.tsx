@@ -183,7 +183,7 @@ export default function ExerciseLibraryManager({ visible, coachId, onClose, onCh
                               <Ionicons name="create-outline" size={18} color={colors.xpBar} />
                             </TouchableOpacity>
                             <TouchableOpacity onPress={() => handleDelete(ex)} style={styles.iconBtn}>
-                              <Ionicons name="trash-outline" size={18} color={colors.primary} />
+                              <Ionicons name="trash-outline" size={18} color={colors.danger} />
                             </TouchableOpacity>
                           </View>
                         ))

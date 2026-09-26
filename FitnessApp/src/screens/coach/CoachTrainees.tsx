@@ -1206,9 +1206,9 @@ export default function CoachTrainees({ coachId }: Props) {
                             disabled={revokingInviteId === inv.id}
                           >
                             {revokingInviteId === inv.id ? (
-                              <ActivityIndicator size="small" color={colors.primary} />
+                              <ActivityIndicator size="small" color={colors.danger} />
                             ) : (
-                              <Ionicons name="trash-outline" size={18} color={colors.primary} />
+                              <Ionicons name="trash-outline" size={18} color={colors.danger} />
                             )}
                           </TouchableOpacity>
                         </>
@@ -1548,9 +1548,9 @@ export default function CoachTrainees({ coachId }: Props) {
                                       hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
                                     >
                                       {deletingWorkoutId === w.id ? (
-                                        <ActivityIndicator size="small" color={colors.primary} />
+                                        <ActivityIndicator size="small" color={colors.danger} />
                                       ) : (
-                                        <Ionicons name="trash-outline" size={18} color={colors.primary} />
+                                        <Ionicons name="trash-outline" size={18} color={colors.danger} />
                                       )}
                                     </TouchableOpacity>
                                   </View>
@@ -2085,7 +2085,7 @@ export default function CoachTrainees({ coachId }: Props) {
                                         )}
                                       </View>
                                       <TouchableOpacity onPress={() => handleDeleteNutrition(plan)}>
-                                        <Ionicons name="trash-outline" size={18} color={colors.primary} />
+                                        <Ionicons name="trash-outline" size={18} color={colors.danger} />
                                       </TouchableOpacity>
                                     </View>
                                   </View>
@@ -2394,7 +2394,7 @@ export default function CoachTrainees({ coachId }: Props) {
                             onPress={() => setExercises(prev => prev.filter(e => e.id !== ex.id))}
                             style={styles.removeBtn}
                           >
-                            <Ionicons name="trash-outline" size={18} color={colors.primary} />
+                            <Ionicons name="trash-outline" size={18} color={colors.danger} />
                           </TouchableOpacity>
                         )}
                       </View>
@@ -2657,7 +2657,7 @@ export default function CoachTrainees({ coachId }: Props) {
                         onPress={() => setEditExercises(prev => prev.filter(e => e.id !== ex.id))}
                         style={styles.removeBtn}
                       >
-                        <Ionicons name="trash-outline" size={18} color={colors.primary} />
+                        <Ionicons name="trash-outline" size={18} color={colors.danger} />
                       </TouchableOpacity>
                     </View>
                   </View>

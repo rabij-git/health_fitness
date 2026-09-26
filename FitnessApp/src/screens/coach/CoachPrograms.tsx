@@ -418,9 +418,9 @@ export default function CoachPrograms({ coachId }: Props) {
                 hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
               >
                 {deletingId === program.id ? (
-                  <ActivityIndicator size="small" color={colors.primary} />
+                  <ActivityIndicator size="small" color={colors.danger} />
                 ) : (
-                  <Ionicons name="trash-outline" size={18} color={colors.primary} />
+                  <Ionicons name="trash-outline" size={18} color={colors.danger} />
                 )}
               </TouchableOpacity>
             </View>
@@ -621,7 +621,7 @@ export default function CoachPrograms({ coachId }: Props) {
                           onPress={() => setExercises(prev => prev.filter(e => e.id !== ex.id))}
                           style={styles.removeBtn}
                         >
-                          <Ionicons name="trash-outline" size={18} color={colors.primary} />
+                          <Ionicons name="trash-outline" size={18} color={colors.danger} />
                         </TouchableOpacity>
                       )}
                     </View>
@@ -855,7 +855,7 @@ export default function CoachPrograms({ coachId }: Props) {
                           onPress={() => setEditExercises(prev => prev.filter(e => e.id !== ex.id))}
                           style={styles.removeBtn}
                         >
-                          <Ionicons name="trash-outline" size={18} color={colors.primary} />
+                          <Ionicons name="trash-outline" size={18} color={colors.danger} />
                         </TouchableOpacity>
                       </View>
                     </View>

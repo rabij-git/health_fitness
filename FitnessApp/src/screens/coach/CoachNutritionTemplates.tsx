@@ -207,9 +207,9 @@ export default function CoachNutritionTemplates({ coachId }: Props) {
                   hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
                 >
                   {deletingId === template.id ? (
-                    <ActivityIndicator size="small" color={colors.primary} />
+                    <ActivityIndicator size="small" color={colors.danger} />
                   ) : (
-                    <Ionicons name="trash-outline" size={18} color={colors.primary} />
+                    <Ionicons name="trash-outline" size={18} color={colors.danger} />
                   )}
                 </TouchableOpacity>
               </View>
