@@ -1,17 +1,16 @@
 import React, { useState } from 'react';
 import {
   View,
-  Text,
   TouchableOpacity,
   StyleSheet,
   StatusBar,
-  TextInput,
   ActivityIndicator,
   KeyboardAvoidingView,
   Platform,
   ScrollView,
   Alert,
 } from 'react-native';
+import { Text, TextInput } from '../components/AppText';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { colors } from '../theme/colors';
@@ -430,7 +429,7 @@ const styles = StyleSheet.create({
     gap: 8, paddingVertical: 12, borderRadius: 12,
     backgroundColor: colors.card, borderWidth: 1.5, borderColor: colors.border,
   },
-  roleChipActive: { borderColor: colors.xpBar, backgroundColor: '#0a1f1a' },
+  roleChipActive: { borderColor: colors.xpBar, backgroundColor: '#0a2027' },
   roleChipText: { fontSize: 14, fontWeight: '600', color: colors.textSecondary },
   roleChipTextActive: { color: colors.xpBar },
 

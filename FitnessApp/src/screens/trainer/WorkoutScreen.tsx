@@ -1,7 +1,6 @@
 import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import {
   View,
-  Text,
   StyleSheet,
   ScrollView,
   TouchableOpacity,
@@ -10,6 +9,7 @@ import {
   AppState,
   Vibration,
 } from 'react-native';
+import { Text } from '../../components/AppText';
 import { useFocusEffect, useRoute, useNavigation } from '@react-navigation/native';
 import { Ionicons } from '@expo/vector-icons';
 import { useAudioPlayer } from 'expo-audio';
@@ -1072,7 +1072,7 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: colors.border,
   },
-  exerciseCardDone: { borderColor: colors.xpBar + '66', backgroundColor: '#0a1f1d' },
+  exerciseCardDone: { borderColor: colors.xpBar + '66', backgroundColor: '#0a2027' },
   exerciseCardLocked: { opacity: 0.45 },
 
   exerciseHeaderRow: { flexDirection: 'row', alignItems: 'center', gap: 12, marginBottom: 14 },

@@ -14,8 +14,9 @@
     },
     "android": {
       "adaptiveIcon": {
-        "backgroundColor": "#0D0D0D",
-        "foregroundImage": "./assets/android-icon-foreground.png"
+        "backgroundColor": "#111827",
+        "foregroundImage": "./assets/android-icon-foreground.png",
+        "monochromeImage": "./assets/android-icon-monochrome.png"
       },
       "package": "com.anonymous.FitnessApp",
       "permissions": [

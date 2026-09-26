@@ -1,15 +1,21 @@
+// Brand palette: "Dark Indigo" (#111827) + "Neon Cyan" (#22D3EE) — see the
+// brand mood board. `xpBar` is the app's actual brand/highlight color despite
+// its name (selected states, links, badges, CTAs throughout) — it's the one
+// mapped to Neon Cyan. `primary` is left alone: it's used app-wide as the
+// delete/error/danger color (trash icons, error text), not a brand color, so
+// remapping it to cyan would misread as a positive action.
 export const colors = {
-  background: '#0D0D0D',
-  card: '#1A1A2E',
+  background: '#111827',
+  card: '#1F2937',
   primary: '#E94560',
   secondary: '#16213E',
   accent: '#0F3460',
   text: '#FFFFFF',
-  textSecondary: '#A0A0A0',
+  textSecondary: '#9CA3AF',
   gold: '#FFD700',
-  xpBar: '#00D4AA',
+  xpBar: '#22D3EE',
   streak: '#FF6B35',
-  border: '#2A2A4A',
+  border: '#374151',
   success: '#00C853',
   warning: '#FFB300',
   cardAlt: '#1E1E3A',

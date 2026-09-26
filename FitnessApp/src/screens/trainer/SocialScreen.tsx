@@ -1,17 +1,16 @@
 import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import {
   View,
-  Text,
   StyleSheet,
   ScrollView,
   TouchableOpacity,
   Modal,
-  TextInput,
   KeyboardAvoidingView,
   Platform,
   ActivityIndicator,
   Alert,
 } from 'react-native';
+import { Text, TextInput } from '../../components/AppText';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { colors } from '../../theme/colors';
@@ -429,7 +428,7 @@ const styles = StyleSheet.create({
     borderColor: colors.border,
     gap: 12,
   },
-  leaderItemCurrent: { borderColor: colors.xpBar, backgroundColor: '#0a1f1d' },
+  leaderItemCurrent: { borderColor: colors.xpBar, backgroundColor: '#0a2027' },
   rankContainer: {
     width: 36, height: 36, borderRadius: 10,
     backgroundColor: colors.secondary,

@@ -1,12 +1,10 @@
 import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import {
   View,
-  Text,
   StyleSheet,
   ScrollView,
   TouchableOpacity,
   Modal,
-  TextInput,
   KeyboardAvoidingView,
   Platform,
   ActivityIndicator,
@@ -15,6 +13,7 @@ import {
   Alert,
   Share,
 } from 'react-native';
+import { Text, TextInput } from '../../components/AppText';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useRoute, useNavigation, useFocusEffect } from '@react-navigation/native';
 import { Ionicons } from '@expo/vector-icons';
@@ -2865,7 +2864,7 @@ const styles = StyleSheet.create({
     backgroundColor: colors.secondary, borderRadius: 14, padding: 14,
     marginBottom: 10, borderWidth: 1.5, borderColor: colors.border,
   },
-  programOptionSelected: { borderColor: colors.xpBar, backgroundColor: '#0a1f1a' },
+  programOptionSelected: { borderColor: colors.xpBar, backgroundColor: '#0a2027' },
   programOptionLeft: { flexDirection: 'row', alignItems: 'center', gap: 12 },
   programOptionName: { fontSize: 15, fontWeight: '700', color: colors.text },
   programOptionMeta: { fontSize: 12, color: colors.textSecondary, marginTop: 2 },
