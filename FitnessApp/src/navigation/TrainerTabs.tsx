@@ -1,4 +1,5 @@
-import React from 'react';
+import React, { useRef } from 'react';
+import { ScrollView } from 'react-native';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -19,6 +20,9 @@ interface Props {
 
 export default function TrainerTabs({ onLogout, userId }: Props) {
   const insets = useSafeAreaInsets();
+  // Double-tap-to-top: tapping the Home tab while it's already focused
+  // scrolls the Home screen back to the top instead of doing nothing.
+  const homeScrollRef = useRef<ScrollView>(null);
   return (
     <Tab.Navigator
       screenOptions={({ route }) => ({
@@ -49,8 +53,19 @@ export default function TrainerTabs({ onLogout, userId }: Props) {
         },
       })}
     >
-      <Tab.Screen name="Home">
-        {({ navigation }) => <TrainerDashboard onLogout={onLogout} userId={userId} navigation={navigation} />}
+      <Tab.Screen
+        name="Home"
+        listeners={({ navigation }) => ({
+          tabPress: () => {
+            if (navigation.isFocused()) {
+              homeScrollRef.current?.scrollTo({ y: 0, animated: true });
+            }
+          },
+        })}
+      >
+        {({ navigation }) => (
+          <TrainerDashboard onLogout={onLogout} userId={userId} navigation={navigation} scrollRef={homeScrollRef} />
+        )}
       </Tab.Screen>
       <Tab.Screen name="Workout">
         {() => <WorkoutTabScreen userId={userId} />}

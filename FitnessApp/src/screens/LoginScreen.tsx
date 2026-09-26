@@ -16,7 +16,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { colors } from '../theme/colors';
 import { UserRole } from '../data/mockData';
-import { signIn, signUp, signUpCoach, getProfile } from '../lib/db';
+import { signIn, signUp, signUpCoach, signUpTraineeWithInvite, getProfile } from '../lib/db';
 
 interface Props {
   onLogin: (role: UserRole, userId: string) => void;
@@ -75,12 +75,19 @@ export default function LoginScreen({ onLogin }: Props) {
     try {
       if (suRole === 'coach') {
         await signUpCoach(suEmail.trim().toLowerCase(), suPassword, suName.trim(), suInviteCode.trim());
+      } else if (suInviteCode.trim()) {
+        // A trainee invite code is optional — plain trainee signup stays
+        // open/ungated as before. Providing one auto-connects to that
+        // coach instead of leaving the trainee to search/request/wait.
+        await signUpTraineeWithInvite(suEmail.trim().toLowerCase(), suPassword, suName.trim(), suInviteCode.trim());
       } else {
         await signUp(suEmail.trim().toLowerCase(), suPassword, suName.trim());
       }
       setSignedUpMsg(
         suRole === 'trainee'
-          ? 'Account created! Check your email to confirm, then sign in. Your coach will assign your program.'
+          ? (suInviteCode.trim()
+              ? 'Account created! Check your email to confirm, then sign in — you\'re already connected to your coach.'
+              : 'Account created! Check your email to confirm, then sign in. Your coach will assign your program.')
           : 'Account created! Check your email to confirm, then sign in.'
       );
     } catch (e: any) {
@@ -275,6 +282,27 @@ export default function LoginScreen({ onLogin }: Props) {
                     Your coach will find and assign your program once you sign up.
                   </Text>
                 </View>
+              )}
+
+              {suRole === 'trainee' && (
+                <>
+                  <Text style={[styles.fieldLabel, { marginTop: 16 }]}>INVITE CODE (OPTIONAL)</Text>
+                  <TextInput
+                    style={styles.input}
+                    value={suInviteCode}
+                    onChangeText={v => { setSuInviteCode(v.toUpperCase()); clearError(); }}
+                    placeholder="Have a code from your coach?"
+                    placeholderTextColor={colors.textSecondary}
+                    autoCapitalize="characters"
+                    autoCorrect={false}
+                  />
+                  <View style={styles.note}>
+                    <Ionicons name="information-circle-outline" size={15} color={colors.textSecondary} />
+                    <Text style={styles.noteText}>
+                      Got a code from a coach? Enter it here to connect with them right away — otherwise leave this blank and find a coach after you sign up.
+                    </Text>
+                  </View>
+                </>
               )}
 
               {suRole === 'coach' && (

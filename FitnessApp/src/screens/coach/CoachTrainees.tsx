@@ -13,6 +13,7 @@ import {
   Switch,
   Linking,
   Alert,
+  Share,
 } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useRoute, useNavigation, useFocusEffect } from '@react-navigation/native';
@@ -50,8 +51,12 @@ import {
   getMessages,
   sendMessage,
   getVitalsHistory,
+  createTraineeInvite,
+  getMyTraineeInvites,
+  revokeTraineeInvite,
 } from '../../lib/db';
-import { DBProgram, DBUser, DBWorkout, DBExercise, DBWeightLog, DBNutritionPlan, DBNutritionPlanTemplate, DBCoachRequest, DBLibraryExercise, DBMessage, DBVital, DBMealCompletion, DBFoodLogEntry, SessionExerciseDetail, SessionSetDetail } from '../../lib/supabase';
+import { DBProgram, DBUser, DBWorkout, DBExercise, DBWeightLog, DBNutritionPlan, DBNutritionPlanTemplate, DBCoachRequest, DBLibraryExercise, DBMessage, DBVital, DBMealCompletion, DBFoodLogEntry, DBTraineeInvite, MealSlot, SessionExerciseDetail, SessionSetDetail } from '../../lib/supabase';
+import { templatesForMealType, scaleTemplateToTarget, MealType, MealTemplate, Diet } from '../../data/mealLibrary';
 import { sanitizeCount, sanitizeWeightInput, sanitizeTimeInput, stripKg, withKg } from '../../lib/exerciseInput';
 import CalorieCalculatorModal from './CalorieCalculatorModal';
 
@@ -198,6 +203,9 @@ export default function CoachTrainees({ coachId }: Props) {
   const [trainees, setTrainees] = useState<DBUser[]>([]);
   const [programs, setPrograms] = useState<DBProgram[]>([]);
   const [incomingRequests, setIncomingRequests] = useState<(DBCoachRequest & { trainee: DBUser })[]>([]);
+  // Session-scoped (not persisted) — just enough to avoid re-popping the
+  // same alert every time this screen refetches/regains focus.
+  const alertedRequestIds = useRef<Set<string>>(new Set());
   const [outgoingRequests, setOutgoingRequests] = useState<(DBCoachRequest & { trainee: DBUser })[]>([]);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -210,6 +218,50 @@ export default function CoachTrainees({ coachId }: Props) {
   const [searchingTrainees, setSearchingTrainees] = useState(false);
   const [sendingRequestTo, setSendingRequestTo] = useState<string | null>(null);
   const findTraineeInputRef = useRef<TextInput>(null);
+
+  // ── Invite-a-trainee modal (coach-generated codes, mirrors admin's Coach
+  // Invites screen one level down — see scripts/trainee_invites.sql) ──
+  const [showInvites, setShowInvites] = useState(false);
+  const [traineeInvites, setTraineeInvites] = useState<DBTraineeInvite[]>([]);
+  const [generatingInvite, setGeneratingInvite] = useState(false);
+  const [revokingInviteId, setRevokingInviteId] = useState<string | null>(null);
+
+  const openInvitesModal = useCallback(async () => {
+    setShowInvites(true);
+    const invites = await getMyTraineeInvites(coachId);
+    setTraineeInvites(invites);
+  }, [coachId]);
+
+  const handleGenerateTraineeInvite = useCallback(async () => {
+    if (generatingInvite) return;
+    setGeneratingInvite(true);
+    try {
+      const invite = await createTraineeInvite(coachId);
+      setTraineeInvites(prev => [invite, ...prev]);
+      Share.share({ message: `Join me on Athera! Use this invite code when you sign up as a trainee to connect with me as your coach: ${invite.code}` });
+    } catch (e) {
+      console.warn('createTraineeInvite error', e);
+    } finally {
+      setGeneratingInvite(false);
+    }
+  }, [coachId, generatingInvite]);
+
+  const handleRevokeTraineeInvite = useCallback((invite: DBTraineeInvite) => {
+    Alert.alert('Revoke Invite', `Revoke code "${invite.code}"? It won't be usable to sign up anymore.`, [
+      { text: 'Cancel', style: 'cancel' },
+      { text: 'Revoke', style: 'destructive', onPress: async () => {
+        setRevokingInviteId(invite.id);
+        try {
+          await revokeTraineeInvite(invite.id);
+          setTraineeInvites(prev => prev.filter(i => i.id !== invite.id));
+        } catch (e) {
+          console.warn('revokeTraineeInvite error', e);
+        } finally {
+          setRevokingInviteId(null);
+        }
+      } },
+    ]);
+  }, []);
 
   // ── Trainee detail modal ──
   const [selectedTrainee, setSelectedTrainee] = useState<DBUser | null>(null);
@@ -271,6 +323,13 @@ export default function CoachTrainees({ coachId }: Props) {
   const [planFat, setPlanFat] = useState('');
   const [planWater, setPlanWater] = useState('');
   const [savingPlan, setSavingPlan] = useState(false);
+  // Only present for calculator-built plans (template-based/uploaded ones
+  // have no meal-by-meal breakdown at all) — lets the coach swap what a
+  // specific meal contains without regenerating the whole plan.
+  const [editingMeals, setEditingMeals] = useState<MealSlot[] | null>(null);
+  const [editingDiet, setEditingDiet] = useState<Diet>('omnivore');
+  const [mealPickerIndex, setMealPickerIndex] = useState<number | null>(null);
+  const [savingMealIndex, setSavingMealIndex] = useState<number | null>(null);
 
   // ── Assign nutrition plan (picks from the coach's reusable templates) ──
   const [nutritionTemplates, setNutritionTemplates] = useState<DBNutritionPlanTemplate[]>([]);
@@ -327,6 +386,19 @@ export default function CoachTrainees({ coachId }: Props) {
       setIncomingRequests(incoming);
       setOutgoingRequests(outgoing);
       setPrograms(progs);
+      // Popup, not just a passive card in the Requests section — a coach
+      // could otherwise go a while without noticing a new request.
+      const unseen = incoming.filter(r => !alertedRequestIds.current.has(r.id));
+      if (unseen.length > 0) {
+        unseen.forEach(r => alertedRequestIds.current.add(r.id));
+        const [first, ...rest] = unseen;
+        Alert.alert(
+          'New Trainee Request',
+          rest.length > 0
+            ? `${first.trainee.name} (and ${rest.length} other${rest.length === 1 ? '' : 's'}) wants to connect with you as their coach.`
+            : `${first.trainee.name} wants to connect with you as their coach.`
+        );
+      }
     } catch (e) {
       console.warn('CoachTrainees loadData error', e);
     } finally {
@@ -570,8 +642,47 @@ export default function CoachTrainees({ coachId }: Props) {
     setPlanCarbs(plan.target_carbs != null ? String(plan.target_carbs) : '');
     setPlanFat(plan.target_fat != null ? String(plan.target_fat) : '');
     setPlanWater(plan.target_water_ml != null ? String(plan.target_water_ml) : '');
+    setEditingMeals(plan.meals ?? null);
+    setEditingDiet(plan.calc_inputs?.diet ?? 'omnivore');
+    setMealPickerIndex(null);
     setEditingPlanId(plan.id);
   }, []);
+
+  // pickerOptions for the currently-open meal picker — templatesForMealType
+  // already applies the diet nesting (a pescatarian trainee's list includes
+  // pescatarian/vegetarian/vegan templates, etc.), same helper the Calorie
+  // Calculator itself uses. meal.label is always one of MealType's own
+  // values by construction (assigned from MEAL_SLOT_LABELS when the plan
+  // was first built), so the cast is safe.
+  const mealPickerOptions = useMemo(() => {
+    if (mealPickerIndex == null || !editingMeals) return [];
+    const meal = editingMeals[mealPickerIndex];
+    return [...templatesForMealType(meal.label as MealType, editingDiet)].sort((a, b) => a.name.localeCompare(b.name));
+  }, [mealPickerIndex, editingMeals, editingDiet]);
+
+  const handleSelectMealFromPicker = useCallback(async (template: MealTemplate) => {
+    if (mealPickerIndex == null || !editingMeals || !editingPlanId) return;
+    const current = editingMeals[mealPickerIndex];
+    const updatedMeal = scaleTemplateToTarget(template, {
+      slot: current.slot,
+      target_calories: current.target_calories,
+      target_protein: current.target_protein,
+      target_carbs: current.target_carbs,
+      target_fat: current.target_fat,
+    });
+    const updatedMeals = editingMeals.map((m, i) => (i === mealPickerIndex ? updatedMeal : m));
+    setSavingMealIndex(mealPickerIndex);
+    setMealPickerIndex(null);
+    try {
+      const plan = await updateNutritionPlan(editingPlanId, { meals: updatedMeals });
+      setEditingMeals(plan.meals ?? updatedMeals);
+      setSelectedTraineeNutrition(prev => prev.map(p => (p.id === plan.id ? plan : p)));
+    } catch (e) {
+      Alert.alert('Error', e instanceof Error ? e.message : 'Could not update this meal. Please try again.');
+    } finally {
+      setSavingMealIndex(null);
+    }
+  }, [mealPickerIndex, editingMeals, editingPlanId]);
 
   const handleSavePlan = useCallback(async () => {
     if (!selectedTrainee || !planTitle.trim() || savingPlan || !editingPlanId) return;
@@ -908,6 +1019,12 @@ export default function CoachTrainees({ coachId }: Props) {
           <Text style={styles.findTraineeBtnText}>Find Trainees</Text>
         </TouchableOpacity>
 
+        {/* Invite a new trainee who isn't on the app yet — auto-connects on signup */}
+        <TouchableOpacity style={styles.inviteTraineeBtn} onPress={openInvitesModal}>
+          <Ionicons name="link-outline" size={18} color={colors.xpBar} />
+          <Text style={styles.inviteTraineeBtnText}>Invite a Trainee</Text>
+        </TouchableOpacity>
+
         {/* Outgoing requests */}
         {outgoingRequests.length > 0 && (
           <>
@@ -1033,6 +1150,79 @@ export default function CoachTrainees({ coachId }: Props) {
         </KeyboardAvoidingView>
       </Modal>
 
+      {/* ── Invite a Trainee Modal ── */}
+      <Modal visible={showInvites} transparent animationType="slide" onRequestClose={() => setShowInvites(false)}>
+        <View style={styles.overlay}>
+          <View style={styles.sheet}>
+            <View style={styles.sheetHeader}>
+              <Text style={styles.sheetTitle}>Invite a Trainee</Text>
+              <TouchableOpacity onPress={() => setShowInvites(false)}>
+                <Ionicons name="close" size={22} color={colors.textSecondary} />
+              </TouchableOpacity>
+            </View>
+            <Text style={styles.inviteModalSubtitle}>
+              Share a code with someone who isn't on Athera yet — when they sign up with it, they're connected to you as their coach right away, no request needed.
+            </Text>
+
+            <TouchableOpacity
+              style={[styles.generateInviteBtn, generatingInvite && { opacity: 0.6 }]}
+              onPress={handleGenerateTraineeInvite}
+              disabled={generatingInvite}
+            >
+              {generatingInvite ? (
+                <ActivityIndicator size="small" color={colors.text} />
+              ) : (
+                <>
+                  <Ionicons name="link-outline" size={18} color={colors.text} />
+                  <Text style={styles.generateInviteBtnText}>Generate & Share New Code</Text>
+                </>
+              )}
+            </TouchableOpacity>
+
+            <ScrollView showsVerticalScrollIndicator={false} style={{ marginTop: 4 }}>
+              {traineeInvites.length === 0 ? (
+                <Text style={styles.noResults}>No invite codes yet.</Text>
+              ) : (
+                traineeInvites.map(inv => {
+                  const usedTrainee = inv.used_by ? trainees.find(t => t.id === inv.used_by) : null;
+                  return (
+                    <View key={inv.id} style={styles.inviteRow}>
+                      <View style={{ flex: 1 }}>
+                        <Text style={styles.inviteCode}>{inv.code}</Text>
+                        <Text style={styles.inviteMeta}>
+                          {inv.used_by ? `Used by ${usedTrainee?.name ?? 'a trainee'}` : 'Pending'}
+                        </Text>
+                      </View>
+                      {!inv.used_by && (
+                        <>
+                          <TouchableOpacity
+                            style={styles.inviteIconBtn}
+                            onPress={() => Share.share({ message: `Join me on Athera! Use this invite code when you sign up as a trainee to connect with me as your coach: ${inv.code}` })}
+                          >
+                            <Ionicons name="share-outline" size={18} color={colors.xpBar} />
+                          </TouchableOpacity>
+                          <TouchableOpacity
+                            style={styles.inviteIconBtn}
+                            onPress={() => handleRevokeTraineeInvite(inv)}
+                            disabled={revokingInviteId === inv.id}
+                          >
+                            {revokingInviteId === inv.id ? (
+                              <ActivityIndicator size="small" color={colors.primary} />
+                            ) : (
+                              <Ionicons name="trash-outline" size={18} color={colors.primary} />
+                            )}
+                          </TouchableOpacity>
+                        </>
+                      )}
+                    </View>
+                  );
+                })
+              )}
+            </ScrollView>
+          </View>
+        </View>
+      </Modal>
+
       {/* ── Trainee Detail Modal ── */}
       <Modal
         visible={!!selectedTrainee}
@@ -1096,56 +1286,51 @@ export default function CoachTrainees({ coachId }: Props) {
                 <ActivityIndicator size="large" color={colors.primary} />
               </View>
             ) : detailTab === 'chat' ? (
-              // Neither KeyboardAvoidingView's own Android resize nor a
-              // marginBottom-on-this-container guess worked reliably here —
-              // both left chatMessages collapsed with a large dead gap
-              // between the input row and the real keyboard, which strongly
-              // suggests something upstream (possibly the Activity's own
-              // adjustResize) is ALSO shrinking this screen, so a second,
-              // separate keyboard-height deduction on top of it overshoots.
-              // Sidestepping that ambiguity entirely: measure this
-              // container's real resting height via onLayout (a ground
-              // truth, unaffected by any of that), then give chatMessages
-              // an explicit (not flex, not margined) height computed from
-              // it — chatInputRow naturally lands right below at the
-              // correct spot since nothing above it changed.
-              // onLayout on this wrapping View, not on KeyboardAvoidingView
-              // itself — KAV needs its OWN internal onLayout to track its
-              // screen position (that's how 'padding' behavior, used on
-              // iOS, computes the right offset); passing a custom onLayout
-              // prop straight to it silently replaces that internal
-              // handler and breaks 'padding' behavior entirely. Harmless
-              // on Android (behavior is undefined there, a no-op), but
-              // broke iOS for all three chat screens.
+              // Confirmed via a debug pass (screenshots, a live readout of
+              // the actual keyboardOffset/chatAreaHeight values, and finally
+              // swapping components one at a time): the values and the math
+              // were correct the whole time, but a bare `<ScrollView
+              // style={{height}}>` silently ignores an explicit height in
+              // this exact nested context on iOS, no matter how it's
+              // supplied (computed, hardcoded, with or without flex:0) —
+              // replacing it with a plain `<View style={{height}}>` at the
+              // exact same spot rendered correctly immediately. So: the
+              // ScrollView now always stays flex:1 (the shape already
+              // proven safe), and it's wrapped in a plain View that gets
+              // the explicit computed height instead — a genuinely bounded
+              // parent for it, rather than trying to size the ScrollView
+              // itself directly. onLayout on this wrapping View (ground
+              // truth for chatAreaHeight, unaffected by keyboard state) and
+              // behavior=undefined on KeyboardAvoidingView (Android
+              // unchanged; iOS's 'padding' wasn't reliable here either —
+              // see CLAUDE.md's "Chat keyboard-avoidance" notes for the
+              // full history of this screen).
               <View style={{ flex: 1 }} onLayout={e => setChatAreaHeight(e.nativeEvent.layout.height)}>
-              <KeyboardAvoidingView
-                behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-                style={{ flex: 1 }}
-              >
-                <ScrollView
-                  ref={chatScrollRef}
+              <KeyboardAvoidingView behavior={undefined} style={{ flex: 1 }}>
+                <View
                   style={
                     keyboardOffset > 0 && chatAreaHeight > 0
                       ? { height: Math.max(80, chatAreaHeight - keyboardOffset - 64), marginBottom: 12 }
-                      : styles.chatMessages
+                      : { flex: 1, marginBottom: 12 }
                   }
-                  showsVerticalScrollIndicator={false}
                 >
-                  {selectedTraineeMessages.length === 0 && (
-                    <Text style={{ color: colors.textSecondary, textAlign: 'center', marginTop: 20 }}>
-                      No messages yet. Say hi!
-                    </Text>
-                  )}
-                  {selectedTraineeMessages.map(msg => {
-                    const isMe = msg.from_id === coachId;
-                    return (
-                      <View key={msg.id} style={[styles.bubble, isMe ? styles.bubbleMe : styles.bubbleTrainee]}>
-                        <Text style={[styles.bubbleText, isMe && styles.bubbleTextMe]}>{msg.message}</Text>
-                        <Text style={styles.bubbleTime}>{new Date(msg.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</Text>
-                      </View>
-                    );
-                  })}
-                </ScrollView>
+                  <ScrollView ref={chatScrollRef} style={{ flex: 1 }} showsVerticalScrollIndicator={false}>
+                    {selectedTraineeMessages.length === 0 && (
+                      <Text style={{ color: colors.textSecondary, textAlign: 'center', marginTop: 20 }}>
+                        No messages yet. Say hi!
+                      </Text>
+                    )}
+                    {selectedTraineeMessages.map(msg => {
+                      const isMe = msg.from_id === coachId;
+                      return (
+                        <View key={msg.id} style={[styles.bubble, isMe ? styles.bubbleMe : styles.bubbleTrainee]}>
+                          <Text style={[styles.bubbleText, isMe && styles.bubbleTextMe]}>{msg.message}</Text>
+                          <Text style={styles.bubbleTime}>{new Date(msg.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</Text>
+                        </View>
+                      );
+                    })}
+                  </ScrollView>
+                </View>
                 <View style={styles.chatInputRow}>
                   <TextInput
                     style={styles.chatInput}
@@ -1538,6 +1723,59 @@ export default function CoachTrainees({ coachId }: Props) {
                           </View>
                           <View style={styles.dietTargetField} />
                         </View>
+
+                        {/* Only calculator-built plans have a meal-by-meal
+                            breakdown to swap — template-based/uploaded plans
+                            have no `meals` array at all. Rendered inline
+                            (not a second <Modal>) — this whole editor is
+                            already inside the trainee-detail modal, and per
+                            this file's own established rule, stacking a
+                            second visible Modal on top isn't reliable on
+                            iOS (see CoachPrograms.tsx's exercise-name picker
+                            for the same pattern solved the same way). */}
+                        {editingMeals && (
+                          mealPickerIndex != null ? (
+                            <>
+                              <View style={styles.mealPickerHeaderRow}>
+                                <TouchableOpacity onPress={() => setMealPickerIndex(null)}>
+                                  <Ionicons name="arrow-back" size={20} color={colors.textSecondary} />
+                                </TouchableOpacity>
+                                <Text style={[styles.fieldLabel, { marginTop: 0, marginLeft: 8 }]}>
+                                  CHOOSE {editingMeals[mealPickerIndex]?.label?.toUpperCase()}
+                                </Text>
+                              </View>
+                              {mealPickerOptions.map(t => (
+                                <TouchableOpacity
+                                  key={t.id}
+                                  style={styles.mealPickerRow}
+                                  onPress={() => handleSelectMealFromPicker(t)}
+                                >
+                                  <Ionicons name="restaurant-outline" size={16} color={colors.textSecondary} />
+                                  <Text style={styles.mealPickerRowText}>{t.name}</Text>
+                                </TouchableOpacity>
+                              ))}
+                            </>
+                          ) : (
+                            <>
+                              <Text style={[styles.fieldLabel, { marginTop: 16 }]}>MEALS</Text>
+                              {editingMeals.map((meal, i) => (
+                                <View key={meal.slot} style={styles.mealEditRow}>
+                                  <View style={{ flex: 1 }}>
+                                    <Text style={styles.mealEditLabel}>{meal.label}</Text>
+                                    <Text style={styles.mealEditName}>{meal.name}</Text>
+                                  </View>
+                                  {savingMealIndex === i ? (
+                                    <ActivityIndicator size="small" color={colors.xpBar} />
+                                  ) : (
+                                    <TouchableOpacity style={styles.mealEditChangeBtn} onPress={() => setMealPickerIndex(i)}>
+                                      <Text style={styles.mealEditChangeBtnText}>Change</Text>
+                                    </TouchableOpacity>
+                                  )}
+                                </View>
+                              ))}
+                            </>
+                          )
+                        )}
 
                         <Text style={[styles.fieldLabel, { marginTop: 16 }]}>NOTES (OPTIONAL)</Text>
                         <TextInput
@@ -2499,9 +2737,29 @@ const styles = StyleSheet.create({
 
   findTraineeBtn: {
     flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8,
-    backgroundColor: colors.primary, borderRadius: 12, paddingVertical: 14, marginBottom: 20,
+    backgroundColor: colors.primary, borderRadius: 12, paddingVertical: 14, marginBottom: 12,
   },
   findTraineeBtnText: { fontSize: 15, fontWeight: '700', color: colors.text },
+  inviteTraineeBtn: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8,
+    backgroundColor: colors.secondary, borderRadius: 12, paddingVertical: 14, marginBottom: 20,
+    borderWidth: 1, borderColor: colors.xpBar + '55',
+  },
+  inviteTraineeBtnText: { fontSize: 15, fontWeight: '700', color: colors.xpBar },
+  inviteModalSubtitle: { fontSize: 13, color: colors.textSecondary, marginBottom: 16 },
+  generateInviteBtn: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8,
+    backgroundColor: colors.primary, borderRadius: 12, paddingVertical: 14, marginBottom: 16,
+  },
+  generateInviteBtnText: { fontSize: 14, fontWeight: '700', color: colors.text },
+  inviteRow: {
+    flexDirection: 'row', alignItems: 'center', gap: 8,
+    backgroundColor: colors.secondary, borderRadius: 12, padding: 12,
+    marginBottom: 8, borderWidth: 1, borderColor: colors.border,
+  },
+  inviteCode: { fontSize: 16, fontWeight: '800', color: colors.text, letterSpacing: 1.5 },
+  inviteMeta: { fontSize: 12, color: colors.textSecondary, marginTop: 2 },
+  inviteIconBtn: { padding: 6 },
 
   pendingBadge: {
     backgroundColor: colors.textSecondary + '22',
@@ -2922,6 +3180,23 @@ const styles = StyleSheet.create({
   programTabHeaderRow: { flexDirection: 'row', gap: 10, marginBottom: 16 },
   dietTargetRow: { flexDirection: 'row', gap: 12, marginTop: 10 },
   dietTargetField: { flex: 1 },
+  mealPickerHeaderRow: { flexDirection: 'row', alignItems: 'center', marginTop: 16, marginBottom: 4 },
+  mealPickerRow: {
+    flexDirection: 'row', alignItems: 'center', gap: 10,
+    paddingVertical: 12, borderBottomWidth: 1, borderBottomColor: colors.border,
+  },
+  mealPickerRowText: { fontSize: 14, color: colors.text, flex: 1 },
+  mealEditRow: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
+    paddingVertical: 10, borderBottomWidth: 1, borderBottomColor: colors.border,
+  },
+  mealEditLabel: { fontSize: 11, fontWeight: '700', color: colors.textSecondary, letterSpacing: 1, marginBottom: 2 },
+  mealEditName: { fontSize: 14, color: colors.text, fontWeight: '600' },
+  mealEditChangeBtn: {
+    backgroundColor: colors.card, borderRadius: 8, paddingVertical: 6, paddingHorizontal: 12,
+    borderWidth: 1, borderColor: colors.border,
+  },
+  mealEditChangeBtnText: { fontSize: 12, fontWeight: '700', color: colors.xpBar },
   dietTargetsDisplay: { flexDirection: 'row', flexWrap: 'wrap', gap: 10, marginTop: 14 },
   dietTargetChip: {
     backgroundColor: colors.card, borderRadius: 10, paddingVertical: 8, paddingHorizontal: 12,

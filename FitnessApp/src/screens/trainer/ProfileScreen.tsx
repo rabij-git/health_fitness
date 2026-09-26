@@ -11,12 +11,13 @@ import {
   TextInput,
   KeyboardAvoidingView,
   Platform,
+  Alert,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useFocusEffect } from '@react-navigation/native';
 import { Ionicons } from '@expo/vector-icons';
 import { colors } from '../../theme/colors';
-import { getXpForNextLevel, getCurrentLevelXp, getLevelTitle, mockMedals } from '../../data/mockData';
+import { getXpForNextLevel, getCurrentLevelXp, getLevelTitle, mockMedals, computeLevelFromXp } from '../../data/mockData';
 import { notifyMedalsEarned } from '../../lib/restNotifications';
 import {
   getProfile,
@@ -29,6 +30,7 @@ import {
   acceptCoachRequest,
   declineCoachRequest,
   updateProfile,
+  evaluateAndAwardMedals,
 } from '../../lib/db';
 import { DBUser, DBWeightLog, DBNutritionPlan, DBCoachRequest } from '../../lib/supabase';
 import { ActivityLevel, Sex, ACTIVITY_LABELS } from '../../lib/nutritionCalc';
@@ -235,6 +237,9 @@ export default function ProfileScreen({ onLogout, userId }: Props) {
   const [incomingRequest, setIncomingRequest] = useState<(DBCoachRequest & { coach: DBUser }) | null>(null);
   const [outgoingRequest, setOutgoingRequest] = useState<(DBCoachRequest & { coach: DBUser }) | null>(null);
   const [respondingRequest, setRespondingRequest] = useState(false);
+  // Session-scoped (not persisted) — just enough to avoid re-popping the
+  // same alert every time this screen refetches/regains focus.
+  const alertedRequestIds = useRef<Set<string>>(new Set());
   const [cancelingRequest, setCancelingRequest] = useState(false);
 
   const [showFindCoach, setShowFindCoach] = useState(false);
@@ -274,12 +279,30 @@ export default function ProfileScreen({ onLogout, userId }: Props) {
       await updateProfile(userId, updates);
       setProfile(prev => (prev ? { ...prev, ...updates } : prev));
       setShowSettings(false);
+      // "New Adventure" (and "Profile Complete") fire on profile completion,
+      // not on the trainee's next workout — evaluate right here so it
+      // doesn't wait. Folds any newly-earned XP into the same profile,
+      // mirroring the combined-write pattern used at workout completion.
+      try {
+        const newlyEarned = await evaluateAndAwardMedals(userId, profile?.streak ?? 0);
+        if (newlyEarned.length > 0) {
+          const bonusXp = newlyEarned.reduce((sum, id) => sum + (mockMedals.find(m => m.id === id)?.xpReward ?? 0), 0);
+          const newXp = (profile?.xp ?? 0) + bonusXp;
+          const newLevel = computeLevelFromXp(newXp);
+          await updateProfile(userId, { xp: newXp, level: newLevel });
+          setProfile(prev => (prev ? { ...prev, xp: newXp, level: newLevel } : prev));
+          const names = newlyEarned.map(id => mockMedals.find(m => m.id === id)?.name).filter((n): n is string => !!n);
+          notifyMedalsEarned(names).catch(() => {});
+        }
+      } catch (e) {
+        console.warn('evaluateAndAwardMedals (profile save) error', e);
+      }
     } catch (e) {
       console.warn('updateProfile error', e);
     } finally {
       setSavingSettings(false);
     }
-  }, [userId, birthYear, sex, heightCm, activityLevel]);
+  }, [userId, birthYear, sex, heightCm, activityLevel, profile]);
 
   const loadAll = useCallback(() => {
     return Promise.all([
@@ -297,6 +320,13 @@ export default function ProfileScreen({ onLogout, userId }: Props) {
       setLoading(false);
       if (p?.coach_id) {
         getProfile(p.coach_id).then(setCoachProfile);
+      }
+      // Popup, not just a passive accept/decline card — previously the
+      // only way to notice a coach-initiated request was to already be
+      // looking at the Coach card on this screen.
+      if (incoming && !alertedRequestIds.current.has(incoming.id)) {
+        alertedRequestIds.current.add(incoming.id);
+        Alert.alert('Coach Request', `${incoming.coach.name} wants to be your coach.`);
       }
     });
   }, [userId]);

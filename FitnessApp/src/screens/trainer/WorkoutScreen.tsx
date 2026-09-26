@@ -8,6 +8,7 @@ import {
   Modal,
   ActivityIndicator,
   AppState,
+  Vibration,
 } from 'react-native';
 import { useFocusEffect, useRoute, useNavigation } from '@react-navigation/native';
 import { Ionicons } from '@expo/vector-icons';
@@ -223,20 +224,28 @@ export default function WorkoutScreen({ userId }: Props) {
         setRestTimer(null);
         return;
       }
-      // Tick once per second for the final 5 seconds so the trainee knows to
-      // start the next set. Only attempted while genuinely foregrounded —
-      // iOS refuses to activate the audio session while backgrounded or
-      // mid-transition, and that failure throws synchronously through
-      // Expo's native bridge (uncaught, crashes the app) rather than
-      // rejecting a promise — so this is also wrapped in a try/catch as a
-      // second line of defense against that same race (e.g. backgrounding
-      // starts in the instant between this check and the native call).
-      if (left <= 5 && AppState.currentState === 'active') {
-        try {
-          tickPlayer.seekTo(0);
-          tickPlayer.play();
-        } catch (e) {
-          console.warn('Rest timer tick sound failed', e);
+      // Tick once per second for the final 3 seconds only ("3... 2... 1...")
+      // so the trainee knows to start the next set — previously ticked for
+      // 5 seconds, which didn't match the intended countdown. Only
+      // attempted while genuinely foregrounded — iOS refuses to activate
+      // the audio session while backgrounded or mid-transition, and that
+      // failure throws synchronously through Expo's native bridge
+      // (uncaught, crashes the app) rather than rejecting a promise — so
+      // this is also wrapped in a try/catch as a second line of defense
+      // against that same race (e.g. backgrounding starts in the instant
+      // between this check and the native call).
+      if (left <= 3 && left > 0) {
+        // Vibrate regardless of foreground/silent-switch state — this is
+        // the whole point of it: still noticeable when sound can't play
+        // (silent switch) or wouldn't be safe to trigger (backgrounded).
+        Vibration.vibrate(200);
+        if (AppState.currentState === 'active') {
+          try {
+            tickPlayer.seekTo(0);
+            tickPlayer.play();
+          } catch (e) {
+            console.warn('Rest timer tick sound failed', e);
+          }
         }
       }
     };
@@ -845,7 +854,11 @@ export default function WorkoutScreen({ userId }: Props) {
                         onPress={() => {
                           const newValue = selected ? null : level;
                           updateSet(exercise.id, setIndex, 'effort', newValue);
-                          if (newValue !== null && exercise.restSeconds && exercise.restSeconds > 0) {
+                          // No rest timer after the very last set of the very
+                          // last exercise — the workout is over, there's
+                          // nothing left to rest for.
+                          const isVeryLastSet = exIndex === exercises.length - 1 && setIndex === exercise.sets.length - 1;
+                          if (newValue !== null && !isVeryLastSet && exercise.restSeconds && exercise.restSeconds > 0) {
                             setRestTimer({
                               exerciseId: exercise.id,
                               exerciseName: exercise.name,

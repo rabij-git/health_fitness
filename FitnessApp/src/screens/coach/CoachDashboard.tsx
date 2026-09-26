@@ -11,6 +11,7 @@ import {
   Platform,
 } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
+import { useFocusEffect } from '@react-navigation/native';
 import { Ionicons } from '@expo/vector-icons';
 import { colors } from '../../theme/colors';
 import { useKeyboardOffset } from '../../lib/useKeyboardOffset';
@@ -137,26 +138,35 @@ export default function CoachDashboard({ onLogout, coachId, navigation }: Props)
     }
   }, [coachId, chatTrainee, chatInput]);
 
-  useEffect(() => {
-    getProfile(coachId).then(setCoachProfile);
-    getPrograms(coachId).then(progs => setProgramCount(progs.length));
-    getMyTrainees(coachId).then(async (ts) => {
-      setTrainees(ts);
-      if (ts.length === 0) {
-        setCompliance(null);
-        return;
-      }
-      const histories = await Promise.all(ts.map(t => getTraineeHistory(t.id)));
-      const weekAgo = Date.now() - 7 * 86400000;
-      const recentSessions = histories.flat().filter(s => new Date(s.completed_at).getTime() >= weekAgo);
-      if (recentSessions.length === 0) {
-        setCompliance(null);
-        return;
-      }
-      const avg = recentSessions.reduce((sum, s) => sum + (s.completion_pct ?? 0), 0) / recentSessions.length;
-      setCompliance(Math.round(avg));
-    });
-  }, [coachId]);
+  // useFocusEffect, not a plain useEffect — this used to only ever fetch
+  // once on mount, so a trainee accepted on the Trainees tab (or a request
+  // accepted from the notification bell here) never showed up in this
+  // screen's own trainee count/preview until the app was fully reloaded.
+  // Re-running on every focus keeps it current, same pattern already used
+  // for the trainee's own Home screen (see CLAUDE.md's Coach Notifications
+  // section).
+  useFocusEffect(
+    useCallback(() => {
+      getProfile(coachId).then(setCoachProfile);
+      getPrograms(coachId).then(progs => setProgramCount(progs.length));
+      getMyTrainees(coachId).then(async (ts) => {
+        setTrainees(ts);
+        if (ts.length === 0) {
+          setCompliance(null);
+          return;
+        }
+        const histories = await Promise.all(ts.map(t => getTraineeHistory(t.id)));
+        const weekAgo = Date.now() - 7 * 86400000;
+        const recentSessions = histories.flat().filter(s => new Date(s.completed_at).getTime() >= weekAgo);
+        if (recentSessions.length === 0) {
+          setCompliance(null);
+          return;
+        }
+        const avg = recentSessions.reduce((sum, s) => sum + (s.completion_pct ?? 0), 0) / recentSessions.length;
+        setCompliance(Math.round(avg));
+      });
+    }, [coachId])
+  );
 
   return (
     <SafeAreaView style={styles.container}>
@@ -305,37 +315,43 @@ export default function CoachDashboard({ onLogout, coachId, navigation }: Props)
               </TouchableOpacity>
             </View>
 
-            {/* onLayout on this wrapping View, not on KeyboardAvoidingView
-                itself — see the matching note in TrainerDashboard.tsx. */}
+            {/* See CoachTrainees.tsx's Chat tab for the full history — a
+                bare `<ScrollView style={{height}}>` was confirmed (via a
+                live debug pass) to silently ignore an explicit height in
+                this exact nested context on iOS, no matter how the height
+                was supplied. Fix: ScrollView always stays flex:1 (already
+                proven safe), wrapped in a plain View that gets the
+                explicit computed height instead. behavior=undefined on
+                KeyboardAvoidingView — Android unchanged. */}
             <View style={{ flex: 1 }} onLayout={e => setChatAreaHeight(e.nativeEvent.layout.height)}>
             <KeyboardAvoidingView
-              behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+              behavior={undefined}
               style={{ flex: 1 }}
             >
-              <ScrollView
-                ref={chatScrollRef}
+              <View
                 style={
                   keyboardOffset > 0 && chatAreaHeight > 0
                     ? { height: Math.max(80, chatAreaHeight - keyboardOffset - 64), marginBottom: 12 }
-                    : styles.fullScreenChatMessages
+                    : { flex: 1, marginBottom: 12 }
                 }
-                showsVerticalScrollIndicator={false}
               >
-                {chatMessages.length === 0 && (
-                  <Text style={{ color: colors.textSecondary, textAlign: 'center', marginTop: 20 }}>
-                    No messages yet.
-                  </Text>
-                )}
-                {chatMessages.map(msg => {
-                  const isMe = msg.from_id === coachId;
-                  return (
-                    <View key={msg.id} style={[styles.bubble, isMe ? styles.bubbleMe : styles.bubbleTrainee]}>
-                      <Text style={[styles.bubbleText, isMe && styles.bubbleTextMe]}>{msg.message}</Text>
-                      <Text style={styles.bubbleTime}>{new Date(msg.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</Text>
-                    </View>
-                  );
-                })}
-              </ScrollView>
+                <ScrollView ref={chatScrollRef} style={{ flex: 1 }} showsVerticalScrollIndicator={false}>
+                  {chatMessages.length === 0 && (
+                    <Text style={{ color: colors.textSecondary, textAlign: 'center', marginTop: 20 }}>
+                      No messages yet.
+                    </Text>
+                  )}
+                  {chatMessages.map(msg => {
+                    const isMe = msg.from_id === coachId;
+                    return (
+                      <View key={msg.id} style={[styles.bubble, isMe ? styles.bubbleMe : styles.bubbleTrainee]}>
+                        <Text style={[styles.bubbleText, isMe && styles.bubbleTextMe]}>{msg.message}</Text>
+                        <Text style={styles.bubbleTime}>{new Date(msg.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</Text>
+                      </View>
+                    );
+                  })}
+                </ScrollView>
+              </View>
               <View style={styles.chatInputRow}>
                 <TextInput
                   style={styles.chatInput}

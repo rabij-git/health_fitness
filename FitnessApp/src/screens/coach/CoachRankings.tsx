@@ -296,8 +296,15 @@ export default function CoachRankings({ coachId }: Props) {
               {!searching && searchQuery.length >= 2 && searchResults.length === 0 && (
                 <Text style={styles.noResults}>No users found</Text>
               )}
+              {searchQuery.length === 0 && (
+                <Text style={styles.sectionLabel}>MY TRAINEES</Text>
+              )}
               <ScrollView>
-                {searchResults
+                {/* Below 2 characters, show the coach's own trainees directly
+                    (the common case — no need to type a search just to pick
+                    someone already on the roster); 2+ characters switches to
+                    the broader name/email search across all users. */}
+                {(searchQuery.length >= 2 ? searchResults : trainees)
                   .filter(u => !gymMembers.find(m => m.id === u.id))
                   .map((user) => (
                     <View key={user.id} style={styles.searchRow}>
@@ -314,6 +321,9 @@ export default function CoachRankings({ coachId }: Props) {
                     </View>
                   ))
                 }
+                {searchQuery.length === 0 && trainees.filter(u => !gymMembers.find(m => m.id === u.id)).length === 0 && (
+                  <Text style={styles.noResults}>All your trainees are already in this gym</Text>
+                )}
               </ScrollView>
             </View>
           </View>
@@ -420,6 +430,10 @@ const styles = StyleSheet.create({
   primaryBtnDisabled: { opacity: 0.5 },
   primaryBtnText: { fontSize: 16, fontWeight: '700', color: colors.text },
   noResults: { color: colors.textSecondary, textAlign: 'center', marginTop: 12 },
+  sectionLabel: {
+    fontSize: 11, fontWeight: '700', color: colors.textSecondary,
+    letterSpacing: 1, marginTop: 16, marginBottom: 4,
+  },
   searchRow: {
     flexDirection: 'row', alignItems: 'center', gap: 12,
     paddingVertical: 12, borderBottomWidth: 1, borderBottomColor: colors.border,

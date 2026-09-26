@@ -321,3 +321,14 @@ export interface DBCoachInvite {
   used_at: string | null;
   created_at: string;
 }
+
+// Coach-generated code that auto-connects a brand-new trainee signup to
+// that coach — same shape as DBCoachInvite, one level down.
+export interface DBTraineeInvite {
+  id: string;
+  code: string;
+  created_by: string;
+  used_by: string | null;
+  used_at: string | null;
+  created_at: string;
+}

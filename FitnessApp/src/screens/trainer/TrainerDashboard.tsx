@@ -75,9 +75,12 @@ interface Props {
   onLogout: () => void;
   userId: string;
   navigation?: any;
+  // Lets TrainerTabs scroll this screen to top when the Home tab is
+  // tapped again while already focused (double-tap-to-top).
+  scrollRef?: React.RefObject<ScrollView | null>;
 }
 
-export default function TrainerDashboard({ onLogout, userId, navigation }: Props) {
+export default function TrainerDashboard({ onLogout, userId, navigation, scrollRef }: Props) {
   const keyboardOffset = useKeyboardOffset();
   const insets = useSafeAreaInsets();
   const [profile, setProfile] = useState<DBUser | null>(null);
@@ -292,7 +295,7 @@ export default function TrainerDashboard({ onLogout, userId, navigation }: Props
 
   return (
     <SafeAreaView style={styles.container}>
-      <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.scrollContent}>
+      <ScrollView ref={scrollRef} showsVerticalScrollIndicator={false} contentContainerStyle={styles.scrollContent}>
 
         {/* Header */}
         <View style={styles.header}>
@@ -547,43 +550,45 @@ export default function TrainerDashboard({ onLogout, userId, navigation }: Props
               </TouchableOpacity>
             </View>
 
-            {/* onLayout lives on this wrapping View, not on
-                KeyboardAvoidingView itself — KAV needs its OWN internal
-                onLayout to track its screen position (that's how 'padding'
-                behavior, used on iOS, computes the right offset); passing
-                a custom onLayout prop straight to it silently replaces
-                that internal handler and breaks 'padding' behavior
-                entirely. Harmless on Android (behavior is undefined there,
-                a no-op), but broke iOS for all three chat screens. */}
+            {/* See CoachTrainees.tsx's Chat tab for the full history — a
+                bare `<ScrollView style={{height}}>` was confirmed (via a
+                live debug pass) to silently ignore an explicit height in
+                this exact nested context on iOS, no matter how the height
+                was supplied. Fix: ScrollView always stays flex:1 (already
+                proven safe), wrapped in a plain View that gets the
+                explicit computed height instead — a genuinely bounded
+                parent for it. behavior=undefined on KeyboardAvoidingView —
+                Android unchanged (it was already `undefined`); iOS's
+                'padding' wasn't reliable here either. */}
             <View style={{ flex: 1 }} onLayout={e => setChatAreaHeight(e.nativeEvent.layout.height)}>
             <KeyboardAvoidingView
-              behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+              behavior={undefined}
               style={{ flex: 1 }}
             >
-              <ScrollView
-                ref={chatScrollRef}
+              <View
                 style={
                   keyboardOffset > 0 && chatAreaHeight > 0
                     ? { height: Math.max(80, chatAreaHeight - keyboardOffset - 64), marginBottom: 12 }
-                    : styles.fullScreenChatMessages
+                    : { flex: 1, marginBottom: 12 }
                 }
-                showsVerticalScrollIndicator={false}
               >
-                {dbMessages.length === 0 && (
-                  <Text style={{ color: colors.textSecondary, textAlign: 'center', marginTop: 20 }}>
-                    No messages yet. Say hi!
-                  </Text>
-                )}
-                {dbMessages.map(msg => {
-                  const isMe = msg.from_id === userId;
-                  return (
-                    <View key={msg.id} style={[styles.bubble, isMe ? styles.bubbleMe : styles.bubbleCoach]}>
-                      <Text style={[styles.bubbleText, isMe && styles.bubbleTextMe]}>{msg.message}</Text>
-                      <Text style={styles.bubbleTime}>{new Date(msg.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</Text>
-                    </View>
-                  );
-                })}
-              </ScrollView>
+                <ScrollView ref={chatScrollRef} style={{ flex: 1 }} showsVerticalScrollIndicator={false}>
+                  {dbMessages.length === 0 && (
+                    <Text style={{ color: colors.textSecondary, textAlign: 'center', marginTop: 20 }}>
+                      No messages yet. Say hi!
+                    </Text>
+                  )}
+                  {dbMessages.map(msg => {
+                    const isMe = msg.from_id === userId;
+                    return (
+                      <View key={msg.id} style={[styles.bubble, isMe ? styles.bubbleMe : styles.bubbleCoach]}>
+                        <Text style={[styles.bubbleText, isMe && styles.bubbleTextMe]}>{msg.message}</Text>
+                        <Text style={styles.bubbleTime}>{new Date(msg.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</Text>
+                      </View>
+                    );
+                  })}
+                </ScrollView>
+              </View>
               <View style={styles.chatInputRow}>
                 <TextInput
                   style={styles.chatInput}

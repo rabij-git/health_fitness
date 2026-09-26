@@ -1,4 +1,4 @@
-import { supabase, SUPABASE_URL, SUPABASE_ANON_KEY, DBUser, DBProgram, DBWorkout, DBExercise, DBWeightLog, DBExerciseWeightLog, DBMessage, DBWorkoutSession, DBGym, DBFriendship, DBNutritionPlan, DBNutritionPlanTemplate, DBCoachRequest, DBCoachInvite, DBVital, DBProgramExercise, DBLibraryExercise, DBUserMedal, DBFoodLogEntry, DBMealCompletion } from './supabase';
+import { supabase, SUPABASE_URL, SUPABASE_ANON_KEY, DBUser, DBProgram, DBWorkout, DBExercise, DBWeightLog, DBExerciseWeightLog, DBMessage, DBWorkoutSession, DBGym, DBFriendship, DBNutritionPlan, DBNutritionPlanTemplate, DBCoachRequest, DBCoachInvite, DBTraineeInvite, DBVital, DBProgramExercise, DBLibraryExercise, DBUserMedal, DBFoodLogEntry, DBMealCompletion } from './supabase';
 import { computeLevelFromXp, mockMedals } from '../data/mockData';
 // Reading a just-created expo-print file into JS (as a Blob via fetch(), as
 // an ArrayBuffer via the new File class, or as base64 via the legacy
@@ -80,6 +80,33 @@ export async function signUpCoach(email: string, password: string, name: string,
   if (error) throw error;
 
   const { error: redeemError } = await supabase.rpc('redeem_coach_invite', {
+    p_code: inviteCode.trim().toUpperCase(),
+    p_name: name,
+    p_email: email,
+    p_avatar: initials,
+  });
+  if (redeemError) throw redeemError;
+
+  return data;
+}
+
+// Trainee signup with a coach's invite code — mirrors signUpCoach exactly,
+// one level down. Plain trainee signup (signUp(), no code) stays open/
+// ungated as before; this is only used when the trainee has a code, and
+// auto-connects them to that coach (coach_id set inside the RPC) instead of
+// leaving them to search/request/wait for acceptance.
+export async function signUpTraineeWithInvite(email: string, password: string, name: string, inviteCode: string) {
+  const initials = name.split(' ').map(w => w[0]).join('').slice(0, 2).toUpperCase();
+  const { data, error } = await supabase.auth.signUp({
+    email,
+    password,
+    options: {
+      data: { name, role: 'trainee', avatar: initials },
+    },
+  });
+  if (error) throw error;
+
+  const { error: redeemError } = await supabase.rpc('redeem_trainee_invite', {
     p_code: inviteCode.trim().toUpperCase(),
     p_name: name,
     p_email: email,
@@ -1269,9 +1296,13 @@ export async function getMaxDailySteps(traineeId: string): Promise<number> {
 // without a coach already assigned, so checking it here would always
 // co-fire with 'First Step' and never mean anything on its own.
 //
-// 'Top Ranker' (id 5, needs a leaderboard-rank query) and 'New Adventure'
-// (id 7, would duplicate 'First Step's exact trigger) are deliberately
-// excluded — see the Medals section in CLAUDE.md.
+// 'Top Ranker' (id 5, needs a leaderboard-rank query) is deliberately
+// excluded — see the Medals section in CLAUDE.md. 'New Adventure' (id 7)
+// used to be excluded here too (it would have duplicated 'First Step's
+// trigger) but per feedback it's meant to fire on signup/profile
+// completion, not first workout — see `profileComplete` below, and
+// ProfileScreen.tsx's settings-save handler, which calls this function
+// too so it doesn't wait for the trainee's next workout to fire.
 export async function evaluateAndAwardMedals(userId: string, streak: number): Promise<string[]> {
   const [existing, sessionsCount, profile, activeDays, maxSteps, isMorning, isEvening, weightLogs, workoutsAssigned] = await Promise.all([
     getUserMedals(userId),
@@ -1307,6 +1338,7 @@ export async function evaluateAndAwardMedals(userId: string, streak: number): Pr
     ['6', isMorning],                 // Early Bird
     ['8', isEvening],                 // Night Owl
     ['9', profileComplete],           // Profile Complete
+    ['7', profileComplete],           // New Adventure — same trigger as Profile Complete, deliberately (see note above)
     ['11', weightLogs.length >= 1],   // Progress Logged
     ['79', weightLogs.length >= 1],   // Progress Check (same event — no distinct "check-in" vs "log")
     ['25', workoutsAssigned.length >= 1], // Plan Activated (first workout ever ASSIGNED, not completed)
@@ -1544,6 +1576,37 @@ export async function getCoachInvites(): Promise<DBCoachInvite[]> {
 export async function revokeCoachInvite(inviteId: string) {
   const { error } = await supabase
     .from('coach_invites')
+    .delete()
+    .eq('id', inviteId)
+    .is('used_by', null);
+  if (error) throw error;
+}
+
+// ── Trainee invites (coach → trainee, mirrors the coach-invite trio above) ──
+
+export async function createTraineeInvite(coachId: string): Promise<DBTraineeInvite> {
+  const { data, error } = await supabase
+    .from('trainee_invites')
+    .insert({ code: generateInviteCode(), created_by: coachId })
+    .select()
+    .single();
+  if (error) throw error;
+  return data;
+}
+
+export async function getMyTraineeInvites(coachId: string): Promise<DBTraineeInvite[]> {
+  const { data, error } = await supabase
+    .from('trainee_invites')
+    .select('*')
+    .eq('created_by', coachId)
+    .order('created_at', { ascending: false });
+  if (error) return [];
+  return data ?? [];
+}
+
+export async function revokeTraineeInvite(inviteId: string) {
+  const { error } = await supabase
+    .from('trainee_invites')
     .delete()
     .eq('id', inviteId)
     .is('used_by', null);

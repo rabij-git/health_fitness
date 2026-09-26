@@ -10,6 +10,7 @@ import {
   KeyboardAvoidingView,
   Platform,
   ActivityIndicator,
+  Alert,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
@@ -103,6 +104,9 @@ export default function SocialScreen({ userId }: Props) {
   const findFriendsInputRef = useRef<TextInput>(null);
   const [searching, setSearching] = useState(false);
   const [requestSent, setRequestSent] = useState<Record<string, boolean>>({});
+  // Session-scoped (not persisted) — just enough to avoid re-popping the
+  // same alert every time this screen refetches/regains focus.
+  const alertedRequestIds = useRef<Set<string>>(new Set());
 
   const loadAll = useCallback(async () => {
     setLoading(true);
@@ -118,6 +122,21 @@ export default function SocialScreen({ userId }: Props) {
     setFriends(fr);
     setPendingRequests(reqs);
     setAllFriendships(friendships);
+
+    // Popup, not just a passive card at the top of the Friends tab —
+    // previously the only way to notice a new friend request was to
+    // already be on this screen looking at that list.
+    const unseen = reqs.filter((r: any) => !alertedRequestIds.current.has(r.id));
+    if (unseen.length > 0) {
+      unseen.forEach((r: any) => alertedRequestIds.current.add(r.id));
+      const [first, ...rest] = unseen;
+      Alert.alert(
+        'New Friend Request',
+        rest.length > 0
+          ? `${first.from.name} (and ${rest.length} other${rest.length === 1 ? '' : 's'}) wants to be your workout buddy.`
+          : `${first.from.name} wants to be your workout buddy.`
+      );
+    }
 
     if (p?.gym_id) {
       const gymUsers = await getGymLeaderboard(p.gym_id);
