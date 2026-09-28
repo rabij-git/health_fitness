@@ -55,7 +55,7 @@ import {
   revokeTraineeInvite,
 } from '../../lib/db';
 import { DBProgram, DBUser, DBWorkout, DBExercise, DBWeightLog, DBNutritionPlan, DBNutritionPlanTemplate, DBCoachRequest, DBLibraryExercise, DBMessage, DBVital, DBMealCompletion, DBFoodLogEntry, DBTraineeInvite, MealSlot, SessionExerciseDetail, SessionSetDetail } from '../../lib/supabase';
-import { templatesForMealType, scaleTemplateToTarget, MealType, MealTemplate, Diet } from '../../data/mealLibrary';
+import { templatesForMealType, scaleTemplateToTarget, scaleItem, MealType, MealTemplate, Diet } from '../../data/mealLibrary';
 import { sanitizeCount, sanitizeWeightInput, sanitizeTimeInput, stripKg, withKg } from '../../lib/exerciseInput';
 import CalorieCalculatorModal from './CalorieCalculatorModal';
 
@@ -683,6 +683,46 @@ export default function CoachTrainees({ coachId }: Props) {
     }
   }, [mealPickerIndex, editingMeals, editingPlanId]);
 
+  // Changing the daily calorie target keeps the macros proportionally where
+  // they were — scaling every macro's grams by the same factor the calorie
+  // total itself changed by leaves each macro's own share of calories
+  // unchanged (e.g. protein staying ~30% of calories), without needing to
+  // know calories-per-gram constants or read `calc_inputs.macro_split`
+  // (which is null for template-assigned/manually-typed plans anyway — this
+  // works from whatever protein/carbs/fat values are already in the editor,
+  // calculator-built or not). A macro left blank stays blank — nothing to
+  // scale from. If the plan has a calculator-built `meals` breakdown, each
+  // meal (targets, actuals, and item quantities) is rescaled by the same
+  // factor too, so it doesn't drift out of sync with the new daily totals.
+  const handlePlanCaloriesChange = useCallback((v: string) => {
+    const sanitized = v.replace(/[^0-9]/g, '');
+    const oldCals = parseFloat(planCalories);
+    const newCals = parseFloat(sanitized);
+    setPlanCalories(sanitized);
+    if (!oldCals || oldCals <= 0 || !newCals || newCals <= 0) return;
+    const scale = newCals / oldCals;
+
+    const oldProtein = parseFloat(planProtein);
+    const oldCarbs = parseFloat(planCarbs);
+    const oldFat = parseFloat(planFat);
+    if (oldProtein > 0) setPlanProtein(String(Math.round(oldProtein * scale)));
+    if (oldCarbs > 0) setPlanCarbs(String(Math.round(oldCarbs * scale)));
+    if (oldFat > 0) setPlanFat(String(Math.round(oldFat * scale)));
+
+    setEditingMeals(prev => prev == null ? prev : prev.map(m => ({
+      ...m,
+      target_calories: Math.round(m.target_calories * scale),
+      target_protein: Math.round(m.target_protein * scale),
+      target_carbs: Math.round(m.target_carbs * scale),
+      target_fat: Math.round(m.target_fat * scale),
+      actual_calories: Math.round(m.actual_calories * scale),
+      actual_protein: Math.round(m.actual_protein * scale),
+      actual_carbs: Math.round(m.actual_carbs * scale),
+      actual_fat: Math.round(m.actual_fat * scale),
+      items: m.items.map(i => scaleItem(i, scale)),
+    })));
+  }, [planCalories, planProtein, planCarbs, planFat]);
+
   const handleSavePlan = useCallback(async () => {
     if (!selectedTrainee || !planTitle.trim() || savingPlan || !editingPlanId) return;
     setSavingPlan(true);
@@ -694,6 +734,10 @@ export default function CoachTrainees({ coachId }: Props) {
       target_carbs: planCarbs ? parseInt(planCarbs, 10) : null,
       target_fat: planFat ? parseInt(planFat, 10) : null,
       target_water_ml: planWater ? parseInt(planWater, 10) : null,
+      // Keeps the (possibly just-rescaled, see handlePlanCaloriesChange)
+      // meal breakdown in sync with whatever's shown — a no-op for plans
+      // with no `meals` array (editingMeals stays null for those).
+      meals: editingMeals,
       // Saving an edit — from either the plain "Edit" or "Unlock" entry
       // point — always leaves the plan unlocked; only Finalize (in the
       // calculator) re-locks it with a fresh PDF.
@@ -708,7 +752,7 @@ export default function CoachTrainees({ coachId }: Props) {
     } finally {
       setSavingPlan(false);
     }
-  }, [selectedTrainee, editingPlanId, planTitle, planNotes, planCalories, planProtein, planCarbs, planFat, planWater, savingPlan]);
+  }, [selectedTrainee, editingPlanId, planTitle, planNotes, planCalories, planProtein, planCarbs, planFat, planWater, editingMeals, savingPlan]);
 
   // ── Requests ──
   const handleSearchTrainees = useCallback(async (query: string) => {
@@ -1666,7 +1710,7 @@ export default function CoachTrainees({ coachId }: Props) {
                             <TextInput
                               style={styles.exMetaInput}
                               value={planCalories}
-                              onChangeText={v => setPlanCalories(v.replace(/[^0-9]/g, ''))}
+                              onChangeText={handlePlanCaloriesChange}
                               keyboardType="number-pad"
                               placeholder="0"
                               placeholderTextColor={colors.textSecondary}
@@ -2063,7 +2107,7 @@ export default function CoachTrainees({ coachId }: Props) {
                                       {plan.locked ? (
                                         <TouchableOpacity style={styles.workoutActionBtn} onPress={() => openEditPlanEditor(plan)}>
                                           <Ionicons name="lock-open-outline" size={16} color={colors.xpBar} />
-                                          <Text style={styles.workoutActionBtnText}>Unlock</Text>
+                                          <Text style={styles.workoutActionBtnText}>Edit (Unlock)</Text>
                                         </TouchableOpacity>
                                       ) : (
                                         <TouchableOpacity style={styles.workoutActionBtn} onPress={() => openEditPlanEditor(plan)}>

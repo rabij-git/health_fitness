@@ -695,7 +695,7 @@ export const mealTemplates: MealTemplate[] = [
 
 // Only scales numeric gram/ml quantities — whole-item counts ("1 egg",
 // "1 scoop") stay fixed since they can't be fractionally scaled sensibly.
-function scaleItem(item: MealItem, factor: number): MealItem {
+export function scaleItem(item: MealItem, factor: number): MealItem {
   const match = item.qty.match(/^(\d+(?:\.\d+)?)(g|ml)$/);
   if (!match) return item;
   const scaled = Math.max(1, Math.round(parseFloat(match[1]) * factor));
