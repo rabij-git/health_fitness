@@ -1,11 +1,11 @@
 import React, { useState, useCallback } from 'react';
-import { View, StyleSheet, ScrollView, TouchableOpacity, Modal } from 'react-native';
+import { View, StyleSheet, ScrollView, TouchableOpacity, Modal, ActivityIndicator, Alert } from 'react-native';
 import { Text } from '../../components/AppText';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useFocusEffect } from '@react-navigation/native';
 import { Ionicons } from '@expo/vector-icons';
 import { colors } from '../../theme/colors';
-import { getProfile } from '../../lib/db';
+import { getProfile, deleteOwnAccount } from '../../lib/db';
 import { DBUser } from '../../lib/supabase';
 import appJson from '../../../app.json';
 
@@ -40,6 +40,51 @@ export default function CoachSettings({ onLogout, coachId, navigation }: Props) 
   useFocusEffect(useCallback(() => {
     getProfile(coachId).then(setProfile);
   }, [coachId]));
+
+  // Required by both app stores for any app with in-app account creation
+  // (App Store Guideline 5.1.1(v); Google Play's Data Safety policy) —
+  // mirrors ProfileScreen.tsx's trainee-side version, real double-confirm
+  // since this is destructive and irreversible. deleteOwnAccount() (db.ts)
+  // only throws if the delete itself failed; a failed local sign-out
+  // afterward is swallowed there, so reaching the success path here
+  // reliably means the account is really gone.
+  const [deletingAccount, setDeletingAccount] = useState(false);
+  const handleDeleteAccount = useCallback(() => {
+    Alert.alert(
+      'Delete Account',
+      'This permanently deletes your coach account and its data — programs, nutrition templates, and messages. Any trainees you coach are disconnected, not deleted; their own accounts and history are unaffected. This cannot be undone.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Delete Account',
+          style: 'destructive',
+          onPress: () => {
+            Alert.alert(
+              'Are you absolutely sure?',
+              'Your account will be deleted immediately and cannot be recovered.',
+              [
+                { text: 'Cancel', style: 'cancel' },
+                {
+                  text: 'Yes, Delete Everything',
+                  style: 'destructive',
+                  onPress: async () => {
+                    setDeletingAccount(true);
+                    try {
+                      await deleteOwnAccount();
+                      onLogout();
+                    } catch (e) {
+                      Alert.alert('Error', e instanceof Error ? e.message : 'Could not delete your account. Please try again.');
+                      setDeletingAccount(false);
+                    }
+                  },
+                },
+              ]
+            );
+          },
+        },
+      ]
+    );
+  }, [onLogout]);
 
   const items: { label: string; icon: string; onPress: () => void }[] = [
     { label: 'Profile', icon: 'person', onPress: () => setShowProfile(true) },
@@ -87,6 +132,21 @@ export default function CoachSettings({ onLogout, coachId, navigation }: Props) 
         <TouchableOpacity style={styles.logoutButton} onPress={onLogout}>
           <Ionicons name="log-out-outline" size={20} color={colors.primary} />
           <Text style={styles.logoutText}>Logout</Text>
+        </TouchableOpacity>
+
+        <TouchableOpacity
+          style={[styles.deleteAccountButton, deletingAccount && { opacity: 0.6 }]}
+          onPress={handleDeleteAccount}
+          disabled={deletingAccount}
+        >
+          {deletingAccount ? (
+            <ActivityIndicator size="small" color={colors.danger} />
+          ) : (
+            <>
+              <Ionicons name="trash-outline" size={18} color={colors.danger} />
+              <Text style={styles.deleteAccountButtonText}>Delete Account</Text>
+            </>
+          )}
         </TouchableOpacity>
       </ScrollView>
 
@@ -197,6 +257,15 @@ const styles = StyleSheet.create({
     borderColor: colors.primary,
   },
   logoutText: { fontSize: 16, fontWeight: '600', color: colors.primary },
+  deleteAccountButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    paddingVertical: 16,
+    marginTop: 10,
+  },
+  deleteAccountButtonText: { fontSize: 14, fontWeight: '600', color: colors.danger },
 
   // Modals
   overlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.75)', justifyContent: 'flex-end' },

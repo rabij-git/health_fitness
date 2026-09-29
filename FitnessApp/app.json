@@ -1,27 +1,27 @@
 {
   "expo": {
     "name": "Athera",
-    "slug": "FitnessApp",
+    "slug": "athera",
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "dark",
     "ios": {
+      "bundleIdentifier": "com.athera.app",
+      "buildNumber": "1",
       "supportsTablet": true,
       "infoPlist": {
         "NSMotionUsageDescription": "Athera reads your step count to show your daily activity."
       }
     },
     "android": {
+      "package": "com.athera.app",
+      "versionCode": 1,
       "adaptiveIcon": {
         "backgroundColor": "#111827",
         "foregroundImage": "./assets/android-icon-foreground.png",
         "monochromeImage": "./assets/android-icon-monochrome.png"
-      },
-      "package": "com.anonymous.FitnessApp",
-      "permissions": [
-        "ACTIVITY_RECOGNITION"
-      ]
+      }
     },
     "web": {
       "bundler": "metro",

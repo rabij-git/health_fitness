@@ -133,6 +133,24 @@ export async function getSession() {
   return data.session;
 }
 
+// Permanently deletes the signed-in user's own account and data (trainee or
+// coach) via the delete_own_account() SECURITY DEFINER RPC (see
+// scripts/self_delete_account.sql for exactly what's removed/detached) —
+// required by both app stores for any app with in-app account creation.
+// Always attempts a local sign-out afterward regardless of whether it
+// succeeds (the server-side session for a just-deleted user may already be
+// invalid), so the caller reliably ends up logged out either way.
+export async function deleteOwnAccount(): Promise<void> {
+  const { error } = await supabase.rpc('delete_own_account');
+  try {
+    await supabase.auth.signOut();
+  } catch {
+    // Ignore — the account (and thus its session) is already gone either
+    // way if the RPC above succeeded.
+  }
+  if (error) throw error;
+}
+
 // ── User profile ──────────────────────────────────────────────────────────────
 
 export async function getProfile(userId: string): Promise<DBUser | null> {
