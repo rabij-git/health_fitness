@@ -4,6 +4,8 @@ import { Text } from '../../components/AppText';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { colors } from '../../theme/colors';
+import DocumentModal from '../../components/DocumentModal';
+import { PRIVACY_POLICY_SECTIONS, PRIVACY_POLICY_EFFECTIVE_DATE } from '../../data/privacyPolicyContent';
 
 interface Props {
   onLogout: () => void;
@@ -15,12 +17,14 @@ interface SettingItem {
   toggle: boolean;
   value?: boolean;
   onChange?: (value: boolean) => void;
+  onPress?: () => void;
 }
 
 export default function AdminSettings({ onLogout }: Props) {
   const [notifications, setNotifications] = React.useState(true);
   const [autoSync, setAutoSync] = React.useState(true);
   const [darkMode, setDarkMode] = React.useState(true);
+  const [showPrivacy, setShowPrivacy] = React.useState(false);
 
   const settingGroups: { title: string; items: SettingItem[] }[] = [
     {
@@ -43,7 +47,7 @@ export default function AdminSettings({ onLogout }: Props) {
       title: 'Account',
       items: [
         { label: 'Admin Profile', icon: 'person', toggle: false },
-        { label: 'Security & Privacy', icon: 'shield', toggle: false },
+        { label: 'Security & Privacy', icon: 'shield', toggle: false, onPress: () => setShowPrivacy(true) },
         { label: 'Data Export', icon: 'download', toggle: false },
       ],
     },
@@ -59,12 +63,15 @@ export default function AdminSettings({ onLogout }: Props) {
             <Text style={styles.groupTitle}>{group.title.toUpperCase()}</Text>
             <View style={styles.groupCard}>
               {group.items.map((item, index) => (
-                <View
+                <TouchableOpacity
                   key={item.label}
                   style={[
                     styles.settingItem,
                     index < group.items.length - 1 && styles.settingItemBorder,
                   ]}
+                  disabled={!item.onPress}
+                  activeOpacity={item.onPress ? 0.7 : 1}
+                  onPress={item.onPress}
                 >
                   <View style={styles.settingLeft}>
                     <View style={styles.settingIcon}>
@@ -82,7 +89,7 @@ export default function AdminSettings({ onLogout }: Props) {
                   ) : (
                     <Ionicons name="chevron-forward" size={18} color={colors.textSecondary} />
                   )}
-                </View>
+                </TouchableOpacity>
               ))}
             </View>
           </View>
@@ -93,6 +100,14 @@ export default function AdminSettings({ onLogout }: Props) {
           <Text style={styles.logoutText}>Logout</Text>
         </TouchableOpacity>
       </ScrollView>
+
+      <DocumentModal
+        visible={showPrivacy}
+        onClose={() => setShowPrivacy(false)}
+        title="Privacy Policy"
+        subtitle={PRIVACY_POLICY_EFFECTIVE_DATE}
+        sections={PRIVACY_POLICY_SECTIONS}
+      />
     </SafeAreaView>
   );
 }

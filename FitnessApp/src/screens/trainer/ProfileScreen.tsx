@@ -34,21 +34,9 @@ import {
 } from '../../lib/db';
 import { DBUser, DBWeightLog, DBNutritionPlan, DBCoachRequest } from '../../lib/supabase';
 import { ActivityLevel, Sex, ACTIVITY_LABELS } from '../../lib/nutritionCalc';
-import { PRIVACY_POLICY_URL } from '../../lib/links';
-import appJson from '../../../app.json';
-
-type InfoKey = 'privacy' | 'help';
-
-const INFO_CONTENT: Record<InfoKey, { title: string; body: string }> = {
-  privacy: {
-    title: 'Privacy',
-    body: 'Your workout, weight, and message data is stored securely in the cloud and is only visible to you and your coach.',
-  },
-  help: {
-    title: 'Help & Support',
-    body: `Need help? Message your coach directly from the Home tab, or reach out to them for account issues.\n\n${appJson.expo.name} v${appJson.expo.version}`,
-  },
-};
+import DocumentModal from '../../components/DocumentModal';
+import { PRIVACY_POLICY_SECTIONS, PRIVACY_POLICY_EFFECTIVE_DATE } from '../../data/privacyPolicyContent';
+import { HELP_SECTIONS_TRAINEE } from '../../data/helpContent';
 
 const ACTIVITY_LEVELS: ActivityLevel[] = ['sedentary', 'light', 'moderate', 'active', 'very_active'];
 
@@ -250,7 +238,8 @@ export default function ProfileScreen({ onLogout, userId }: Props) {
   const findCoachInputRef = useRef<TextInput>(null);
   const [sendingRequestTo, setSendingRequestTo] = useState<string | null>(null);
 
-  const [infoModal, setInfoModal] = useState<InfoKey | null>(null);
+  const [showPrivacy, setShowPrivacy] = useState(false);
+  const [showHelp, setShowHelp] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
   const [birthYear, setBirthYear] = useState('');
   const [sex, setSex] = useState<Sex | null>(null);
@@ -651,8 +640,8 @@ export default function ProfileScreen({ onLogout, userId }: Props) {
         <View style={styles.menuCard}>
           {[
             { icon: 'settings', label: 'Settings', onPress: openSettings },
-            { icon: 'shield-checkmark', label: 'Privacy', onPress: () => setInfoModal('privacy') },
-            { icon: 'help-circle', label: 'Help & Support', onPress: () => setInfoModal('help') },
+            { icon: 'shield-checkmark', label: 'Privacy', onPress: () => setShowPrivacy(true) },
+            { icon: 'help-circle', label: 'Help & Support', onPress: () => setShowHelp(true) },
           ].map((item, index, arr) => (
             <TouchableOpacity
               key={item.label}
@@ -861,26 +850,19 @@ export default function ProfileScreen({ onLogout, userId }: Props) {
         </KeyboardAvoidingView>
       </Modal>
 
-      {/* Info Modal (Privacy / Help & Support) */}
-      <Modal visible={!!infoModal} transparent animationType="slide" onRequestClose={() => setInfoModal(null)}>
-        <View style={styles.overlay}>
-          <View style={styles.sheet}>
-            <View style={styles.sheetHeader}>
-              <Text style={styles.sheetTitle}>{infoModal ? INFO_CONTENT[infoModal].title : ''}</Text>
-              <TouchableOpacity onPress={() => setInfoModal(null)}>
-                <Ionicons name="close" size={22} color={colors.textSecondary} />
-              </TouchableOpacity>
-            </View>
-            <Text style={styles.infoBody}>{infoModal ? INFO_CONTENT[infoModal].body : ''}</Text>
-            {infoModal === 'privacy' && (
-              <TouchableOpacity style={styles.privacyLinkBtn} onPress={() => Linking.openURL(PRIVACY_POLICY_URL)}>
-                <Text style={styles.privacyLinkBtnText}>View Full Privacy Policy</Text>
-                <Ionicons name="open-outline" size={15} color={colors.xpBar} />
-              </TouchableOpacity>
-            )}
-          </View>
-        </View>
-      </Modal>
+      <DocumentModal
+        visible={showPrivacy}
+        onClose={() => setShowPrivacy(false)}
+        title="Privacy Policy"
+        subtitle={PRIVACY_POLICY_EFFECTIVE_DATE}
+        sections={PRIVACY_POLICY_SECTIONS}
+      />
+      <DocumentModal
+        visible={showHelp}
+        onClose={() => setShowHelp(false)}
+        title="Help & Support"
+        sections={HELP_SECTIONS_TRAINEE}
+      />
     </SafeAreaView>
   );
 }
@@ -1165,13 +1147,6 @@ const styles = StyleSheet.create({
   deleteAccountButtonText: { fontSize: 14, fontWeight: '600', color: colors.danger },
 
   detailLabel: { fontSize: 11, fontWeight: '700', color: colors.textSecondary, letterSpacing: 1, marginBottom: 6 },
-  infoBody: { fontSize: 14, color: colors.textSecondary, lineHeight: 21, paddingBottom: 8 },
-  privacyLinkBtn: {
-    flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6,
-    marginTop: 8, paddingVertical: 12, borderRadius: 10,
-    borderWidth: 1, borderColor: colors.border,
-  },
-  privacyLinkBtnText: { fontSize: 14, fontWeight: '600', color: colors.xpBar },
   rowChips: { flexDirection: 'row', gap: 10 },
   chip: {
     paddingHorizontal: 18, paddingVertical: 10, borderRadius: 10,

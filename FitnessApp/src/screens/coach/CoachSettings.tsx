@@ -1,5 +1,5 @@
 import React, { useState, useCallback } from 'react';
-import { View, StyleSheet, ScrollView, TouchableOpacity, Modal, ActivityIndicator, Alert, Linking } from 'react-native';
+import { View, StyleSheet, ScrollView, TouchableOpacity, Modal, ActivityIndicator, Alert } from 'react-native';
 import { Text } from '../../components/AppText';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useFocusEffect } from '@react-navigation/native';
@@ -7,25 +7,12 @@ import { Ionicons } from '@expo/vector-icons';
 import { colors } from '../../theme/colors';
 import { getProfile, deleteOwnAccount } from '../../lib/db';
 import { DBUser } from '../../lib/supabase';
-import { PRIVACY_POLICY_URL } from '../../lib/links';
+import DocumentModal from '../../components/DocumentModal';
+import { PRIVACY_POLICY_SECTIONS, PRIVACY_POLICY_EFFECTIVE_DATE } from '../../data/privacyPolicyContent';
+import { HELP_SECTIONS_COACH } from '../../data/helpContent';
 import appJson from '../../../app.json';
 
-type InfoKey = 'privacy' | 'help' | 'about';
-
-const INFO_CONTENT: Record<InfoKey, { title: string; body: string }> = {
-  privacy: {
-    title: 'Privacy',
-    body: 'Your workout, weight, and message data is stored securely in the cloud and is only meant to be seen by you and the trainees you coach.',
-  },
-  help: {
-    title: 'Help & Support',
-    body: 'Need help? Message a trainee directly from their profile in the Trainees tab, or reach out to your gym administrator for account issues.',
-  },
-  about: {
-    title: 'About Athera',
-    body: `${appJson.expo.name} v${appJson.expo.version}\n\nA training and gamification app connecting coaches and trainees.`,
-  },
-};
+const ABOUT_BODY = `${appJson.expo.name} v${appJson.expo.version}\n\nA training and gamification app connecting coaches and trainees.`;
 
 interface Props {
   onLogout: () => void;
@@ -36,7 +23,9 @@ interface Props {
 export default function CoachSettings({ onLogout, coachId, navigation }: Props) {
   const [profile, setProfile] = useState<DBUser | null>(null);
   const [showProfile, setShowProfile] = useState(false);
-  const [infoModal, setInfoModal] = useState<InfoKey | null>(null);
+  const [showAbout, setShowAbout] = useState(false);
+  const [showPrivacy, setShowPrivacy] = useState(false);
+  const [showHelp, setShowHelp] = useState(false);
 
   useFocusEffect(useCallback(() => {
     getProfile(coachId).then(setProfile);
@@ -90,9 +79,9 @@ export default function CoachSettings({ onLogout, coachId, navigation }: Props) 
   const items: { label: string; icon: string; onPress: () => void }[] = [
     { label: 'Profile', icon: 'person', onPress: () => setShowProfile(true) },
     { label: 'Notifications', icon: 'notifications', onPress: () => navigation?.navigate('Dashboard') },
-    { label: 'Privacy', icon: 'lock-closed', onPress: () => setInfoModal('privacy') },
-    { label: 'Help & Support', icon: 'help-circle', onPress: () => setInfoModal('help') },
-    { label: 'About Athera', icon: 'information-circle', onPress: () => setInfoModal('about') },
+    { label: 'Privacy', icon: 'lock-closed', onPress: () => setShowPrivacy(true) },
+    { label: 'Help & Support', icon: 'help-circle', onPress: () => setShowHelp(true) },
+    { label: 'About Athera', icon: 'information-circle', onPress: () => setShowAbout(true) },
   ];
 
   return (
@@ -178,26 +167,34 @@ export default function CoachSettings({ onLogout, coachId, navigation }: Props) 
         </View>
       </Modal>
 
-      {/* Info Modal (Privacy / Help / About) */}
-      <Modal visible={!!infoModal} transparent animationType="slide" onRequestClose={() => setInfoModal(null)}>
+      {/* About Modal */}
+      <Modal visible={showAbout} transparent animationType="slide" onRequestClose={() => setShowAbout(false)}>
         <View style={styles.overlay}>
           <View style={styles.sheet}>
             <View style={styles.sheetHeader}>
-              <Text style={styles.sheetTitle}>{infoModal ? INFO_CONTENT[infoModal].title : ''}</Text>
-              <TouchableOpacity onPress={() => setInfoModal(null)}>
+              <Text style={styles.sheetTitle}>About Athera</Text>
+              <TouchableOpacity onPress={() => setShowAbout(false)}>
                 <Ionicons name="close" size={22} color={colors.textSecondary} />
               </TouchableOpacity>
             </View>
-            <Text style={styles.infoBody}>{infoModal ? INFO_CONTENT[infoModal].body : ''}</Text>
-            {infoModal === 'privacy' && (
-              <TouchableOpacity style={styles.privacyLinkBtn} onPress={() => Linking.openURL(PRIVACY_POLICY_URL)}>
-                <Text style={styles.privacyLinkBtnText}>View Full Privacy Policy</Text>
-                <Ionicons name="open-outline" size={15} color={colors.xpBar} />
-              </TouchableOpacity>
-            )}
+            <Text style={styles.infoBody}>{ABOUT_BODY}</Text>
           </View>
         </View>
       </Modal>
+
+      <DocumentModal
+        visible={showPrivacy}
+        onClose={() => setShowPrivacy(false)}
+        title="Privacy Policy"
+        subtitle={PRIVACY_POLICY_EFFECTIVE_DATE}
+        sections={PRIVACY_POLICY_SECTIONS}
+      />
+      <DocumentModal
+        visible={showHelp}
+        onClose={() => setShowHelp(false)}
+        title="Help & Support"
+        sections={HELP_SECTIONS_COACH}
+      />
     </SafeAreaView>
   );
 }
@@ -289,10 +286,4 @@ const styles = StyleSheet.create({
   detailLabel: { fontSize: 11, fontWeight: '700', color: colors.textSecondary, letterSpacing: 1, marginBottom: 6 },
   detailValue: { fontSize: 15, color: colors.text },
   infoBody: { fontSize: 14, color: colors.textSecondary, lineHeight: 21, paddingBottom: 8 },
-  privacyLinkBtn: {
-    flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6,
-    marginTop: 8, paddingVertical: 12, borderRadius: 10,
-    borderWidth: 1, borderColor: colors.border,
-  },
-  privacyLinkBtnText: { fontSize: 14, fontWeight: '600', color: colors.xpBar },
 });
