@@ -20,6 +20,7 @@ import {
   getWorkoutWithExercises,
   getWorkoutIdsCompletedToday,
   getProfile,
+  startWorkoutSession,
   completeWorkoutSession,
   sendMessage,
   logExerciseWeight,
@@ -182,11 +183,6 @@ export default function WorkoutScreen({ userId }: Props) {
   const [modalXp, setModalXp] = useState(0);
   const [modalIsComplete, setModalIsComplete] = useState(false);
   const [newlyEarnedMedalIds, setNewlyEarnedMedalIds] = useState<string[]>([]);
-  // When the current workout screen was opened — used for the duration XP
-  // bonus at Finish (every full 10 minutes since open). A proxy for actual
-  // exercise time, not a dedicated in/out stopwatch, but close enough
-  // without building separate start/pause UI.
-  const sessionStartedAt = useRef<number | null>(null);
 
   // ── Rest timer (between sets) ──
   const [restTimer, setRestTimer] = useState<RestTimerState | null>(null);
@@ -265,10 +261,13 @@ export default function WorkoutScreen({ userId }: Props) {
       setSubmitted(false);
       setShowMedal(false);
       setNewlyEarnedMedalIds([]);
-      sessionStartedAt.current = null;
       return;
     }
-    sessionStartedAt.current = Date.now();
+    // Records a real server-side start time for the duration XP bonus at
+    // Finish (see completeWorkoutSession/scripts/secure_gamification.sql) —
+    // fire-and-forget, since the worst case if this doesn't land is just no
+    // duration bonus for this session, not a broken workout.
+    startWorkoutSession(selectedWorkoutId).catch(e => console.warn('startWorkoutSession error', e));
     let cancelled = false;
     setLoadingDetail(true);
     getWorkoutWithExercises(selectedWorkoutId).then((result) => {
@@ -382,14 +381,11 @@ export default function WorkoutScreen({ userId }: Props) {
 
     // completeWorkoutSession (db.ts) does everything that used to happen
     // here client-side — saving the session, recomputing the streak,
-    // evaluating medals, and computing/writing xp+level — atomically,
-    // server-side (see scripts/secure_gamification.sql). elapsedMinutes and
-    // the local hour are the only genuinely client-only facts left (the
-    // server has no record of when this screen was opened, or the device's
-    // timezone) — both are clamped/scoped server-side so a fabricated value
-    // can't meaningfully inflate what gets awarded.
-    const elapsedMinutes = sessionStartedAt.current != null ? (Date.now() - sessionStartedAt.current) / 60000 : 0;
-
+    // evaluating medals, and computing/writing xp+level (including the
+    // duration bonus, derived server-side from startWorkoutSession's
+    // recorded timestamp, not a client-reported elapsed time) — atomically,
+    // server-side (see scripts/secure_gamification.sql). The local hour is
+    // the one remaining genuinely-client-only fact (device timezone).
     try {
       const details = exercises
         .filter(ex => ex.sets.some(s => s.effort !== null))
@@ -401,7 +397,6 @@ export default function WorkoutScreen({ userId }: Props) {
         selectedWorkoutId,
         details,
         Math.round(progress * 100),
-        elapsedMinutes,
         new Date().getHours()
       );
       // Locks this workout for the rest of today — it reopens tomorrow.

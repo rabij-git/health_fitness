@@ -23,16 +23,18 @@
 --    client-reported — a server can't independently verify what a person
 --    physically did, same trust model as any fitness app. Not a security
 --    boundary this migration tries to close.
--- 2. The duration bonus (+2 XP per full 10 min) still trusts a client-
---    reported elapsed-time value (the server has no record of when the
---    workout screen was opened) — now CLAMPED to a 180-minute max
---    server-side (36 XP cap) so a fabricated value can't farm more than
---    that, rather than being fully eliminated.
--- 3. Early Bird / Night Owl (first morning/evening workout) now check only
+-- 2. Early Bird / Night Owl (first morning/evening workout) now check only
 --    THIS session's client-reported local hour, not every session ever (the
 --    server has no record of any past session's local time, only its own
 --    UTC timestamp) — a one-time, low-stakes behavior change on two purely
 --    cosmetic medals, not a security concern either way.
+--
+-- (A third limit — the duration bonus trusting a client-reported elapsed-
+-- time value — was closed in a follow-up: complete_workout_session no
+-- longer accepts an elapsed-minutes parameter at all; see
+-- start_workout_session / workout_session_starts below, which record a real
+-- server timestamp the moment a workout is opened and derive elapsed time
+-- from that at completion instead.)
 -- ============================================================================
 
 -- ── 1. Reference table: XP reward per medal ─────────────────────────────────
@@ -269,13 +271,66 @@ $$;
 revoke all on function public.evaluate_and_award_medals() from public;
 grant execute on function public.evaluate_and_award_medals() to authenticated;
 
--- ── 5. Workout completion — replaces saveWorkoutSession + recalculateStreak
---      + evaluateAndAwardMedals + the xp/level updateProfile call, atomically ──
+-- ── 5a. Real server-side workout-start tracking, for the duration bonus ────
+-- Records when a trainee actually opened a workout, so complete_workout_session
+-- can compute real elapsed time itself instead of trusting a client-reported
+-- number — closes the gap this migration originally only clamped/bounded (a
+-- fabricated "elapsed minutes" could farm the +2-XP-per-10-min bonus up to
+-- its 180-minute cap). No client write path onto this table at all —
+-- started_at is always `now()`, set by the RPC itself, never a value the
+-- caller can supply, so there's nothing left to fake.
+create table if not exists public.workout_session_starts (
+  trainee_id uuid not null references public.users(id) on delete cascade,
+  workout_id uuid not null references public.workouts(id) on delete cascade,
+  started_at timestamptz not null,
+  primary key (trainee_id, workout_id)
+);
+
+revoke all on public.workout_session_starts from public, authenticated, anon;
+
+-- Called once, when the trainee opens a workout to start logging (replaces
+-- WorkoutScreen.tsx's old client-side sessionStartedAt ref, now removed
+-- entirely — this table is the only place that timestamp lives now). Safe
+-- to call repeatedly for the same workout in one sitting (e.g. leaving and
+-- reopening the screen) — each call resets the clock to `now()`, same as
+-- the old client-side ref did.
+create or replace function public.start_workout_session(p_workout_id uuid)
+returns void
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_uid uuid := auth.uid();
+begin
+  if v_uid is null then
+    raise exception 'Not authenticated';
+  end if;
+  if not exists (select 1 from public.workouts where id = p_workout_id and trainee_id = v_uid) then
+    raise exception 'Workout not found';
+  end if;
+  insert into public.workout_session_starts (trainee_id, workout_id, started_at)
+  values (v_uid, p_workout_id, now())
+  on conflict (trainee_id, workout_id) do update set started_at = excluded.started_at;
+end;
+$$;
+
+revoke all on function public.start_workout_session(uuid) from public;
+grant execute on function public.start_workout_session(uuid) to authenticated;
+
+-- ── 5b. Workout completion — replaces saveWorkoutSession + recalculateStreak
+--       + evaluateAndAwardMedals + the xp/level updateProfile call, atomically ──
+-- Drops the earlier 5-arg version (p_elapsed_minutes numeric) explicitly —
+-- `create or replace` only replaces an EXACT signature match, so without
+-- this, re-running this file after having run an earlier copy of it would
+-- leave both the old (client-reported-duration) and new versions callable
+-- side by side instead of the old one actually going away.
+drop function if exists public.complete_workout_session(uuid, jsonb, int, numeric, int);
+
 create or replace function public.complete_workout_session(
   p_workout_id uuid,
   p_details jsonb,
   p_completion_pct int,
-  p_elapsed_minutes numeric default 0,
   p_completed_hour_local int default null
 )
 returns jsonb
@@ -286,6 +341,8 @@ as $$
 declare
   v_uid uuid := auth.uid();
   v_already_today boolean;
+  v_started_at timestamptz;
+  v_elapsed_minutes numeric;
   v_workout_xp int;
   v_daily_streak_xp int := 0;
   v_medal_result jsonb;
@@ -317,13 +374,28 @@ begin
       and (completed_at at time zone 'utc')::date = (now() at time zone 'utc')::date
   ) into v_already_today;
 
-  v_workout_xp := 10 + floor(least(greatest(coalesce(p_elapsed_minutes, 0), 0), 180) / 10) * 2;
+  -- Real elapsed time, derived from the server-recorded start (5a above) —
+  -- no client-reported duration accepted anymore. No start on file (e.g. the
+  -- trainee never actually "opened" it through the normal flow) means no
+  -- duration bonus, not a guessed default.
+  select started_at into v_started_at
+    from public.workout_session_starts
+    where trainee_id = v_uid and workout_id = p_workout_id;
+  if v_started_at is not null then
+    v_elapsed_minutes := extract(epoch from (now() - v_started_at)) / 60.0;
+  else
+    v_elapsed_minutes := 0;
+  end if;
+
+  v_workout_xp := 10 + floor(least(greatest(v_elapsed_minutes, 0), 180) / 10) * 2;
   if not v_already_today then
     v_daily_streak_xp := 2;
   end if;
 
   insert into public.workout_sessions (trainee_id, workout_id, completion_pct, xp_awarded, details)
   values (v_uid, p_workout_id, greatest(0, least(100, coalesce(p_completion_pct, 0))), v_workout_xp, p_details);
+
+  delete from public.workout_session_starts where trainee_id = v_uid and workout_id = p_workout_id;
 
   v_new_streak := public._compute_streak(v_uid);
   update public.users set streak = v_new_streak where id = v_uid;
@@ -348,8 +420,8 @@ begin
 end;
 $$;
 
-revoke all on function public.complete_workout_session(uuid, jsonb, int, numeric, int) from public;
-grant execute on function public.complete_workout_session(uuid, jsonb, int, numeric, int) to authenticated;
+revoke all on function public.complete_workout_session(uuid, jsonb, int, int) from public;
+grant execute on function public.complete_workout_session(uuid, jsonb, int, int) to authenticated;
 
 -- ── 6. "Coach Connected" medal — replaces the awardMedalIfNew call in
 --      acceptCoachRequest (db.ts). Doesn't touch/replace the existing

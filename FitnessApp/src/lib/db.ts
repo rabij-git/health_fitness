@@ -467,29 +467,39 @@ export async function updateWorkoutExercises(workoutId: string, exercises: Exerc
 
 // ── Workout sessions ──────────────────────────────────────────────────────────
 
+// Called once when a trainee opens a workout to start logging — records a
+// real server-side timestamp (scripts/secure_gamification.sql's
+// workout_session_starts) that completeWorkoutSession uses to compute the
+// duration bonus itself, rather than trusting a client-reported elapsed
+// time. Fire-and-forget from the caller's point of view (WorkoutScreen.tsx
+// swallows failures) — worst case if this doesn't land is just no duration
+// bonus for that session, not a broken workout.
+export async function startWorkoutSession(workoutId: string): Promise<void> {
+  const { error } = await supabase.rpc('start_workout_session', { p_workout_id: workoutId });
+  if (error) throw error;
+}
+
 // Replaces the old saveWorkoutSession + recalculateStreak + evaluateAndAwardMedals
 // + updateProfile({xp,level}) sequence with one atomic, server-side RPC — see
 // scripts/secure_gamification.sql's own header for why: those were previously
 // computed client-side and written via a plain, unrestricted update, so any
 // authenticated user could set their own xp/level/streak to anything, or
 // self-award any medal, by calling the API directly. The server now
-// recomputes everything itself from real workout_sessions/vitals/etc. data;
-// `elapsedMinutes`/`completedHourLocal` are the two genuinely-client-only
-// facts (device-local time, how long the screen was actually open) that
-// remain client-reported, clamped/scoped server-side to bound their impact
-// — see that script's own comment for the exact reasoning.
+// recomputes everything itself from real workout_sessions/vitals/etc. data,
+// including the duration bonus (derived from startWorkoutSession's
+// server-recorded timestamp, not a client-reported duration).
+// `completedHourLocal` is the one remaining genuinely-client-only fact
+// (device timezone) — see that script's own comment for why that one stays.
 export async function completeWorkoutSession(
   workoutId: string,
   details: SessionExerciseDetail[],
   completionPct: number,
-  elapsedMinutes: number,
   completedHourLocal: number
 ): Promise<{ xpAwarded: number; newXp: number; newLevel: number; newStreak: number; newlyEarnedMedalIds: string[] }> {
   const { data, error } = await supabase.rpc('complete_workout_session', {
     p_workout_id: workoutId,
     p_details: details,
     p_completion_pct: completionPct,
-    p_elapsed_minutes: elapsedMinutes,
     p_completed_hour_local: completedHourLocal,
   });
   if (error) throw error;
