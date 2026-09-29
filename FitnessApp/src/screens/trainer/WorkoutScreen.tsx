@@ -14,17 +14,13 @@ import { useFocusEffect, useRoute, useNavigation } from '@react-navigation/nativ
 import { Ionicons } from '@expo/vector-icons';
 import { useAudioPlayer } from 'expo-audio';
 import { colors } from '../../theme/colors';
-import { Workout, mockMedals, computeLevelFromXp } from '../../data/mockData';
+import { Workout, mockMedals } from '../../data/mockData';
 import {
   getWorkoutsForTrainee,
   getWorkoutWithExercises,
   getWorkoutIdsCompletedToday,
   getProfile,
-  saveWorkoutSession,
-  updateProfile,
-  getTraineeHistory,
-  recalculateStreak,
-  evaluateAndAwardMedals,
+  completeWorkoutSession,
   sendMessage,
   logExerciseWeight,
 } from '../../lib/db';
@@ -45,14 +41,10 @@ function scheduledDaysLabel(days: number[]): string {
 // XP earning rates — see the "Gamification & Leveling System" spec in
 // CLAUDE.md. Running/distance-based rewards (per-km, speed records,
 // marathon) are deliberately out of scope — the app has no GPS/distance
-// tracking at all yet.
-const WORKOUT_COMPLETE_XP = 10;
-const DURATION_BONUS_XP_PER_10_MIN = 2;
-const DAILY_STREAK_XP = 2;
-
-function toDayStr(d: Date | string): string {
-  return new Date(d).toISOString().split('T')[0];
-}
+// tracking at all yet. The actual rates/formulas now live server-side (see
+// scripts/secure_gamification.sql) — completeWorkoutSession is the only
+// thing that computes and writes XP/level/streak/medals, so there are no
+// client-side constants for them here anymore.
 
 // Effort scale
 const EFFORT_LABELS: Record<number, { short: string; desc: string; color: string }> = {
@@ -380,21 +372,23 @@ export default function WorkoutScreen({ userId }: Props) {
     setShowMedal(true);
 
     // Each step is isolated so a failure in one (e.g. the coach notification)
-    // can never silently block the ones after it — most importantly xp/streak.
-    let priorHistory: Awaited<ReturnType<typeof getTraineeHistory>> = [];
+    // can never silently block the ones after it.
     let profile: Awaited<ReturnType<typeof getProfile>> = null;
     try {
-      [priorHistory, profile] = await Promise.all([getTraineeHistory(userId), getProfile(userId)]);
+      profile = await getProfile(userId);
     } catch (e) {
-      console.warn('Workout completion: failed to load prior history/profile', e);
+      console.warn('Workout completion: failed to load profile', e);
     }
 
-    // Base completion XP plus a bonus for actual time spent — one
-    // DURATION_BONUS_XP_PER_10_MIN for every full 10 minutes since the
-    // workout screen was opened (floored, so a 9-minute session gets none).
+    // completeWorkoutSession (db.ts) does everything that used to happen
+    // here client-side — saving the session, recomputing the streak,
+    // evaluating medals, and computing/writing xp+level — atomically,
+    // server-side (see scripts/secure_gamification.sql). elapsedMinutes and
+    // the local hour are the only genuinely client-only facts left (the
+    // server has no record of when this screen was opened, or the device's
+    // timezone) — both are clamped/scoped server-side so a fabricated value
+    // can't meaningfully inflate what gets awarded.
     const elapsedMinutes = sessionStartedAt.current != null ? (Date.now() - sessionStartedAt.current) / 60000 : 0;
-    const durationBonusXp = Math.floor(elapsedMinutes / 10) * DURATION_BONUS_XP_PER_10_MIN;
-    const workoutXp = WORKOUT_COMPLETE_XP + durationBonusXp;
 
     try {
       const details = exercises
@@ -403,15 +397,24 @@ export default function WorkoutScreen({ userId }: Props) {
           name: ex.name,
           sets: ex.sets.map(s => ({ reps: s.reps, weight: s.weight, effort: s.effort })),
         }));
-      await saveWorkoutSession({
-        trainee_id: userId,
-        workout_id: selectedWorkoutId,
-        completion_pct: Math.round(progress * 100),
-        xp_awarded: workoutXp,
+      const result = await completeWorkoutSession(
+        selectedWorkoutId,
         details,
-      });
+        Math.round(progress * 100),
+        elapsedMinutes,
+        new Date().getHours()
+      );
       // Locks this workout for the rest of today — it reopens tomorrow.
       setCompletedTodayIds(prev => new Set(prev).add(selectedWorkoutId));
+      setModalXp(result.xpAwarded);
+      setNewlyEarnedMedalIds(result.newlyEarnedMedalIds);
+      // A real notification, not just the completion modal below — that
+      // modal only ever shows the first medal if several were earned at
+      // once, and nothing at all if the trainee doesn't linger on it.
+      if (result.newlyEarnedMedalIds.length > 0) {
+        const names = result.newlyEarnedMedalIds.map(id => mockMedals.find(m => m.id === id)?.name).filter((n): n is string => !!n);
+        notifyMedalsEarned(names).catch(() => {});
+      }
     } catch (e) {
       console.warn('Workout completion: failed to save session', e);
     }
@@ -426,46 +429,6 @@ export default function WorkoutScreen({ userId }: Props) {
       }
     } catch (e) {
       console.warn('Workout completion: failed to write exercise log entries', e);
-    }
-
-    // Daily-streak XP only fires the first time today's streak actually
-    // advances — a second workout the same day doesn't re-trigger it, since
-    // the streak counter itself doesn't move on a same-day repeat either.
-    const alreadyCompletedToday = priorHistory.some(h => toDayStr(h.completed_at) === toDayStr(new Date()));
-    const dailyStreakXp = alreadyCompletedToday ? 0 : DAILY_STREAK_XP;
-
-    // Evaluate medals (includes the full achievement catalog — streaks,
-    // workout-count milestones, "First Step", etc. — see Medals in
-    // CLAUDE.md) before the XP write, so newly-earned medal rewards can be
-    // folded into the same combined profile update.
-    let newStreak = profile?.streak ?? 0;
-    let newlyEarned: string[] = [];
-    try {
-      newStreak = await recalculateStreak(userId);
-      newlyEarned = await evaluateAndAwardMedals(userId, newStreak);
-      setNewlyEarnedMedalIds(newlyEarned);
-      // A real notification, not just the completion modal below — that
-      // modal only ever shows the first medal if several were earned at
-      // once, and nothing at all if the trainee doesn't linger on it.
-      if (newlyEarned.length > 0) {
-        const names = newlyEarned.map(id => mockMedals.find(m => m.id === id)?.name).filter((n): n is string => !!n);
-        notifyMedalsEarned(names).catch(() => {});
-      }
-    } catch (e) {
-      console.warn('Workout completion: failed to evaluate medals', e);
-    }
-
-    const medalBonusXp = newlyEarned.reduce((sum, id) => sum + (mockMedals.find(m => m.id === id)?.xpReward ?? 0), 0);
-    const totalXp = workoutXp + dailyStreakXp + medalBonusXp;
-    setModalXp(totalXp);
-
-    try {
-      const newXp = (profile?.xp ?? 0) + totalXp;
-      const newLevel = computeLevelFromXp(newXp);
-      // streak was already persisted by recalculateStreak() above.
-      await updateProfile(userId, { xp: newXp, level: newLevel });
-    } catch (e) {
-      console.warn('Workout completion: failed to update xp/level/streak', e);
     }
 
     try {

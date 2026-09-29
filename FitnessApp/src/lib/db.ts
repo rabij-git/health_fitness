@@ -1,5 +1,4 @@
-import { supabase, SUPABASE_URL, SUPABASE_ANON_KEY, DBUser, DBProgram, DBWorkout, DBExercise, DBWeightLog, DBExerciseWeightLog, DBMessage, DBWorkoutSession, DBGym, DBFriendship, DBNutritionPlan, DBNutritionPlanTemplate, DBCoachRequest, DBCoachInvite, DBTraineeInvite, DBVital, DBProgramExercise, DBLibraryExercise, DBUserMedal, DBFoodLogEntry, DBMealCompletion } from './supabase';
-import { computeLevelFromXp, mockMedals } from '../data/mockData';
+import { supabase, SUPABASE_URL, SUPABASE_ANON_KEY, DBUser, DBProgram, DBWorkout, DBExercise, DBWeightLog, DBExerciseWeightLog, DBMessage, DBWorkoutSession, DBGym, DBFriendship, DBNutritionPlan, DBNutritionPlanTemplate, DBCoachRequest, DBCoachInvite, DBTraineeInvite, DBVital, DBProgramExercise, DBLibraryExercise, DBUserMedal, DBFoodLogEntry, DBMealCompletion, SessionExerciseDetail } from './supabase';
 // Reading a just-created expo-print file into JS (as a Blob via fetch(), as
 // an ArrayBuffer via the new File class, or as base64 via the legacy
 // readAsStringAsync) has all three failed with permission/readability
@@ -468,9 +467,39 @@ export async function updateWorkoutExercises(workoutId: string, exercises: Exerc
 
 // ── Workout sessions ──────────────────────────────────────────────────────────
 
-export async function saveWorkoutSession(session: Omit<DBWorkoutSession, 'id' | 'completed_at'>) {
-  const { error } = await supabase.from('workout_sessions').insert(session);
+// Replaces the old saveWorkoutSession + recalculateStreak + evaluateAndAwardMedals
+// + updateProfile({xp,level}) sequence with one atomic, server-side RPC — see
+// scripts/secure_gamification.sql's own header for why: those were previously
+// computed client-side and written via a plain, unrestricted update, so any
+// authenticated user could set their own xp/level/streak to anything, or
+// self-award any medal, by calling the API directly. The server now
+// recomputes everything itself from real workout_sessions/vitals/etc. data;
+// `elapsedMinutes`/`completedHourLocal` are the two genuinely-client-only
+// facts (device-local time, how long the screen was actually open) that
+// remain client-reported, clamped/scoped server-side to bound their impact
+// — see that script's own comment for the exact reasoning.
+export async function completeWorkoutSession(
+  workoutId: string,
+  details: SessionExerciseDetail[],
+  completionPct: number,
+  elapsedMinutes: number,
+  completedHourLocal: number
+): Promise<{ xpAwarded: number; newXp: number; newLevel: number; newStreak: number; newlyEarnedMedalIds: string[] }> {
+  const { data, error } = await supabase.rpc('complete_workout_session', {
+    p_workout_id: workoutId,
+    p_details: details,
+    p_completion_pct: completionPct,
+    p_elapsed_minutes: elapsedMinutes,
+    p_completed_hour_local: completedHourLocal,
+  });
   if (error) throw error;
+  return {
+    xpAwarded: data.xp_awarded,
+    newXp: data.new_xp,
+    newLevel: data.new_level,
+    newStreak: data.new_streak,
+    newlyEarnedMedalIds: data.newly_earned_medal_ids ?? [],
+  };
 }
 
 export async function getTraineeHistory(traineeId: string, limit: number = 20): Promise<(DBWorkoutSession & { workout_name: string })[]> {
@@ -1090,9 +1119,13 @@ export async function acceptCoachRequest(requestId: string, coachId: string, tra
   // actually made) rather than in evaluateAndAwardMedals, since a trainee
   // can't have completed any workout at all without a coach already
   // assigned, so checking it at workout-completion time would always
-  // co-fire with "First Step" and never mean anything on its own.
+  // co-fire with "First Step" and never mean anything on its own. Goes
+  // through claim_coach_connected_medal (a SECURITY DEFINER RPC) rather than
+  // a direct client write — see scripts/secure_gamification.sql.
   try {
-    return await awardMedalIfNew(traineeId, '10');
+    const { data, error: medalError } = await supabase.rpc('claim_coach_connected_medal', { p_trainee_id: traineeId });
+    if (medalError) throw medalError;
+    return !!data?.newly_earned;
   } catch (e) {
     console.warn('acceptCoachRequest: failed to award Coach Connected medal', e);
     return false;
@@ -1189,222 +1222,41 @@ export async function getUserMedals(userId: string): Promise<DBUserMedal[]> {
   return data ?? [];
 }
 
-export async function awardMedal(userId: string, medalId: string) {
-  const { error } = await supabase
-    .from('user_medals')
-    .upsert({ user_id: userId, medal_id: medalId }, { onConflict: 'user_id,medal_id', ignoreDuplicates: true });
+// Everything below this point used to compute XP/streak/medal-eligibility
+// client-side and write it via a plain, unrestricted update/upsert — any
+// authenticated user could set their own xp/level/streak to anything, or
+// self-award any medal, by calling the API directly with their own valid
+// session. Replaced with thin wrappers around SECURITY DEFINER RPCs that
+// recompute everything server-side from real data — see
+// scripts/secure_gamification.sql for the full implementation/reasoning.
+// The RPCs always operate on auth.uid() internally; none of them accept a
+// caller-supplied trainee id, so this can't be used to award someone else's
+// account either.
+
+// Re-evaluates the objectively computable medal rules (profile completeness
+// right now, mainly — "New Adventure"/"Profile Complete") against current
+// stats and awards any newly-qualified ones. Called after saving the
+// biometric profile so those two don't wait for the trainee's next workout;
+// workout completion evaluates the full medal set itself, server-side, as
+// part of completeWorkoutSession below.
+export async function evaluateAndAwardMedals(): Promise<{ newlyEarned: string[]; newXp: number; newLevel: number }> {
+  const { data, error } = await supabase.rpc('evaluate_and_award_medals');
   if (error) throw error;
-}
-
-// Awards a medal AND grants its XP in one step, for medals earned outside
-// the workout-completion flow (which folds medal XP into its own combined
-// xp/level write instead — see WorkoutScreen.handleSubmit). Used by
-// acceptCoachRequest for "Coach Connected". No-ops (returns false) if
-// already earned, so callers can call this unconditionally every time.
-async function awardMedalIfNew(userId: string, medalId: string): Promise<boolean> {
-  const existing = await getUserMedals(userId);
-  if (existing.some(m => m.medal_id === medalId)) return false;
-  await awardMedal(userId, medalId);
-  const medal = mockMedals.find(m => m.id === medalId);
-  if (medal) {
-    const profile = await getProfile(userId);
-    const newXp = (profile?.xp ?? 0) + medal.xpReward;
-    await updateProfile(userId, { xp: newXp, level: computeLevelFromXp(newXp) });
-  }
-  return true;
-}
-
-// Accurate lifetime completed-workout count — NOT the same as
-// getTraineeHistory(...).length, which is capped by that function's default
-// limit (20) and would make the higher workout-count achievements (25/50/100)
-// impossible to ever trigger correctly past that cap.
-export async function getWorkoutSessionCount(traineeId: string): Promise<number> {
-  const { count, error } = await supabase
-    .from('workout_sessions')
-    .select('*', { count: 'exact', head: true })
-    .eq('trainee_id', traineeId);
-  if (error) return 0;
-  return count ?? 0;
-}
-
-// Calendar days (YYYY-MM-DD) on which the trainee did anything that counts
-// toward the daily streak — a completed workout, or any nutrition tracking
-// (a meal marked as_planned/substituted/skipped, or a manual food log entry).
-async function getStreakActiveDays(traineeId: string): Promise<Set<string>> {
-  const [sessions, meals, foodLog] = await Promise.all([
-    supabase.from('workout_sessions').select('completed_at').eq('trainee_id', traineeId),
-    supabase.from('meal_completions').select('log_date').eq('trainee_id', traineeId),
-    supabase.from('food_log_entries').select('logged_at').eq('trainee_id', traineeId),
-  ]);
-  const days = new Set<string>();
-  (sessions.data ?? []).forEach((r: any) => days.add(new Date(r.completed_at).toISOString().split('T')[0]));
-  (meals.data ?? []).forEach((r: any) => days.add(r.log_date));
-  (foodLog.data ?? []).forEach((r: any) => days.add(r.logged_at));
-  return days;
-}
-
-// Consecutive active days ending today. A single active day is not itself
-// a "streak" — per feedback, this returns 0 until there are at least 2
-// consecutive active days, then the real count (2, 3, 4, ...). A gap
-// (today active but yesterday wasn't) restarts at 0, same as before.
-function computeStreakFromActiveDays(activeDays: Set<string>, today: Date = new Date()): number {
-  let count = 0;
-  const cursor = new Date(today);
-  while (activeDays.has(cursor.toISOString().split('T')[0])) {
-    count++;
-    cursor.setDate(cursor.getDate() - 1);
-  }
-  return count >= 2 ? count : 0;
+  return {
+    newlyEarned: data?.newly_earned ?? [],
+    newXp: data?.new_xp ?? 0,
+    newLevel: data?.new_level ?? 1,
+  };
 }
 
 // Recomputes the trainee's streak from their full activity history and
-// persists it — rather than incrementing a stored counter, which can't
-// self-correct if an update is ever missed. Call after any streak-eligible
-// event: workout completion (WorkoutScreen) or nutrition tracking
-// (FoodLogScreen's meal-status buttons).
-export async function recalculateStreak(traineeId: string): Promise<number> {
-  const activeDays = await getStreakActiveDays(traineeId);
-  const streak = computeStreakFromActiveDays(activeDays);
-  await updateProfile(traineeId, { streak });
-  return streak;
-}
-
-// Distinct calendar days (by completed_at) with at least one completed
-// session — for "N different active days" achievements (Daily Doer, Always
-// Moving), as opposed to a raw session count (two workouts the same day
-// only count as one active day).
-export async function getDistinctActiveDayCount(traineeId: string): Promise<number> {
-  const { data, error } = await supabase
-    .from('workout_sessions')
-    .select('completed_at')
-    .eq('trainee_id', traineeId);
-  if (error || !data) return 0;
-  const days = new Set(data.map((s: any) => new Date(s.completed_at).toISOString().split('T')[0]));
-  return days.size;
-}
-
-// Whether the trainee has ever completed a workout with a local completion
-// hour in [minHour, maxHour) — e.g. 0-12 for "morning", 18-24 for "evening".
-// Includes the session currently being saved, since this always runs after
-// saveWorkoutSession in the completion flow.
-export async function hasCompletedInHourRange(traineeId: string, minHour: number, maxHour: number): Promise<boolean> {
-  const { data, error } = await supabase
-    .from('workout_sessions')
-    .select('completed_at')
-    .eq('trainee_id', traineeId);
-  if (error || !data) return false;
-  return data.some((s: any) => {
-    const h = new Date(s.completed_at).getHours();
-    return h >= minHour && h < maxHour;
-  });
-}
-
-// Highest single-day step count ever logged, across all history (not just
-// getVitalsHistory's default recent-30-day window) — for "10K Steps".
-export async function getMaxDailySteps(traineeId: string): Promise<number> {
-  const { data, error } = await supabase
-    .from('vitals')
-    .select('metric_value')
-    .eq('trainee_id', traineeId)
-    .eq('metric_name', 'steps');
-  if (error || !data) return 0;
-  return data.reduce((max: number, r: any) => Math.max(max, r.metric_value ?? 0), 0);
-}
-
-// Re-evaluates the objectively computable medal rules against current stats
-// and awards any newly-qualified ones. Returns the medal ids newly earned
-// this call. Recomputes sessionsCount itself (getWorkoutSessionCount) rather
-// than trusting a caller-supplied count, since the previous approach
-// (priorHistory.length + 1, with priorHistory capped at 20 by
-// getTraineeHistory's default limit) could never correctly detect the
-// 25/50/100-workout milestones past that cap.
-//
-// 'Coach Connected' (id 10) is NOT checked here — it's awarded directly in
-// acceptCoachRequest at the moment a coach connection is actually made,
-// since by definition a trainee can't have completed any workout at all
-// without a coach already assigned, so checking it here would always
-// co-fire with 'First Step' and never mean anything on its own.
-//
-// 'Top Ranker' (id 5, needs a leaderboard-rank query) is deliberately
-// excluded — see the Medals section in CLAUDE.md. 'New Adventure' (id 7)
-// used to be excluded here too (it would have duplicated 'First Step's
-// trigger) but per feedback it's meant to fire on signup/profile
-// completion, not first workout — see `profileComplete` below, and
-// ProfileScreen.tsx's settings-save handler, which calls this function
-// too so it doesn't wait for the trainee's next workout to fire.
-export async function evaluateAndAwardMedals(userId: string, streak: number): Promise<string[]> {
-  const [existing, sessionsCount, profile, activeDays, maxSteps, isMorning, isEvening, weightLogs, workoutsAssigned] = await Promise.all([
-    getUserMedals(userId),
-    getWorkoutSessionCount(userId),
-    getProfile(userId),
-    getDistinctActiveDayCount(userId),
-    getMaxDailySteps(userId),
-    hasCompletedInHourRange(userId, 0, 12),
-    hasCompletedInHourRange(userId, 18, 24),
-    getWeightLogs(userId),
-    getWorkoutsForTrainee(userId),
-  ]);
-  const earnedIds = new Set(existing.map(m => m.medal_id));
-  const profileComplete = !!(profile?.birth_year && profile?.sex && profile?.height_cm && profile?.activity_level);
-
-  // sessionsCount >= 1 (first ever completed workout) — several achievements
-  // from the 100-item list are genuinely this exact same event under this
-  // app's model (no coached/self-directed or workout-type distinction
-  // exists), so they're all awarded together the moment it's true.
-  const firstWorkout = sessionsCount >= 1;
-  const tenWorkouts = sessionsCount >= 10;
-  const twentyFiveWorkouts = sessionsCount >= 25;
-  const fiftyWorkouts = sessionsCount >= 50;
-  const hundredWorkouts = sessionsCount >= 100;
-
-  const checks: [string, boolean][] = [
-    ['1', firstWorkout],              // First Step
-    ['23', firstWorkout],             // Welcome Aboard (first coached workout — same event, no self-directed workouts exist)
-    ['28', firstWorkout],             // Logged & Done
-    ['34', firstWorkout],             // Plan Starter
-    ['42', firstWorkout],             // First Rep (every workout here is strength-based)
-    ['91', firstWorkout],             // Coach Approved (every workout is coach-assigned)
-    ['6', isMorning],                 // Early Bird
-    ['8', isEvening],                 // Night Owl
-    ['9', profileComplete],           // Profile Complete
-    ['7', profileComplete],           // New Adventure — same trigger as Profile Complete, deliberately (see note above)
-    ['11', weightLogs.length >= 1],   // Progress Logged
-    ['79', weightLogs.length >= 1],   // Progress Check (same event — no distinct "check-in" vs "log")
-    ['25', workoutsAssigned.length >= 1], // Plan Activated (first workout ever ASSIGNED, not completed)
-    ['12', streak >= 3],              // 3-Day Streak
-    ['13', sessionsCount >= 5],       // Plan Follower
-    ['14', maxSteps >= 10000],        // 10K Steps
-    ['15', activeDays >= 10],         // Daily Doer
-    ['2', streak >= 7],               // 7-Day Streak
-    ['16', tenWorkouts],              // 10 Workouts Strong
-    ['29', tenWorkouts],              // Consistency King
-    ['44', tenWorkouts],              // Strength Builder
-    ['81', tenWorkouts],              // Data Driven
-    ['95', tenWorkouts],              // Coached Consistency (every workout is coached)
-    ['17', workoutsAssigned.length >= 2], // Next Level
-    ['18', streak >= 14],             // 14-Day Streak
-    ['19', streak >= 21],             // 21-Day Streak
-    ['20', twentyFiveWorkouts],       // 25 Workouts Strong
-    ['30', twentyFiveWorkouts],       // Consistency Pro
-    ['45', twentyFiveWorkouts],       // Strength Machine
-    ['82', twentyFiveWorkouts],       // Tracking Pro
-    ['3', streak >= 30],              // 30-Day Streak
-    ['4', hundredWorkouts],           // 100 Workouts
-    ['32', hundredWorkouts],          // Century Club
-    ['97', hundredWorkouts],          // 100 Workouts Strong
-    ['21', fiftyWorkouts],            // 50 Workouts Strong
-    ['31', fiftyWorkouts],            // Halfway There
-    ['84', fiftyWorkouts],            // Data Devotee
-    ['22', activeDays >= 100],        // Always Moving
-  ];
-  const newlyEarned: string[] = [];
-  for (const [medalId, qualifies] of checks) {
-    if (qualifies && !earnedIds.has(medalId)) {
-      await awardMedal(userId, medalId);
-      newlyEarned.push(medalId);
-    }
-  }
-  return newlyEarned;
+// persists it. Call after any streak-eligible event that ISN'T a workout
+// completion (which recalculates it itself, server-side) — currently just
+// nutrition tracking (FoodLogScreen's meal-status buttons).
+export async function recalculateStreak(): Promise<number> {
+  const { data, error } = await supabase.rpc('recalculate_streak');
+  if (error) throw error;
+  return data ?? 0;
 }
 
 // ── Leaderboard ───────────────────────────────────────────────────────────────
@@ -1479,29 +1331,19 @@ export async function sendFriendRequest(userId: string, targetId: string) {
   if (error) throw error;
 }
 
-const INVITE_FRIEND_XP = 2;
-
-export async function acceptFriendRequest(userId: string, requesterId: string) {
-  const { error } = await supabase
-    .from('friendships')
-    .update({ status: 'accepted' })
-    .eq('user_id', requesterId)
-    .eq('friend_id', userId);
+// Accepting a friend request used to flip the friendships row via a plain
+// client update, then separately write "Invite a Friend" XP onto the
+// ORIGINAL SENDER's row (requesterId) — a different user than the caller —
+// via another plain client update. That second write only worked at all
+// because it had to be broadly permitted for the feature to function, which
+// meant nothing stopped anyone from calling it directly to inflate an
+// arbitrary account's XP. Both steps now happen atomically inside
+// accept_friend_request (SECURITY DEFINER), which re-validates a genuine
+// pending request exists before crediting anyone — see
+// scripts/secure_gamification.sql.
+export async function acceptFriendRequest(requesterId: string) {
+  const { error } = await supabase.rpc('accept_friend_request', { p_requester_id: requesterId });
   if (error) throw error;
-
-  // "Invite a Friend" XP — the original sender earns it once accepted, not
-  // just for sending the request (avoids rewarding spam invites that never
-  // land). Isolated in its own try/catch so a failure here never blocks the
-  // friendship itself from being accepted.
-  try {
-    const inviter = await getProfile(requesterId);
-    if (inviter) {
-      const newXp = (inviter.xp ?? 0) + INVITE_FRIEND_XP;
-      await updateProfile(requesterId, { xp: newXp, level: computeLevelFromXp(newXp) });
-    }
-  } catch (e) {
-    console.warn('acceptFriendRequest: failed to award invite XP', e);
-  }
 }
 
 export async function getPendingFriendRequests(userId: string): Promise<(DBFriendship & { from: DBUser })[]> {

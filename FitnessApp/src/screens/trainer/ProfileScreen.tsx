@@ -16,7 +16,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { useFocusEffect } from '@react-navigation/native';
 import { Ionicons } from '@expo/vector-icons';
 import { colors } from '../../theme/colors';
-import { getXpForNextLevel, getCurrentLevelXp, getLevelTitle, mockMedals, computeLevelFromXp } from '../../data/mockData';
+import { getXpForNextLevel, getCurrentLevelXp, getLevelTitle, mockMedals } from '../../data/mockData';
 import { notifyMedalsEarned } from '../../lib/restNotifications';
 import {
   getProfile,
@@ -271,15 +271,12 @@ export default function ProfileScreen({ onLogout, userId }: Props) {
       setShowSettings(false);
       // "New Adventure" (and "Profile Complete") fire on profile completion,
       // not on the trainee's next workout — evaluate right here so it
-      // doesn't wait. Folds any newly-earned XP into the same profile,
-      // mirroring the combined-write pattern used at workout completion.
+      // doesn't wait. XP/level are computed and written server-side now
+      // (see scripts/secure_gamification.sql) — this just reads back the
+      // result to update local state and fire the notification.
       try {
-        const newlyEarned = await evaluateAndAwardMedals(userId, profile?.streak ?? 0);
+        const { newlyEarned, newXp, newLevel } = await evaluateAndAwardMedals();
         if (newlyEarned.length > 0) {
-          const bonusXp = newlyEarned.reduce((sum, id) => sum + (mockMedals.find(m => m.id === id)?.xpReward ?? 0), 0);
-          const newXp = (profile?.xp ?? 0) + bonusXp;
-          const newLevel = computeLevelFromXp(newXp);
-          await updateProfile(userId, { xp: newXp, level: newLevel });
           setProfile(prev => (prev ? { ...prev, xp: newXp, level: newLevel } : prev));
           const names = newlyEarned.map(id => mockMedals.find(m => m.id === id)?.name).filter((n): n is string => !!n);
           notifyMedalsEarned(names).catch(() => {});

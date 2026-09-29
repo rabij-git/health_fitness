@@ -87,7 +87,7 @@ function MealRow({
       setChanging(false);
       // Tracking a meal (any status) counts as a nutrition-active day for
       // the streak, same as a completed workout — see recalculateStreak.
-      recalculateStreak(userId).catch(e => console.warn('recalculateStreak error', e));
+      recalculateStreak().catch(e => console.warn('recalculateStreak error', e));
     } catch (e) {
       console.warn('upsertMealCompletion error', e);
     } finally {

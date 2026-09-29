@@ -176,9 +176,9 @@ export default function SocialScreen({ userId }: Props) {
   }, [userId]);
 
   const handleAccept = useCallback(async (requesterId: string) => {
-    await acceptFriendRequest(userId, requesterId);
+    await acceptFriendRequest(requesterId);
     await loadAll();
-  }, [userId, loadAll]);
+  }, [loadAll]);
 
   const myRank = useMemo(() => leaderboard.findIndex(u => u.id === userId) + 1, [leaderboard, userId]);
 
