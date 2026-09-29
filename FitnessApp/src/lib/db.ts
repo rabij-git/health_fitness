@@ -385,8 +385,31 @@ export async function createWorkout(
   return wData;
 }
 
+// Once a workout's duration_weeks has been set, it's a firm commitment —
+// the coach's own UI already hides the field behind a locked display once
+// it's non-null (see CoachTrainees.tsx's `editDurationWeeksLocked`), but
+// this re-checks server-side too, since that's the only real enforcement
+// point without a DB trigger: refuses to change an already-set value,
+// still allows setting it for the first time (was left blank at
+// assignment) or clearing/adjusting it while it's still null.
 export async function updateWorkoutDurationWeeks(workoutId: string, weeks: number | null) {
+  const { data: existing, error: fetchError } = await supabase
+    .from('workouts')
+    .select('duration_weeks')
+    .eq('id', workoutId)
+    .single();
+  if (fetchError) throw fetchError;
+  if (existing?.duration_weeks != null) {
+    throw new Error('This program\'s duration is already set and can\'t be changed.');
+  }
   const { error } = await supabase.from('workouts').update({ duration_weeks: weeks }).eq('id', workoutId);
+  if (error) throw error;
+}
+
+// Renaming a trainee's own copy of an assigned workout — separate from the
+// program TEMPLATE's name (`programs.name`), which this never touches.
+export async function updateWorkoutName(workoutId: string, name: string) {
+  const { error } = await supabase.from('workouts').update({ name }).eq('id', workoutId);
   if (error) throw error;
 }
 
@@ -525,15 +548,23 @@ export async function completeWorkoutSession(
   };
 }
 
-export async function getTraineeHistory(traineeId: string, limit: number = 20): Promise<(DBWorkoutSession & { workout_name: string })[]> {
+export async function getTraineeHistory(
+  traineeId: string,
+  limit: number = 20
+): Promise<(DBWorkoutSession & { workout_name: string; workout_created_at: string | null; workout_duration_weeks: number | null })[]> {
   const { data, error } = await supabase
     .from('workout_sessions')
-    .select('*, workouts(name)')
+    .select('*, workouts(name, created_at, duration_weeks)')
     .eq('trainee_id', traineeId)
     .order('completed_at', { ascending: false })
     .limit(limit);
   if (error) return [];
-  return (data ?? []).map((s: any) => ({ ...s, workout_name: s.workouts?.name ?? '' }));
+  return (data ?? []).map((s: any) => ({
+    ...s,
+    workout_name: s.workouts?.name ?? '',
+    workout_created_at: s.workouts?.created_at ?? null,
+    workout_duration_weeks: s.workouts?.duration_weeks ?? null,
+  }));
 }
 
 // Most recent completed session for one specific workout — lets the coach's

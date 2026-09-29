@@ -42,3 +42,19 @@ export function formatWorkoutEndDate(workout: DurationBoundWorkout): string | nu
   const end = getWorkoutEndDate(workout);
   return end ? end.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) : null;
 }
+
+// Which week of the program a given moment falls in — week 1 the day it was
+// assigned, incrementing every 7 days, clamped to `duration_weeks` (a
+// session logged after the program's own end date still reads as the last
+// week, not an out-of-range number). `atDate` defaults to now (for the
+// trainee's live "Week X/Y" badge) but is passed explicitly as a session's
+// own `completed_at` for the coach's History list, so a past session shows
+// the week it was actually done in, not whatever week it is today.
+export function getProgramWeekProgress(workout: DurationBoundWorkout, atDate: Date = new Date()): { current: number; total: number } | null {
+  if (workout.duration_weeks == null) return null;
+  const start = startOfDay(new Date(workout.created_at));
+  const at = startOfDay(atDate);
+  const diffDays = Math.floor((at.getTime() - start.getTime()) / (24 * 60 * 60 * 1000));
+  const current = Math.min(workout.duration_weeks, Math.max(1, Math.floor(diffDays / 7) + 1));
+  return { current, total: workout.duration_weeks };
+}

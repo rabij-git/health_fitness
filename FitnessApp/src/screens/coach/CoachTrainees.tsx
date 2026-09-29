@@ -37,6 +37,7 @@ import {
   setWorkoutActive,
   updateWorkoutScheduledDays,
   updateWorkoutDurationWeeks,
+  updateWorkoutName,
   deleteWorkout,
   getTraineeHistory,
   getLatestSessionForWorkout,
@@ -60,7 +61,7 @@ import {
 import { DBProgram, DBUser, DBWorkout, DBExercise, DBWeightLog, DBNutritionPlan, DBNutritionPlanTemplate, DBCoachRequest, DBLibraryExercise, DBMessage, DBVital, DBMealCompletion, DBFoodLogEntry, DBTraineeInvite, MealSlot, SessionExerciseDetail, SessionSetDetail, DBWorkoutSession, ExerciseSetTarget } from '../../lib/supabase';
 import { templatesForMealType, scaleTemplateToTarget, scaleItem, MealType, MealTemplate, Diet } from '../../data/mealLibrary';
 import { sanitizeCount, sanitizeWeightInput, sanitizeTimeInput, stripKg, withKg } from '../../lib/exerciseInput';
-import { isWorkoutDurationExpired, formatWorkoutEndDate } from '../../lib/workoutDuration';
+import { isWorkoutDurationExpired, formatWorkoutEndDate, getProgramWeekProgress } from '../../lib/workoutDuration';
 import CalorieCalculatorModal from './CalorieCalculatorModal';
 
 // One set's own row in the exercise builder — reps/weight/time/rest are
@@ -435,6 +436,9 @@ export default function CoachTrainees({ coachId }: Props) {
   const [editActiveCategory, setEditActiveCategory] = useState('Push');
   const [editScheduledDays, setEditScheduledDays] = useState<number[]>([]);
   const [editDurationWeeks, setEditDurationWeeks] = useState('');
+  // Once a workout's duration has ever been set, it's locked — a firm
+  // commitment, not just an editable estimate (see saveEdit/db.ts).
+  const [editDurationWeeksLocked, setEditDurationWeeksLocked] = useState(false);
   // The trainee's most recently completed session for the workout currently
   // being edited — shown inline so the coach can see what was actually
   // logged last time (reps/weight/effort per set) without leaving this
@@ -1114,6 +1118,7 @@ export default function CoachTrainees({ coachId }: Props) {
       setEditActiveCategory('Push');
       setEditScheduledDays(workout.scheduled_days ?? []);
       setEditDurationWeeks(workout.duration_weeks != null ? String(workout.duration_weeks) : '');
+      setEditDurationWeeksLocked(workout.duration_weeks != null);
       setSelectedTrainee(null);
       setShowEditModal(true);
       // Loaded separately (not awaited with the rest) so the modal itself
@@ -1159,13 +1164,23 @@ export default function CoachTrainees({ coachId }: Props) {
     setSaving(true);
     try {
       const scheduledDaysValue = editScheduledDays.length > 0 ? editScheduledDays : null;
-      const durationWeeksValue = editDurationWeeks.trim() ? parseInt(editDurationWeeks, 10) : null;
-      await Promise.all([
+      // Locked once already set — see updateWorkoutDurationWeeks (db.ts).
+      // Only actually attempt the write when it's still unset, so re-saving
+      // an already-locked value doesn't hit that guard's rejection.
+      const durationWeeksValue = editDurationWeeksLocked
+        ? (selectedTraineeWorkouts.find(w => w.id === editingWorkoutId)?.duration_weeks ?? null)
+        : (editDurationWeeks.trim() ? parseInt(editDurationWeeks, 10) : null);
+      const finalWorkoutName = editWorkoutName.trim() || 'Workout';
+      const updates: Promise<any>[] = [
         updateWorkoutExercises(editingWorkoutId, exs),
         updateWorkoutScheduledDays(editingWorkoutId, editScheduledDays),
-        updateWorkoutDurationWeeks(editingWorkoutId, durationWeeksValue),
-      ]);
-      setSelectedTraineeWorkouts(prev => prev.map(w => w.id === editingWorkoutId ? { ...w, scheduled_days: scheduledDaysValue, duration_weeks: durationWeeksValue } : w));
+        updateWorkoutName(editingWorkoutId, finalWorkoutName),
+      ];
+      if (!editDurationWeeksLocked) {
+        updates.push(updateWorkoutDurationWeeks(editingWorkoutId, durationWeeksValue));
+      }
+      await Promise.all(updates);
+      setSelectedTraineeWorkouts(prev => prev.map(w => w.id === editingWorkoutId ? { ...w, name: finalWorkoutName, scheduled_days: scheduledDaysValue, duration_weeks: durationWeeksValue } : w));
       // Collapse the workout row if it was expanded — re-expanding fetches
       // the freshly-saved exercises instead of showing stale ones.
       if (expandedWorkoutId === editingWorkoutId) {
@@ -1634,6 +1649,9 @@ export default function CoachTrainees({ coachId }: Props) {
                         {selectedTraineeHistory.map((entry, i) => {
                           const isExpanded = expandedHistoryId === (entry.id ?? String(i));
                           const hasDetails = !!entry.details && entry.details.length > 0;
+                          const entryWeek = entry.workout_created_at != null
+                            ? getProgramWeekProgress({ created_at: entry.workout_created_at, duration_weeks: entry.workout_duration_weeks }, new Date(entry.completed_at))
+                            : null;
                           return (
                             <View key={entry.id ?? i} style={styles.historyBlock}>
                               <TouchableOpacity
@@ -1648,6 +1666,7 @@ export default function CoachTrainees({ coachId }: Props) {
                                   <Text style={styles.historyWorkout}>{entry.workout_name}</Text>
                                   <Text style={styles.historyMeta}>
                                     {entry.completion_pct}% complete{!hasDetails ? ' · no detail logged' : ''}
+                                    {entryWeek ? ` · Week ${entryWeek.current}/${entryWeek.total}` : ''}
                                   </Text>
                                 </View>
                                 <View style={[
@@ -2505,10 +2524,14 @@ export default function CoachTrainees({ coachId }: Props) {
             {assignStep === 2 && (
               <ScrollView showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
                 <Text style={styles.fieldLabel}>WORKOUT NAME</Text>
-                <View style={styles.readOnlyField}>
-                  <Text style={styles.readOnlyFieldText}>{workoutName}</Text>
-                </View>
-                <Text style={styles.readOnlyHint}>Set from the program template — edit it in the Programs tab.</Text>
+                <TextInput
+                  style={styles.textInput}
+                  value={workoutName}
+                  onChangeText={setWorkoutName}
+                  placeholder="Workout name"
+                  placeholderTextColor={colors.textSecondary}
+                />
+                <Text style={styles.readOnlyHint}>Pre-filled from the program template — renaming it here only changes this trainee's copy, not the template.</Text>
 
                 <Text style={[styles.fieldLabel, { marginTop: 20 }]}>DURATION (WEEKS, OPTIONAL)</Text>
                 <TextInput
@@ -2849,20 +2872,33 @@ export default function CoachTrainees({ coachId }: Props) {
               )}
 
               <Text style={styles.fieldLabel}>WORKOUT NAME</Text>
-              <View style={styles.readOnlyField}>
-                <Text style={styles.readOnlyFieldText}>{editWorkoutName}</Text>
-              </View>
-              <Text style={styles.readOnlyHint}>Set from the program template — edit it in the Programs tab.</Text>
-
-              <Text style={[styles.fieldLabel, { marginTop: 20 }]}>DURATION (WEEKS, OPTIONAL)</Text>
               <TextInput
-                style={[styles.exMetaInput, { alignSelf: 'flex-start', minWidth: 90 }]}
-                value={editDurationWeeks}
-                onChangeText={v => setEditDurationWeeks(sanitizeCount(v, 1, 52))}
-                keyboardType="number-pad"
-                placeholder="e.g. 8"
+                style={styles.textInput}
+                value={editWorkoutName}
+                onChangeText={setEditWorkoutName}
+                placeholder="Workout name"
                 placeholderTextColor={colors.textSecondary}
               />
+              <Text style={styles.readOnlyHint}>Only renames this trainee's copy — the program template's own name is unaffected.</Text>
+
+              <Text style={[styles.fieldLabel, { marginTop: 20 }]}>DURATION (WEEKS, OPTIONAL)</Text>
+              {editDurationWeeksLocked ? (
+                <>
+                  <View style={styles.readOnlyField}>
+                    <Text style={styles.readOnlyFieldText}>{editDurationWeeks} week{editDurationWeeks === '1' ? '' : 's'}</Text>
+                  </View>
+                  <Text style={styles.readOnlyHint}>Locked — once a duration is set it can't be changed. Assign a new workout instead.</Text>
+                </>
+              ) : (
+                <TextInput
+                  style={[styles.exMetaInput, { alignSelf: 'flex-start', minWidth: 90 }]}
+                  value={editDurationWeeks}
+                  onChangeText={v => setEditDurationWeeks(sanitizeCount(v, 1, 52))}
+                  keyboardType="number-pad"
+                  placeholder="e.g. 8"
+                  placeholderTextColor={colors.textSecondary}
+                />
+              )}
 
               <Text style={[styles.fieldLabel, { marginTop: 20 }]}>SCHEDULED DAYS</Text>
               <View style={styles.dayRow}>

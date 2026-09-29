@@ -27,7 +27,7 @@ import {
 } from '../../lib/db';
 import { DBWorkout } from '../../lib/supabase';
 import { scheduleRestEndNotification, cancelRestEndNotification, notifyMedalsEarned } from '../../lib/restNotifications';
-import { isWorkoutDurationExpired, formatWorkoutEndDate } from '../../lib/workoutDuration';
+import { isWorkoutDurationExpired, formatWorkoutEndDate, getProgramWeekProgress } from '../../lib/workoutDuration';
 
 const DAY_ABBR = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 
@@ -662,6 +662,7 @@ export default function WorkoutScreen({ userId }: Props) {
 
   const isCompletedToday = selectedWorkoutId ? completedTodayIds.has(selectedWorkoutId) : false;
   const isExpiredByDuration = selectedWorkoutMeta ? isWorkoutDurationExpired(selectedWorkoutMeta) : false;
+  const weekProgress = selectedWorkoutMeta ? getProgramWeekProgress(selectedWorkoutMeta) : null;
   const isNotToday = selectedWorkoutMeta ? (selectedWorkoutMeta.active && !isCompletedToday && !isExpiredByDuration && !isScheduledForToday(selectedWorkoutMeta)) : false;
   const readOnlyReason: 'inactive' | 'expired' | 'completed' | 'notToday' | null = !selectedWorkoutMeta
     ? null
@@ -700,14 +701,24 @@ export default function WorkoutScreen({ userId }: Props) {
           </View>
 
           <View style={styles.header}>
-            <Text style={styles.programLabel}>
-              {readOnlyReason === 'completed' ? 'COMPLETED TODAY' : readOnlyReason === 'notToday' ? 'NOT SCHEDULED TODAY' : readOnlyReason === 'expired' ? 'PROGRAM ENDED' : 'PAST WORKOUT'}
-            </Text>
-            <Text style={styles.workoutName}>{dbWorkout.name}</Text>
-            <Text style={styles.workoutMeta}>
-              {dbWorkout.exercises.length} exercises • {dbWorkout.duration} • {dbWorkout.difficulty}
-              {selectedWorkoutMeta?.duration_weeks != null ? ` • ${durationWeeksLabel(selectedWorkoutMeta.duration_weeks)}` : ''}
-            </Text>
+            <View style={styles.headerRow}>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.programLabel}>
+                  {readOnlyReason === 'completed' ? 'COMPLETED TODAY' : readOnlyReason === 'notToday' ? 'NOT SCHEDULED TODAY' : readOnlyReason === 'expired' ? 'PROGRAM ENDED' : 'PAST WORKOUT'}
+                </Text>
+                <Text style={styles.workoutName}>{dbWorkout.name}</Text>
+                <Text style={styles.workoutMeta}>
+                  {dbWorkout.exercises.length} exercises • {dbWorkout.duration} • {dbWorkout.difficulty}
+                  {selectedWorkoutMeta?.duration_weeks != null ? ` • ${durationWeeksLabel(selectedWorkoutMeta.duration_weeks)}` : ''}
+                </Text>
+              </View>
+              {weekProgress && (
+                <View style={styles.weekProgressBadge}>
+                  <Text style={styles.weekProgressBadgeText}>{weekProgress.current}/{weekProgress.total}</Text>
+                  <Text style={styles.weekProgressBadgeLabel}>WEEK</Text>
+                </View>
+              )}
+            </View>
           </View>
 
           <Text style={styles.sectionTitle}>EXERCISES</Text>
@@ -753,12 +764,22 @@ export default function WorkoutScreen({ userId }: Props) {
 
         {/* Header */}
         <View style={styles.header}>
-          <Text style={styles.programLabel}>TODAY'S SESSION</Text>
-          <Text style={styles.workoutName}>{dbWorkout.name}</Text>
-          <Text style={styles.workoutMeta}>
-            {dbWorkout.exercises.length} exercises • {dbWorkout.duration} • {dbWorkout.difficulty}
-            {selectedWorkoutMeta?.duration_weeks != null ? ` • ${durationWeeksLabel(selectedWorkoutMeta.duration_weeks)}` : ''}
-          </Text>
+          <View style={styles.headerRow}>
+            <View style={{ flex: 1 }}>
+              <Text style={styles.programLabel}>TODAY'S SESSION</Text>
+              <Text style={styles.workoutName}>{dbWorkout.name}</Text>
+              <Text style={styles.workoutMeta}>
+                {dbWorkout.exercises.length} exercises • {dbWorkout.duration} • {dbWorkout.difficulty}
+                {selectedWorkoutMeta?.duration_weeks != null ? ` • ${durationWeeksLabel(selectedWorkoutMeta.duration_weeks)}` : ''}
+              </Text>
+            </View>
+            {weekProgress && (
+              <View style={styles.weekProgressBadge}>
+                <Text style={styles.weekProgressBadgeText}>{weekProgress.current}/{weekProgress.total}</Text>
+                <Text style={styles.weekProgressBadgeLabel}>WEEK</Text>
+              </View>
+            )}
+          </View>
         </View>
 
         {/* Progress bar */}
@@ -1068,9 +1089,16 @@ const styles = StyleSheet.create({
   readOnlyExerciseWeight: { fontSize: 12, color: colors.xpBar, fontWeight: '600', marginLeft: 8 },
 
   header: { marginBottom: 24, marginTop: 4 },
+  headerRow: { flexDirection: 'row', alignItems: 'flex-start', justifyContent: 'space-between' },
   programLabel: { fontSize: 11, fontWeight: '700', color: colors.primary, letterSpacing: 2, marginBottom: 6 },
   workoutName: { fontSize: 26, fontWeight: '800', color: colors.text, marginBottom: 6 },
   workoutMeta: { fontSize: 13, color: colors.textSecondary },
+  weekProgressBadge: {
+    alignItems: 'center', backgroundColor: colors.secondary, borderRadius: 12,
+    paddingHorizontal: 12, paddingVertical: 8, marginLeft: 12,
+  },
+  weekProgressBadgeText: { fontSize: 18, fontWeight: '800', color: colors.xpBar },
+  weekProgressBadgeLabel: { fontSize: 9, fontWeight: '700', color: colors.textSecondary, letterSpacing: 1, marginTop: 1 },
 
   progressSection: { marginBottom: 28 },
   progressLabelRow: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 8 },
