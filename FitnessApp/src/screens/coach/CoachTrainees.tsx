@@ -2767,9 +2767,17 @@ export default function CoachTrainees({ coachId }: Props) {
         >
           <View style={styles.modalSheet}>
             <View style={styles.modalHeader}>
-              <View>
-                <Text style={styles.modalStep}>EDITING PROGRAM</Text>
-                <Text style={styles.modalTitle}>{editingTrainee?.name}</Text>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.modalStep}>EDITING WORKOUT · {editingTrainee?.name}</Text>
+                <Text style={styles.modalTitle}>{editWorkoutName}</Text>
+                {editDurationWeeks.trim() ? (
+                  <View style={styles.blockDurationBadge}>
+                    <Ionicons name="calendar-outline" size={12} color={colors.xpBar} />
+                    <Text style={styles.blockDurationBadgeText}>
+                      {editDurationWeeks} week{editDurationWeeks === '1' ? '' : 's'} program
+                    </Text>
+                  </View>
+                ) : null}
               </View>
               <TouchableOpacity style={styles.closeBtn} onPress={closeEditModal}>
                 <Ionicons name="close" size={22} color={colors.textSecondary} />
@@ -3180,6 +3188,11 @@ const styles = StyleSheet.create({
   },
   modalStep: { fontSize: 11, fontWeight: '700', color: colors.xpBar, letterSpacing: 1.5, marginBottom: 4 },
   modalTitle: { fontSize: 22, fontWeight: '800', color: colors.text },
+  blockDurationBadge: {
+    flexDirection: 'row', alignItems: 'center', gap: 4, alignSelf: 'flex-start',
+    backgroundColor: colors.secondary, borderRadius: 8, paddingHorizontal: 8, paddingVertical: 4, marginTop: 8,
+  },
+  blockDurationBadgeText: { fontSize: 11, fontWeight: '700', color: colors.xpBar },
   closeBtn: {
     width: 36, height: 36, borderRadius: 10,
     backgroundColor: colors.secondary, alignItems: 'center', justifyContent: 'center',

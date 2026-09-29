@@ -39,6 +39,10 @@ function scheduledDaysLabel(days: number[]): string {
   return [...days].sort((a, b) => a - b).map(d => DAY_ABBR[d]).join(', ');
 }
 
+function durationWeeksLabel(weeks: number | null | undefined): string {
+  return weeks != null ? `${weeks} wk${weeks === 1 ? '' : 's'} program` : '';
+}
+
 // XP earning rates — see the "Gamification & Leveling System" spec in
 // CLAUDE.md. Running/distance-based rewards (per-km, speed records,
 // marathon) are deliberately out of scope — the app has no GPS/distance
@@ -507,6 +511,7 @@ export default function WorkoutScreen({ userId }: Props) {
                         <Text style={styles.workoutPickMeta}>
                           {w.duration} • {w.difficulty}
                           {w.scheduled_days && w.scheduled_days.length > 0 ? ` • ${scheduledDaysLabel(w.scheduled_days)}` : ''}
+                          {w.duration_weeks != null ? ` • ${durationWeeksLabel(w.duration_weeks)}` : ''}
                         </Text>
                       </View>
                       <Ionicons name="chevron-forward" size={18} color={colors.textSecondary} />
@@ -532,7 +537,10 @@ export default function WorkoutScreen({ userId }: Props) {
                       </View>
                       <View style={{ flex: 1 }}>
                         <Text style={styles.workoutPickName}>{w.name}</Text>
-                        <Text style={styles.workoutPickMeta}>{w.duration} • {w.difficulty}</Text>
+                        <Text style={styles.workoutPickMeta}>
+                          {w.duration} • {w.difficulty}
+                          {w.duration_weeks != null ? ` • ${durationWeeksLabel(w.duration_weeks)}` : ''}
+                        </Text>
                       </View>
                       <Ionicons name="chevron-forward" size={18} color={colors.textSecondary} />
                     </TouchableOpacity>
@@ -559,6 +567,7 @@ export default function WorkoutScreen({ userId }: Props) {
                         <Text style={styles.workoutPickName}>{w.name}</Text>
                         <Text style={styles.workoutPickMeta}>
                           {w.duration} • {w.difficulty} • {scheduledDaysLabel(w.scheduled_days ?? [])}
+                          {w.duration_weeks != null ? ` • ${durationWeeksLabel(w.duration_weeks)}` : ''}
                         </Text>
                       </View>
                       <Ionicons name="chevron-forward" size={18} color={colors.textSecondary} />
@@ -584,7 +593,10 @@ export default function WorkoutScreen({ userId }: Props) {
                       </View>
                       <View style={{ flex: 1 }}>
                         <Text style={styles.workoutPickName}>{w.name}</Text>
-                        <Text style={styles.workoutPickMeta}>{w.duration} • {w.difficulty}</Text>
+                        <Text style={styles.workoutPickMeta}>
+                          {w.duration} • {w.difficulty}
+                          {w.duration_weeks != null ? ` • ${durationWeeksLabel(w.duration_weeks)}` : ''}
+                        </Text>
                       </View>
                       <Ionicons name="chevron-forward" size={18} color={colors.textSecondary} />
                     </TouchableOpacity>
@@ -655,6 +667,7 @@ export default function WorkoutScreen({ userId }: Props) {
             <Text style={styles.workoutName}>{dbWorkout.name}</Text>
             <Text style={styles.workoutMeta}>
               {dbWorkout.exercises.length} exercises • {dbWorkout.duration} • {dbWorkout.difficulty}
+              {selectedWorkoutMeta?.duration_weeks != null ? ` • ${durationWeeksLabel(selectedWorkoutMeta.duration_weeks)}` : ''}
             </Text>
           </View>
 
@@ -705,6 +718,7 @@ export default function WorkoutScreen({ userId }: Props) {
           <Text style={styles.workoutName}>{dbWorkout.name}</Text>
           <Text style={styles.workoutMeta}>
             {dbWorkout.exercises.length} exercises • {dbWorkout.duration} • {dbWorkout.difficulty}
+            {selectedWorkoutMeta?.duration_weeks != null ? ` • ${durationWeeksLabel(selectedWorkoutMeta.duration_weeks)}` : ''}
           </Text>
         </View>
 
