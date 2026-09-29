@@ -79,6 +79,16 @@ export interface DBWorkout {
   created_at: string;
 }
 
+// One set's own target, when an exercise uses a per-set breakdown instead of
+// one shared reps/weight/time/rest for every set (e.g. a lighter warm-up
+// set before heavier working sets).
+export interface ExerciseSetTarget {
+  reps: string;
+  weight: string;
+  time: string; // duration like "30s" or "5m"; plain number or "0" = not timed
+  rest_seconds: number; // rest after this set, before the next; 0 = no rest timer
+}
+
 export interface DBExercise {
   id: string;
   workout_id: string;
@@ -89,6 +99,13 @@ export interface DBExercise {
   time: string; // duration like "30s" or "5m"; plain number or "0" = not timed
   rest_seconds?: number | null; // rest period between sets; null/0 = no rest timer
   sort_order: number;
+  // Optional per-set breakdown — when present, this is the source of truth
+  // for what each individual set targets; sets/reps/weight/time/rest_seconds
+  // above are kept in sync as a single-value summary (sets = array length,
+  // the rest = the first set's values) for anything that hasn't been
+  // updated to read this yet. Null/absent = not using per-set detail (every
+  // set shares the scalar columns above), not "no exercise."
+  set_details?: ExerciseSetTarget[] | null;
 }
 
 export interface DBProgramExercise {

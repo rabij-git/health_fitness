@@ -55,29 +55,78 @@ import {
   createTraineeInvite,
   getMyTraineeInvites,
   revokeTraineeInvite,
+  ExercisePayloadEntry,
 } from '../../lib/db';
-import { DBProgram, DBUser, DBWorkout, DBExercise, DBWeightLog, DBNutritionPlan, DBNutritionPlanTemplate, DBCoachRequest, DBLibraryExercise, DBMessage, DBVital, DBMealCompletion, DBFoodLogEntry, DBTraineeInvite, MealSlot, SessionExerciseDetail, SessionSetDetail, DBWorkoutSession } from '../../lib/supabase';
+import { DBProgram, DBUser, DBWorkout, DBExercise, DBWeightLog, DBNutritionPlan, DBNutritionPlanTemplate, DBCoachRequest, DBLibraryExercise, DBMessage, DBVital, DBMealCompletion, DBFoodLogEntry, DBTraineeInvite, MealSlot, SessionExerciseDetail, SessionSetDetail, DBWorkoutSession, ExerciseSetTarget } from '../../lib/supabase';
 import { templatesForMealType, scaleTemplateToTarget, scaleItem, MealType, MealTemplate, Diet } from '../../data/mealLibrary';
 import { sanitizeCount, sanitizeWeightInput, sanitizeTimeInput, stripKg, withKg } from '../../lib/exerciseInput';
 import CalorieCalculatorModal from './CalorieCalculatorModal';
+
+// One set's own row in the exercise builder — reps/weight/time/rest are
+// per-set here (not shared across all of an exercise's sets), so a coach
+// can e.g. give a lighter warm-up set before heavier working sets. See
+// scripts/exercises_set_details.sql for the DB side of this.
+interface SetRow {
+  id: string;
+  reps: string;
+  weight: string;
+  time: string; // duration like "30s" or "5m", default '0'
+  restSeconds: string; // rest after this set, before the next; '0' = no rest timer
+}
 
 interface ExerciseEntry {
   id: string;
   dbId?: string; // real DB row id when this entry was loaded from an existing exercises row
   name: string;
-  sets: string;
-  reps: string;
-  weight: string;
-  time: string; // duration like "30s" or "5m", default '0'
-  restSeconds: string; // rest between sets, in seconds; '0' = no rest timer
+  setRows: SetRow[];
+}
+
+function buildEmptySetRow(): SetRow {
+  return { id: String(Date.now() + Math.random()), reps: '10', weight: '', time: '0', restSeconds: '0' };
+}
+
+function buildEmptyExercise(): ExerciseEntry {
+  return { id: String(Date.now() + Math.random()), name: '', setRows: [buildEmptySetRow()] };
+}
+
+// Expands a program template's (or a legacy pre-per-set exercise's) single
+// shared sets-count/reps/weight/time/rest into N identical SetRows — the
+// starting point a coach then diverges from, rather than a dead end. Used
+// both when pre-filling from a Program template (which has no per-set
+// concept at all) and when loading an existing exercises row that predates
+// this feature (set_details null/empty).
+function expandToSetRows(count: number, reps: string, weight: string, time: string, restSeconds: string): SetRow[] {
+  const n = Math.max(1, count);
+  return Array.from({ length: n }, () => ({ id: String(Date.now() + Math.random()), reps, weight, time, restSeconds }));
+}
+
+// Converts local per-set builder state into the DB payload shape — sets
+// becomes the row count (not a separately-entered number anymore), and
+// set_details carries the real per-set breakdown; reps/weight/time/
+// rest_seconds are kept as a first-set summary for any read site that
+// doesn't know about set_details yet (see exercises_set_details.sql).
+function exerciseEntryToPayload(e: ExerciseEntry): ExercisePayloadEntry {
+  const rows = e.setRows.length > 0 ? e.setRows : [buildEmptySetRow()];
+  const first = rows[0];
+  return {
+    id: e.dbId,
+    name: e.name,
+    sets: rows.length,
+    reps: first.reps || '10',
+    weight: withKg(first.weight),
+    time: first.time.trim() || '0',
+    rest_seconds: parseInt(first.restSeconds, 10) || 0,
+    set_details: rows.map(s => ({
+      reps: s.reps || '10',
+      weight: withKg(s.weight) ?? '',
+      time: s.time.trim() || '0',
+      rest_seconds: parseInt(s.restSeconds, 10) || 0,
+    })),
+  };
 }
 
 interface Props {
   coachId: string;
-}
-
-function buildEmptyExercise(): ExerciseEntry {
-  return { id: String(Date.now() + Math.random()), name: '', sets: '3', reps: '10', weight: '', time: '0', restSeconds: '0' };
 }
 
 const CATEGORY_ICONS: Record<string, string> = {
@@ -916,23 +965,23 @@ export default function CoachTrainees({ coachId }: Props) {
         ? templateExercises.map((ex, i) => ({
             id: String(i) + ex.name,
             name: ex.name,
-            sets: String(ex.sets),
-            reps: ex.reps,
-            weight: stripKg(ex.weight),
-            time: sanitizeTimeInput(ex.time ?? '0'),
-            restSeconds: String(ex.rest_seconds ?? '0'),
+            // Templates have no per-set concept — expand the template's
+            // single shared sets-count/reps/weight/time/rest into that many
+            // identical starting rows, same as picking a suggested exercise.
+            setRows: expandToSetRows(ex.sets, ex.reps, stripKg(ex.weight), sanitizeTimeInput(ex.time ?? '0'), String(ex.rest_seconds ?? '0')),
           }))
         : [buildEmptyExercise()]
     );
   }, []);
 
   const addSuggestedExercise = useCallback((item: { name: string; sets: string; reps: string; weight: string; time: string }) => {
+    const setRows = expandToSetRows(parseInt(item.sets, 10) || 1, item.reps, item.weight, item.time, '0');
     setExercises(prev => {
       const lastIdx = prev.length - 1;
       if (prev[lastIdx] && !prev[lastIdx].name.trim()) {
-        return prev.map((e, i) => i === lastIdx ? { ...e, ...item, id: e.id } : e);
+        return prev.map((e, i) => i === lastIdx ? { ...e, name: item.name, setRows } : e);
       }
-      return [...prev, { id: String(Date.now() + Math.random()), restSeconds: '0', ...item }];
+      return [...prev, { id: String(Date.now() + Math.random()), name: item.name, setRows }];
     });
   }, []);
 
@@ -958,19 +1007,44 @@ export default function CoachTrainees({ coachId }: Props) {
     });
   }, []);
 
+  // Appends a new set copying the exercise's LAST set's values rather than
+  // resetting to defaults — "add another set like the last one" is the
+  // common case (working sets usually repeat), and the coach can still
+  // tweak the new row for a drop set / different rest, etc.
+  const addSetRow = useCallback((exerciseId: string) => {
+    setExercises(prev => prev.map(e => {
+      if (e.id !== exerciseId) return e;
+      const last = e.setRows[e.setRows.length - 1];
+      return { ...e, setRows: [...e.setRows, { ...last, id: String(Date.now() + Math.random()) }] };
+    }));
+  }, []);
+
+  const removeSetRow = useCallback((exerciseId: string, setId: string) => {
+    setExercises(prev => prev.map(e =>
+      e.id === exerciseId ? { ...e, setRows: e.setRows.filter(s => s.id !== setId) } : e
+    ));
+  }, []);
+
+  const addEditSetRow = useCallback((exerciseId: string) => {
+    setEditExercises(prev => prev.map(e => {
+      if (e.id !== exerciseId) return e;
+      const last = e.setRows[e.setRows.length - 1];
+      return { ...e, setRows: [...e.setRows, { ...last, id: String(Date.now() + Math.random()) }] };
+    }));
+  }, []);
+
+  const removeEditSetRow = useCallback((exerciseId: string, setId: string) => {
+    setEditExercises(prev => prev.map(e =>
+      e.id === exerciseId ? { ...e, setRows: e.setRows.filter(s => s.id !== setId) } : e
+    ));
+  }, []);
+
   const handleAssignNext = async () => {
     if (assignStep === 1 && selectedProgramId) {
       setAssignStep(2);
     } else if (assignStep === 2 && !saving) {
       const selProgram = programs.find(p => p.id === selectedProgramId)!;
-      const exs = exercises.filter(e => e.name.trim()).map((e) => ({
-        name: e.name,
-        sets: parseInt(e.sets) || 3,
-        reps: e.reps || '10',
-        weight: withKg(e.weight),
-        time: e.time.trim() || '0',
-        rest_seconds: parseInt(e.restSeconds) || 0,
-      }));
+      const exs = exercises.filter(e => e.name.trim()).map(exerciseEntryToPayload);
       setSaving(true);
       try {
         await createWorkout({
@@ -1014,11 +1088,19 @@ export default function CoachTrainees({ coachId }: Props) {
           id: String(i) + ex.name,
           dbId: ex.id,
           name: ex.name,
-          sets: String(ex.sets),
-          reps: ex.reps,
-          weight: stripKg(ex.weight),
-          time: sanitizeTimeInput(ex.time ?? '0'),
-          restSeconds: String(ex.rest_seconds ?? '0'),
+          // Real per-set data if this exercise already has it; otherwise
+          // (assigned before this feature existed) expand the old shared
+          // sets-count/reps/weight/time/rest into that many identical
+          // starting rows, same fallback selectProgram uses for templates.
+          setRows: ex.set_details && ex.set_details.length > 0
+            ? ex.set_details.map((s: ExerciseSetTarget) => ({
+                id: String(Date.now() + Math.random()),
+                reps: s.reps,
+                weight: stripKg(s.weight),
+                time: sanitizeTimeInput(s.time ?? '0'),
+                restSeconds: String(s.rest_seconds ?? 0),
+              }))
+            : expandToSetRows(ex.sets, ex.reps, stripKg(ex.weight), sanitizeTimeInput(ex.time ?? '0'), String(ex.rest_seconds ?? '0')),
         }))
       );
       setEditActiveCategory('Push');
@@ -1053,26 +1135,19 @@ export default function CoachTrainees({ coachId }: Props) {
   }, [editingTrainee]);
 
   const addEditSuggestedExercise = useCallback((item: { name: string; sets: string; reps: string; weight: string; time: string }) => {
+    const setRows = expandToSetRows(parseInt(item.sets, 10) || 1, item.reps, item.weight, item.time, '0');
     setEditExercises(prev => {
       const lastIdx = prev.length - 1;
       if (prev[lastIdx] && !prev[lastIdx].name.trim()) {
-        return prev.map((e, i) => i === lastIdx ? { ...e, ...item, id: e.id } : e);
+        return prev.map((e, i) => i === lastIdx ? { ...e, name: item.name, setRows } : e);
       }
-      return [...prev, { id: String(Date.now() + Math.random()), restSeconds: '0', ...item }];
+      return [...prev, { id: String(Date.now() + Math.random()), name: item.name, setRows }];
     });
   }, []);
 
   const saveEdit = async () => {
     if (!editingTrainee || !editingWorkoutId || saving) return;
-    const exs = editExercises.filter(e => e.name.trim()).map((e) => ({
-      id: e.dbId,
-      name: e.name,
-      sets: parseInt(e.sets) || 3,
-      reps: e.reps || '10',
-      weight: withKg(e.weight),
-      time: e.time.trim() || '0',
-      rest_seconds: parseInt(e.restSeconds) || 0,
-    }));
+    const exs = editExercises.filter(e => e.name.trim()).map(exerciseEntryToPayload);
     setSaving(true);
     try {
       const scheduledDaysValue = editScheduledDays.length > 0 ? editScheduledDays : null;
@@ -2512,67 +2587,14 @@ export default function CoachTrainees({ coachId }: Props) {
                       </View>
                     </View>
                     <View style={styles.exFields}>
-                      <TextInput
-                        style={[styles.textInput, { marginBottom: 8 }]}
-                        placeholder="Exercise name"
-                        placeholderTextColor={colors.textSecondary}
-                        value={ex.name}
-                        onChangeText={v => setExercises(prev => prev.map(e => e.id === ex.id ? { ...e, name: v } : e))}
-                      />
-                      <View style={styles.exMetaRow}>
-                        <View style={styles.exMetaField}>
-                          <Text style={styles.exMetaLabel} numberOfLines={1}>SETS (1-6)</Text>
-                          <TextInput
-                            style={styles.exMetaInput}
-                            value={ex.sets}
-                            onChangeText={v => setExercises(prev => prev.map(e => e.id === ex.id ? { ...e, sets: sanitizeCount(v, 1, 6) } : e))}
-                            keyboardType="number-pad"
-                            placeholderTextColor={colors.textSecondary}
-                          />
-                        </View>
-                        <View style={styles.exMetaField}>
-                          <Text style={styles.exMetaLabel} numberOfLines={1}>REPS (1-30)</Text>
-                          <TextInput
-                            style={styles.exMetaInput}
-                            value={ex.reps}
-                            onChangeText={v => setExercises(prev => prev.map(e => e.id === ex.id ? { ...e, reps: sanitizeCount(v, 1, 30) } : e))}
-                            keyboardType="number-pad"
-                            placeholderTextColor={colors.textSecondary}
-                          />
-                        </View>
-                        <View style={styles.exMetaField}>
-                          <Text style={styles.exMetaLabel} numberOfLines={1}>WEIGHT (KG)</Text>
-                          <TextInput
-                            style={styles.exMetaInput}
-                            value={ex.weight}
-                            onChangeText={v => setExercises(prev => prev.map(e => e.id === ex.id ? { ...e, weight: sanitizeWeightInput(v) } : e))}
-                            placeholder="0"
-                            keyboardType="decimal-pad"
-                            placeholderTextColor={colors.textSecondary}
-                          />
-                        </View>
-                        <View style={styles.exMetaField}>
-                          <Text style={styles.exMetaLabel} numberOfLines={1}>TIME (S/M)</Text>
-                          <TextInput
-                            style={styles.exMetaInput}
-                            value={ex.time}
-                            onChangeText={v => setExercises(prev => prev.map(e => e.id === ex.id ? { ...e, time: sanitizeTimeInput(v) } : e))}
-                            placeholder="e.g. 30s"
-                            keyboardType="default"
-                            placeholderTextColor={colors.textSecondary}
-                          />
-                        </View>
-                        <View style={styles.exMetaField}>
-                          <Text style={styles.exMetaLabel} numberOfLines={1}>REST (SEC)</Text>
-                          <TextInput
-                            style={styles.exMetaInput}
-                            value={ex.restSeconds}
-                            onChangeText={v => setExercises(prev => prev.map(e => e.id === ex.id ? { ...e, restSeconds: sanitizeCount(v, 0, 600) } : e))}
-                            placeholder="0"
-                            keyboardType="number-pad"
-                            placeholderTextColor={colors.textSecondary}
-                          />
-                        </View>
+                      <View style={styles.exNameRow}>
+                        <TextInput
+                          style={[styles.textInput, { flex: 1 }]}
+                          placeholder="Exercise name"
+                          placeholderTextColor={colors.textSecondary}
+                          value={ex.name}
+                          onChangeText={v => setExercises(prev => prev.map(e => e.id === ex.id ? { ...e, name: v } : e))}
+                        />
                         {exercises.length > 1 && (
                           <TouchableOpacity
                             onPress={() => setExercises(prev => prev.filter(e => e.id !== ex.id))}
@@ -2582,6 +2604,75 @@ export default function CoachTrainees({ coachId }: Props) {
                           </TouchableOpacity>
                         )}
                       </View>
+
+                      {ex.setRows.map((set, setI) => (
+                        <View key={set.id} style={styles.setRowWrap}>
+                          <Text style={styles.setRowLabel}>SET {setI + 1}</Text>
+                          <View style={styles.exMetaRow}>
+                            <View style={styles.exMetaField}>
+                              <Text style={styles.exMetaLabel} numberOfLines={1}>REPS (1-30)</Text>
+                              <TextInput
+                                style={styles.exMetaInput}
+                                value={set.reps}
+                                onChangeText={v => setExercises(prev => prev.map(e => e.id === ex.id
+                                  ? { ...e, setRows: e.setRows.map(s => s.id === set.id ? { ...s, reps: sanitizeCount(v, 1, 30) } : s) }
+                                  : e))}
+                                keyboardType="number-pad"
+                                placeholderTextColor={colors.textSecondary}
+                              />
+                            </View>
+                            <View style={styles.exMetaField}>
+                              <Text style={styles.exMetaLabel} numberOfLines={1}>WEIGHT (KG)</Text>
+                              <TextInput
+                                style={styles.exMetaInput}
+                                value={set.weight}
+                                onChangeText={v => setExercises(prev => prev.map(e => e.id === ex.id
+                                  ? { ...e, setRows: e.setRows.map(s => s.id === set.id ? { ...s, weight: sanitizeWeightInput(v) } : s) }
+                                  : e))}
+                                placeholder="0"
+                                keyboardType="decimal-pad"
+                                placeholderTextColor={colors.textSecondary}
+                              />
+                            </View>
+                            <View style={styles.exMetaField}>
+                              <Text style={styles.exMetaLabel} numberOfLines={1}>TIME (S/M)</Text>
+                              <TextInput
+                                style={styles.exMetaInput}
+                                value={set.time}
+                                onChangeText={v => setExercises(prev => prev.map(e => e.id === ex.id
+                                  ? { ...e, setRows: e.setRows.map(s => s.id === set.id ? { ...s, time: sanitizeTimeInput(v) } : s) }
+                                  : e))}
+                                placeholder="e.g. 30s"
+                                keyboardType="default"
+                                placeholderTextColor={colors.textSecondary}
+                              />
+                            </View>
+                            <View style={styles.exMetaField}>
+                              <Text style={styles.exMetaLabel} numberOfLines={1}>REST (SEC)</Text>
+                              <TextInput
+                                style={styles.exMetaInput}
+                                value={set.restSeconds}
+                                onChangeText={v => setExercises(prev => prev.map(e => e.id === ex.id
+                                  ? { ...e, setRows: e.setRows.map(s => s.id === set.id ? { ...s, restSeconds: sanitizeCount(v, 0, 600) } : s) }
+                                  : e))}
+                                placeholder="0"
+                                keyboardType="number-pad"
+                                placeholderTextColor={colors.textSecondary}
+                              />
+                            </View>
+                            {ex.setRows.length > 1 && (
+                              <TouchableOpacity onPress={() => removeSetRow(ex.id, set.id)} style={styles.removeSetBtn}>
+                                <Ionicons name="close-circle-outline" size={18} color={colors.danger} />
+                              </TouchableOpacity>
+                            )}
+                          </View>
+                        </View>
+                      ))}
+
+                      <TouchableOpacity style={styles.addSetBtn} onPress={() => addSetRow(ex.id)}>
+                        <Ionicons name="add" size={14} color={colors.xpBar} />
+                        <Text style={styles.addSetBtnText}>Add Set</Text>
+                      </TouchableOpacity>
                     </View>
                   </View>
                 ))}
@@ -2834,67 +2925,14 @@ export default function CoachTrainees({ coachId }: Props) {
                     </View>
                   </View>
                   <View style={styles.exFields}>
-                    <TextInput
-                      style={[styles.textInput, { marginBottom: 8 }]}
-                      placeholder="Exercise name"
-                      placeholderTextColor={colors.textSecondary}
-                      value={ex.name}
-                      onChangeText={v => setEditExercises(prev => prev.map(e => e.id === ex.id ? { ...e, name: v } : e))}
-                    />
-                    <View style={styles.exMetaRow}>
-                      <View style={styles.exMetaField}>
-                        <Text style={styles.exMetaLabel} numberOfLines={1}>SETS (1-6)</Text>
-                        <TextInput
-                          style={styles.exMetaInput}
-                          value={ex.sets}
-                          onChangeText={v => setEditExercises(prev => prev.map(e => e.id === ex.id ? { ...e, sets: sanitizeCount(v, 1, 6) } : e))}
-                          keyboardType="number-pad"
-                          placeholderTextColor={colors.textSecondary}
-                        />
-                      </View>
-                      <View style={styles.exMetaField}>
-                        <Text style={styles.exMetaLabel} numberOfLines={1}>REPS (1-30)</Text>
-                        <TextInput
-                          style={styles.exMetaInput}
-                          value={ex.reps}
-                          onChangeText={v => setEditExercises(prev => prev.map(e => e.id === ex.id ? { ...e, reps: sanitizeCount(v, 1, 30) } : e))}
-                          keyboardType="number-pad"
-                          placeholderTextColor={colors.textSecondary}
-                        />
-                      </View>
-                      <View style={styles.exMetaField}>
-                        <Text style={styles.exMetaLabel} numberOfLines={1}>WEIGHT (KG)</Text>
-                        <TextInput
-                          style={styles.exMetaInput}
-                          value={ex.weight}
-                          onChangeText={v => setEditExercises(prev => prev.map(e => e.id === ex.id ? { ...e, weight: sanitizeWeightInput(v) } : e))}
-                          placeholder="0"
-                          keyboardType="decimal-pad"
-                          placeholderTextColor={colors.textSecondary}
-                        />
-                      </View>
-                      <View style={styles.exMetaField}>
-                        <Text style={styles.exMetaLabel} numberOfLines={1}>TIME (S/M)</Text>
-                        <TextInput
-                          style={styles.exMetaInput}
-                          value={ex.time}
-                          onChangeText={v => setEditExercises(prev => prev.map(e => e.id === ex.id ? { ...e, time: sanitizeTimeInput(v) } : e))}
-                          placeholder="e.g. 30s"
-                          keyboardType="default"
-                          placeholderTextColor={colors.textSecondary}
-                        />
-                      </View>
-                      <View style={styles.exMetaField}>
-                        <Text style={styles.exMetaLabel} numberOfLines={1}>REST (SEC)</Text>
-                        <TextInput
-                          style={styles.exMetaInput}
-                          value={ex.restSeconds}
-                          onChangeText={v => setEditExercises(prev => prev.map(e => e.id === ex.id ? { ...e, restSeconds: sanitizeCount(v, 0, 600) } : e))}
-                          placeholder="0"
-                          keyboardType="number-pad"
-                          placeholderTextColor={colors.textSecondary}
-                        />
-                      </View>
+                    <View style={styles.exNameRow}>
+                      <TextInput
+                        style={[styles.textInput, { flex: 1 }]}
+                        placeholder="Exercise name"
+                        placeholderTextColor={colors.textSecondary}
+                        value={ex.name}
+                        onChangeText={v => setEditExercises(prev => prev.map(e => e.id === ex.id ? { ...e, name: v } : e))}
+                      />
                       <TouchableOpacity
                         onPress={() => setEditExercises(prev => prev.filter(e => e.id !== ex.id))}
                         style={styles.removeBtn}
@@ -2902,6 +2940,75 @@ export default function CoachTrainees({ coachId }: Props) {
                         <Ionicons name="trash-outline" size={18} color={colors.danger} />
                       </TouchableOpacity>
                     </View>
+
+                    {ex.setRows.map((set, setI) => (
+                      <View key={set.id} style={styles.setRowWrap}>
+                        <Text style={styles.setRowLabel}>SET {setI + 1}</Text>
+                        <View style={styles.exMetaRow}>
+                          <View style={styles.exMetaField}>
+                            <Text style={styles.exMetaLabel} numberOfLines={1}>REPS (1-30)</Text>
+                            <TextInput
+                              style={styles.exMetaInput}
+                              value={set.reps}
+                              onChangeText={v => setEditExercises(prev => prev.map(e => e.id === ex.id
+                                ? { ...e, setRows: e.setRows.map(s => s.id === set.id ? { ...s, reps: sanitizeCount(v, 1, 30) } : s) }
+                                : e))}
+                              keyboardType="number-pad"
+                              placeholderTextColor={colors.textSecondary}
+                            />
+                          </View>
+                          <View style={styles.exMetaField}>
+                            <Text style={styles.exMetaLabel} numberOfLines={1}>WEIGHT (KG)</Text>
+                            <TextInput
+                              style={styles.exMetaInput}
+                              value={set.weight}
+                              onChangeText={v => setEditExercises(prev => prev.map(e => e.id === ex.id
+                                ? { ...e, setRows: e.setRows.map(s => s.id === set.id ? { ...s, weight: sanitizeWeightInput(v) } : s) }
+                                : e))}
+                              placeholder="0"
+                              keyboardType="decimal-pad"
+                              placeholderTextColor={colors.textSecondary}
+                            />
+                          </View>
+                          <View style={styles.exMetaField}>
+                            <Text style={styles.exMetaLabel} numberOfLines={1}>TIME (S/M)</Text>
+                            <TextInput
+                              style={styles.exMetaInput}
+                              value={set.time}
+                              onChangeText={v => setEditExercises(prev => prev.map(e => e.id === ex.id
+                                ? { ...e, setRows: e.setRows.map(s => s.id === set.id ? { ...s, time: sanitizeTimeInput(v) } : s) }
+                                : e))}
+                              placeholder="e.g. 30s"
+                              keyboardType="default"
+                              placeholderTextColor={colors.textSecondary}
+                            />
+                          </View>
+                          <View style={styles.exMetaField}>
+                            <Text style={styles.exMetaLabel} numberOfLines={1}>REST (SEC)</Text>
+                            <TextInput
+                              style={styles.exMetaInput}
+                              value={set.restSeconds}
+                              onChangeText={v => setEditExercises(prev => prev.map(e => e.id === ex.id
+                                ? { ...e, setRows: e.setRows.map(s => s.id === set.id ? { ...s, restSeconds: sanitizeCount(v, 0, 600) } : s) }
+                                : e))}
+                              placeholder="0"
+                              keyboardType="number-pad"
+                              placeholderTextColor={colors.textSecondary}
+                            />
+                          </View>
+                          {ex.setRows.length > 1 && (
+                            <TouchableOpacity onPress={() => removeEditSetRow(ex.id, set.id)} style={styles.removeSetBtn}>
+                              <Ionicons name="close-circle-outline" size={18} color={colors.danger} />
+                            </TouchableOpacity>
+                          )}
+                        </View>
+                      </View>
+                    ))}
+
+                    <TouchableOpacity style={styles.addSetBtn} onPress={() => addEditSetRow(ex.id)}>
+                      <Ionicons name="add" size={14} color={colors.xpBar} />
+                      <Text style={styles.addSetBtnText}>Add Set</Text>
+                    </TouchableOpacity>
                   </View>
                 </View>
               ))}
@@ -3155,6 +3262,11 @@ const styles = StyleSheet.create({
   readOnlyFieldText: { fontSize: 15, color: colors.text, fontWeight: '600' },
   readOnlyHint: { fontSize: 11, color: colors.textSecondary, marginBottom: 4 },
   exFields: { flex: 1 },
+  exNameRow: { flexDirection: 'row', alignItems: 'center', gap: 4, marginBottom: 10 },
+  setRowWrap: {
+    marginBottom: 10, paddingLeft: 10, borderLeftWidth: 2, borderLeftColor: colors.border,
+  },
+  setRowLabel: { fontSize: 9, fontWeight: '700', color: colors.xpBar, letterSpacing: 1, marginBottom: 6 },
   exMetaRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, alignItems: 'center' },
   exMetaField: { flex: 1, minWidth: 70 },
   exMetaLabel: { fontSize: 9, fontWeight: '700', color: colors.textSecondary, letterSpacing: 1, marginBottom: 4 },
@@ -3163,6 +3275,12 @@ const styles = StyleSheet.create({
     color: colors.text, fontSize: 13, borderWidth: 1, borderColor: colors.border, textAlign: 'center',
   },
   removeBtn: { padding: 8 },
+  removeSetBtn: { padding: 6 },
+  addSetBtn: {
+    flexDirection: 'row', alignItems: 'center', gap: 4, alignSelf: 'flex-start',
+    paddingVertical: 6, paddingHorizontal: 4, marginBottom: 6,
+  },
+  addSetBtnText: { fontSize: 12, fontWeight: '700', color: colors.xpBar },
   addExerciseBtn: {
     flexDirection: 'row', alignItems: 'center', justifyContent: 'center',
     gap: 8, paddingVertical: 14, borderRadius: 12,

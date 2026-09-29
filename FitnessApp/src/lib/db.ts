@@ -1,4 +1,4 @@
-import { supabase, SUPABASE_URL, SUPABASE_ANON_KEY, DBUser, DBProgram, DBWorkout, DBExercise, DBWeightLog, DBExerciseWeightLog, DBMessage, DBWorkoutSession, DBGym, DBFriendship, DBNutritionPlan, DBNutritionPlanTemplate, DBCoachRequest, DBCoachInvite, DBTraineeInvite, DBVital, DBProgramExercise, DBLibraryExercise, DBUserMedal, DBFoodLogEntry, DBMealCompletion, SessionExerciseDetail } from './supabase';
+import { supabase, SUPABASE_URL, SUPABASE_ANON_KEY, DBUser, DBProgram, DBWorkout, DBExercise, DBWeightLog, DBExerciseWeightLog, DBMessage, DBWorkoutSession, DBGym, DBFriendship, DBNutritionPlan, DBNutritionPlanTemplate, DBCoachRequest, DBCoachInvite, DBTraineeInvite, DBVital, DBProgramExercise, DBLibraryExercise, DBUserMedal, DBFoodLogEntry, DBMealCompletion, SessionExerciseDetail, ExerciseSetTarget } from './supabase';
 // Reading a just-created expo-print file into JS (as a Blob via fetch(), as
 // an ArrayBuffer via the new File class, or as base64 via the legacy
 // readAsStringAsync) has all three failed with permission/readability
@@ -212,6 +212,14 @@ export interface ExercisePayloadEntry {
   weight?: string;
   time?: string; // duration like "30s"/"5m" — program_exercises only; omitted entirely for workout exercises
   rest_seconds?: number | null; // rest period between sets, in seconds; null/0 = no rest timer
+  // Per-set breakdown — only ever set by CoachTrainees.tsx's workout
+  // assign/edit builders (exercises table has the column; program_exercises
+  // doesn't), never by CoachPrograms.tsx's template builder. syncExerciseRows
+  // forwards whatever properties are present on each entry generically, so
+  // simply never including this key when building a program_exercises
+  // payload is what keeps the two tables' shapes compatible with one
+  // shared sync function.
+  set_details?: ExerciseSetTarget[] | null;
 }
 
 // Diffs an edited exercise list against what's currently in the DB for a given

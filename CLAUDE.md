@@ -38,6 +38,7 @@ You are an expert Apps Developer, UI/UX Designer, and Systems Architect maintain
 - A workout can be completed **once per calendar day** (device-local midnight boundary) — it locks for the rest of the day and reopens tomorrow. This is *not* a one-time-ever lock; that was a mid-session bug that got corrected.
 - Coaches can deactivate a workout (stamps `end_date`, keeps history) or delete it (blocked with a clear error if any `workout_sessions` reference it).
 - Completed sessions save the **full per-exercise, per-set breakdown** — reps, weight, and effort (0-4, "reps in reserve" scale) — in `workout_sessions.details` (jsonb), not just a completion percentage. The coach's trainee History tab expands each session to show it.
+- A coach assigning/editing a trainee's exercise can optionally give each **set** its own reps/weight/time/rest target (`exercises.set_details`, jsonb) instead of one shared value repeated for every set — e.g. a lighter warm-up set before heavier working sets. Scoped to per-trainee `exercises` only, not the reusable Program-template `program_exercises` table. See `FitnessApp/CLAUDE.md`'s "Per-Set Exercise Targets" section for the full design.
 
 ### 2.5 Nutrition
 - Coach-owned `nutrition_plan_templates` → assigned as `nutrition_plans` per trainee (same template→instance snapshot pattern as Programs→Workouts).

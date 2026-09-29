@@ -103,11 +103,17 @@ function buildInitialExercises(workout: Workout): ExerciseLog[] {
     coachTime: ex.time,
     restSeconds: ex.restSeconds,
     completed: false,
-    sets: Array.from({ length: ex.sets }, () => ({
-      reps: ex.reps,
-      weight: ex.weight ?? '',
-      effort: null,
-    })),
+    // A real per-set breakdown (e.g. a lighter warm-up set before heavier
+    // working sets) means each row targets its own reps/weight, not the
+    // same exercise-level value repeated — falls back to the old
+    // repeat-one-value behavior for exercises assigned before this existed.
+    sets: ex.setDetails && ex.setDetails.length > 0
+      ? ex.setDetails.map(sd => ({ reps: sd.reps, weight: sd.weight ?? '', effort: null }))
+      : Array.from({ length: ex.sets }, () => ({
+          reps: ex.reps,
+          weight: ex.weight ?? '',
+          effort: null,
+        })),
   }));
 }
 
@@ -288,6 +294,7 @@ export default function WorkoutScreen({ userId }: Props) {
             time: ex.time ?? undefined,
             restSeconds: ex.rest_seconds ?? undefined,
             completed: false,
+            setDetails: ex.set_details ?? null,
           })),
         };
         setDbWorkout(w);

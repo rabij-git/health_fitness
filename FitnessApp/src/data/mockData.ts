@@ -1,3 +1,5 @@
+import { ExerciseSetTarget } from '../lib/supabase';
+
 export type UserRole = 'admin' | 'coach' | 'trainer';
 
 export interface Exercise {
@@ -9,6 +11,10 @@ export interface Exercise {
   time?: string;
   restSeconds?: number; // rest period between sets, in seconds; 0/undefined = no rest timer
   completed: boolean;
+  // Optional per-set breakdown — when present, each set has its own target
+  // reps/weight/time/rest instead of sharing the exercise-level values
+  // above uniformly. See scripts/exercises_set_details.sql.
+  setDetails?: ExerciseSetTarget[] | null;
 }
 
 export interface Workout {
