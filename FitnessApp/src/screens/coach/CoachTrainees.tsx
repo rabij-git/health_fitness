@@ -60,6 +60,7 @@ import {
 import { DBProgram, DBUser, DBWorkout, DBExercise, DBWeightLog, DBNutritionPlan, DBNutritionPlanTemplate, DBCoachRequest, DBLibraryExercise, DBMessage, DBVital, DBMealCompletion, DBFoodLogEntry, DBTraineeInvite, MealSlot, SessionExerciseDetail, SessionSetDetail, DBWorkoutSession, ExerciseSetTarget } from '../../lib/supabase';
 import { templatesForMealType, scaleTemplateToTarget, scaleItem, MealType, MealTemplate, Diet } from '../../data/mealLibrary';
 import { sanitizeCount, sanitizeWeightInput, sanitizeTimeInput, stripKg, withKg } from '../../lib/exerciseInput';
+import { isWorkoutDurationExpired, formatWorkoutEndDate } from '../../lib/workoutDuration';
 import CalorieCalculatorModal from './CalorieCalculatorModal';
 
 // One set's own row in the exercise builder — reps/weight/time/rest are
@@ -1077,6 +1078,13 @@ export default function CoachTrainees({ coachId }: Props) {
   // symptom: the Edit modal WAS opening, just hidden/inert behind the
   // still-open Trainee Detail modal, until closing that one revealed it.
   const openEditModal = useCallback(async (trainee: DBUser, workout: DBWorkout) => {
+    if (isWorkoutDurationExpired(workout)) {
+      Alert.alert(
+        'Program Ended',
+        `This program's assigned duration ended ${formatWorkoutEndDate(workout)}, so it can no longer be edited. Deactivate it and assign a new workout instead.`
+      );
+      return;
+    }
     setOpeningEditWorkoutId(workout.id);
     try {
       const wkt = await getWorkoutWithExercises(workout.id);
@@ -1716,8 +1724,9 @@ export default function CoachTrainees({ coachId }: Props) {
                         <Text style={styles.fieldLabel}>WORKOUTS ({selectedTraineeWorkouts.length})</Text>
                         {selectedTraineeWorkouts.map(w => {
                           const isExpanded = expandedWorkoutId === w.id;
+                          const isExpired = isWorkoutDurationExpired(w);
                           return (
-                            <View key={w.id} style={[styles.workoutBlock, !w.active && styles.workoutBlockInactive]}>
+                            <View key={w.id} style={[styles.workoutBlock, (!w.active || isExpired) && styles.workoutBlockInactive]}>
                               <TouchableOpacity
                                 style={styles.workoutBlockHeader}
                                 onPress={() => toggleExpandWorkout(w)}
@@ -1731,11 +1740,17 @@ export default function CoachTrainees({ coachId }: Props) {
                                         <Text style={styles.inactiveTagText}>Inactive</Text>
                                       </View>
                                     )}
+                                    {w.active && isExpired && (
+                                      <View style={styles.inactiveTag}>
+                                        <Text style={styles.inactiveTagText}>Duration Ended</Text>
+                                      </View>
+                                    )}
                                   </View>
                                   <Text style={styles.workoutBlockMeta}>
                                     {w.duration} · {w.difficulty} · {scheduledDaysLabel(w.scheduled_days)}
                                     {w.duration_weeks != null ? ` · ${w.duration_weeks} wk${w.duration_weeks === 1 ? '' : 's'}` : ''}
                                     {!w.active && w.end_date ? ` · Ended ${formatDate(w.end_date)}` : ''}
+                                    {w.active && isExpired ? ` · Duration ended ${formatWorkoutEndDate(w)}` : ''}
                                   </Text>
                                 </View>
                                 <Ionicons
@@ -1764,7 +1779,7 @@ export default function CoachTrainees({ coachId }: Props) {
                                   )}
                                   <View style={styles.workoutBlockActions}>
                                     <TouchableOpacity
-                                      style={styles.workoutActionBtn}
+                                      style={[styles.workoutActionBtn, isExpired && styles.workoutActionBtnDisabled]}
                                       onPress={() => selectedTrainee && openEditModal(selectedTrainee, w)}
                                       disabled={openingEditWorkoutId === w.id}
                                     >
@@ -1772,8 +1787,8 @@ export default function CoachTrainees({ coachId }: Props) {
                                         <ActivityIndicator size="small" color={colors.xpBar} />
                                       ) : (
                                         <>
-                                          <Ionicons name="create-outline" size={16} color={colors.xpBar} />
-                                          <Text style={styles.workoutActionBtnText}>Edit</Text>
+                                          <Ionicons name="create-outline" size={16} color={isExpired ? colors.textSecondary : colors.xpBar} />
+                                          <Text style={[styles.workoutActionBtnText, isExpired && { color: colors.textSecondary }]}>Edit</Text>
                                         </>
                                       )}
                                     </TouchableOpacity>
@@ -3428,6 +3443,7 @@ const styles = StyleSheet.create({
     backgroundColor: colors.xpBar + '22', paddingHorizontal: 12, paddingVertical: 7, borderRadius: 10,
   },
   workoutActionBtnText: { fontSize: 13, fontWeight: '700', color: colors.xpBar },
+  workoutActionBtnDisabled: { backgroundColor: colors.secondary },
   workoutActiveToggle: { flexDirection: 'row', alignItems: 'center', gap: 8 },
   workoutActiveToggleLabel: { fontSize: 12, fontWeight: '600', color: colors.textSecondary },
   inactiveTag: {

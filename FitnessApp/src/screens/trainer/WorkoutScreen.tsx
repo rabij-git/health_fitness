@@ -27,6 +27,7 @@ import {
 } from '../../lib/db';
 import { DBWorkout } from '../../lib/supabase';
 import { scheduleRestEndNotification, cancelRestEndNotification, notifyMedalsEarned } from '../../lib/restNotifications';
+import { isWorkoutDurationExpired, formatWorkoutEndDate } from '../../lib/workoutDuration';
 
 const DAY_ABBR = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 
@@ -167,7 +168,7 @@ export default function WorkoutScreen({ userId }: Props) {
   }, [userId]));
 
   const toDoWorkouts = useMemo(
-    () => workouts.filter(w => w.active && !completedTodayIds.has(w.id) && isScheduledForToday(w)),
+    () => workouts.filter(w => w.active && !completedTodayIds.has(w.id) && isScheduledForToday(w) && !isWorkoutDurationExpired(w)),
     [workouts, completedTodayIds]
   );
   const completedTodayWorkouts = useMemo(
@@ -175,7 +176,14 @@ export default function WorkoutScreen({ userId }: Props) {
     [workouts, completedTodayIds]
   );
   const notTodayWorkouts = useMemo(
-    () => workouts.filter(w => w.active && !completedTodayIds.has(w.id) && !isScheduledForToday(w)),
+    () => workouts.filter(w => w.active && !completedTodayIds.has(w.id) && !isScheduledForToday(w) && !isWorkoutDurationExpired(w)),
+    [workouts, completedTodayIds]
+  );
+  // Duration ran out — distinct from a coach manually deactivating it
+  // (`!w.active`, below): the coach never toggled anything, the assigned
+  // number of weeks just elapsed.
+  const durationEndedWorkouts = useMemo(
+    () => workouts.filter(w => w.active && !completedTodayIds.has(w.id) && isWorkoutDurationExpired(w)),
     [workouts, completedTodayIds]
   );
   const pastWorkouts = useMemo(() => workouts.filter(w => !w.active), [workouts]);
@@ -576,9 +584,36 @@ export default function WorkoutScreen({ userId }: Props) {
                 </>
               )}
 
-              {pastWorkouts.length > 0 && (
+              {durationEndedWorkouts.length > 0 && (
                 <>
                   <Text style={[styles.sectionTitle, { marginTop: (toDoWorkouts.length > 0 || completedTodayWorkouts.length > 0 || notTodayWorkouts.length > 0) ? 20 : 0 }]}>
+                    PROGRAM ENDED
+                  </Text>
+                  {durationEndedWorkouts.map(w => (
+                    <TouchableOpacity
+                      key={w.id}
+                      style={[styles.workoutPickCard, styles.workoutPickCardInactive]}
+                      onPress={() => setSelectedWorkoutId(w.id)}
+                      activeOpacity={0.8}
+                    >
+                      <View style={[styles.workoutPickIcon, styles.workoutPickIconInactive]}>
+                        <Ionicons name="flag-outline" size={20} color={colors.textSecondary} />
+                      </View>
+                      <View style={{ flex: 1 }}>
+                        <Text style={styles.workoutPickName}>{w.name}</Text>
+                        <Text style={styles.workoutPickMeta}>
+                          {w.duration} • {w.difficulty} • Ended {formatWorkoutEndDate(w)}
+                        </Text>
+                      </View>
+                      <Ionicons name="chevron-forward" size={18} color={colors.textSecondary} />
+                    </TouchableOpacity>
+                  ))}
+                </>
+              )}
+
+              {pastWorkouts.length > 0 && (
+                <>
+                  <Text style={[styles.sectionTitle, { marginTop: (toDoWorkouts.length > 0 || completedTodayWorkouts.length > 0 || notTodayWorkouts.length > 0 || durationEndedWorkouts.length > 0) ? 20 : 0 }]}>
                     PAST — VIEW ONLY
                   </Text>
                   {pastWorkouts.map(w => (
@@ -626,10 +661,12 @@ export default function WorkoutScreen({ userId }: Props) {
   }
 
   const isCompletedToday = selectedWorkoutId ? completedTodayIds.has(selectedWorkoutId) : false;
-  const isNotToday = selectedWorkoutMeta ? (selectedWorkoutMeta.active && !isCompletedToday && !isScheduledForToday(selectedWorkoutMeta)) : false;
-  const readOnlyReason: 'inactive' | 'completed' | 'notToday' | null = !selectedWorkoutMeta
+  const isExpiredByDuration = selectedWorkoutMeta ? isWorkoutDurationExpired(selectedWorkoutMeta) : false;
+  const isNotToday = selectedWorkoutMeta ? (selectedWorkoutMeta.active && !isCompletedToday && !isExpiredByDuration && !isScheduledForToday(selectedWorkoutMeta)) : false;
+  const readOnlyReason: 'inactive' | 'expired' | 'completed' | 'notToday' | null = !selectedWorkoutMeta
     ? null
     : !selectedWorkoutMeta.active ? 'inactive'
+    : isExpiredByDuration ? 'expired'
     : isCompletedToday ? 'completed'
     : isNotToday ? 'notToday'
     : null;
@@ -647,7 +684,7 @@ export default function WorkoutScreen({ userId }: Props) {
 
           <View style={styles.readOnlyBanner}>
             <Ionicons
-              name={readOnlyReason === 'completed' ? 'checkmark-circle' : readOnlyReason === 'notToday' ? 'calendar-outline' : 'archive-outline'}
+              name={readOnlyReason === 'completed' ? 'checkmark-circle' : readOnlyReason === 'notToday' ? 'calendar-outline' : readOnlyReason === 'expired' ? 'flag-outline' : 'archive-outline'}
               size={16}
               color={readOnlyReason === 'completed' ? colors.success : colors.textSecondary}
             />
@@ -656,13 +693,15 @@ export default function WorkoutScreen({ userId }: Props) {
                 ? "You've already completed this workout today — it reopens tomorrow."
                 : readOnlyReason === 'notToday'
                 ? `Not scheduled for today — comes back on ${scheduledDaysLabel(selectedWorkoutMeta?.scheduled_days ?? [])}.`
+                : readOnlyReason === 'expired'
+                ? `This program's assigned duration ended ${formatWorkoutEndDate(selectedWorkoutMeta!)} — ask your coach for a new one.`
                 : 'This workout is no longer active — view only.'}
             </Text>
           </View>
 
           <View style={styles.header}>
             <Text style={styles.programLabel}>
-              {readOnlyReason === 'completed' ? 'COMPLETED TODAY' : readOnlyReason === 'notToday' ? 'NOT SCHEDULED TODAY' : 'PAST WORKOUT'}
+              {readOnlyReason === 'completed' ? 'COMPLETED TODAY' : readOnlyReason === 'notToday' ? 'NOT SCHEDULED TODAY' : readOnlyReason === 'expired' ? 'PROGRAM ENDED' : 'PAST WORKOUT'}
             </Text>
             <Text style={styles.workoutName}>{dbWorkout.name}</Text>
             <Text style={styles.workoutMeta}>
