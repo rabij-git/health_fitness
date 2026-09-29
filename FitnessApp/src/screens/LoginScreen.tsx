@@ -73,16 +73,35 @@ export default function LoginScreen({ onLogin }: Props) {
     setLoading(true);
     setError('');
     try {
+      let data: { user: { id: string } | null; session: unknown | null };
       if (suRole === 'coach') {
-        await signUpCoach(suEmail.trim().toLowerCase(), suPassword, suName.trim(), suInviteCode.trim());
+        data = await signUpCoach(suEmail.trim().toLowerCase(), suPassword, suName.trim(), suInviteCode.trim());
       } else if (suInviteCode.trim()) {
         // A trainee invite code is optional — plain trainee signup stays
         // open/ungated as before. Providing one auto-connects to that
         // coach instead of leaving the trainee to search/request/wait.
-        await signUpTraineeWithInvite(suEmail.trim().toLowerCase(), suPassword, suName.trim(), suInviteCode.trim());
+        data = await signUpTraineeWithInvite(suEmail.trim().toLowerCase(), suPassword, suName.trim(), suInviteCode.trim());
       } else {
-        await signUp(suEmail.trim().toLowerCase(), suPassword, suName.trim());
+        data = await signUp(suEmail.trim().toLowerCase(), suPassword, suName.trim());
       }
+
+      // Supabase's own email-confirmation setting decides this, not this
+      // app's code — with it off (the recommended setting; nothing in this
+      // app depends on outbound email, and Supabase's built-in email
+      // sender is unreliable without a custom SMTP provider configured
+      // anyway), signUp already returns an active session, so log the
+      // trainee/coach straight in instead of asking them to check an email
+      // that was never going to arrive. Falls back to the old
+      // check-your-email message if confirmation is ever turned back on —
+      // this doesn't assume either way, it reacts to what actually came back.
+      if (data.session && data.user) {
+        const profile = await getProfile(data.user.id);
+        if (profile) {
+          onLogin(profile.role as UserRole, data.user.id);
+          return;
+        }
+      }
+
       setSignedUpMsg(
         suRole === 'trainee'
           ? (suInviteCode.trim()
