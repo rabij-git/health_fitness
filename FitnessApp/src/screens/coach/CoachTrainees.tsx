@@ -329,6 +329,19 @@ export default function CoachTrainees({ coachId }: Props) {
   const [editingDiet, setEditingDiet] = useState<Diet>('omnivore');
   const [mealPickerIndex, setMealPickerIndex] = useState<number | null>(null);
   const [savingMealIndex, setSavingMealIndex] = useState<number | null>(null);
+  // The calories/macros/meals snapshot that a calorie-field edit scales
+  // FROM — refreshed on focus (see captureCaloriesEditBaseline), never on every
+  // keystroke. Scaling off the previous KEYSTROKE's value instead of a
+  // frozen snapshot compounds rounding error across a multi-digit edit
+  // (e.g. clearing "2500" character-by-character before typing "2000"
+  // passes through several tiny intermediate "calorie" values, each
+  // shrinking the macros further, and a macro that rounds to 0g along the
+  // way gets stuck there for the rest of the edit) — a ref-held baseline
+  // fixes that, since every keystroke computes fresh off the same
+  // unchanging starting point regardless of the intermediate path typed.
+  const planEditBaseline = useRef<{
+    calories: number; protein: number; carbs: number; fat: number; meals: MealSlot[] | null;
+  } | null>(null);
 
   // ── Assign nutrition plan (picks from the coach's reusable templates) ──
   const [nutritionTemplates, setNutritionTemplates] = useState<DBNutritionPlanTemplate[]>([]);
@@ -645,7 +658,35 @@ export default function CoachTrainees({ coachId }: Props) {
     setEditingDiet(plan.calc_inputs?.diet ?? 'omnivore');
     setMealPickerIndex(null);
     setEditingPlanId(plan.id);
+    // Defensive fallback matching the just-set form fields above — normally
+    // superseded immediately by captureCaloriesEditBaseline the moment the
+    // coach actually focuses the Calories field (see that function).
+    planEditBaseline.current = {
+      calories: plan.target_calories ?? 0,
+      protein: plan.target_protein ?? 0,
+      carbs: plan.target_carbs ?? 0,
+      fat: plan.target_fat ?? 0,
+      meals: plan.meals ?? null,
+    };
   }, []);
+
+  // Freezes a snapshot of the currently-displayed calories/macros/meals the
+  // instant the coach taps into the Calories field — every keystroke while
+  // it stays focused scales relative to THIS fixed snapshot (handled in
+  // handlePlanCaloriesChange below), not the previous keystroke's value.
+  // Re-focusing (blur then tap back in) re-captures a fresh snapshot, so a
+  // manual edit to Protein/Carbs/Fat — or a meal swap — made in between is
+  // correctly picked up as the new "before" reference for the next round of
+  // calorie edits.
+  const captureCaloriesEditBaseline = useCallback(() => {
+    planEditBaseline.current = {
+      calories: parseFloat(planCalories) || 0,
+      protein: parseFloat(planProtein) || 0,
+      carbs: parseFloat(planCarbs) || 0,
+      fat: parseFloat(planFat) || 0,
+      meals: editingMeals,
+    };
+  }, [planCalories, planProtein, planCarbs, planFat, editingMeals]);
 
   // pickerOptions for the currently-open meal picker — templatesForMealType
   // already applies the diet nesting (a pescatarian trainee's list includes
@@ -676,6 +717,12 @@ export default function CoachTrainees({ coachId }: Props) {
       const plan = await updateNutritionPlan(editingPlanId, { meals: updatedMeals });
       setEditingMeals(plan.meals ?? updatedMeals);
       setSelectedTraineeNutrition(prev => prev.map(p => (p.id === plan.id ? plan : p)));
+      // Keep the calorie-edit baseline's meals in sync so a calorie change
+      // made AFTER this swap scales from the meal the coach just picked,
+      // not the stale one that was there when the editor was first opened.
+      if (planEditBaseline.current) {
+        planEditBaseline.current = { ...planEditBaseline.current, meals: plan.meals ?? updatedMeals };
+      }
     } catch (e) {
       Alert.alert('Error', e instanceof Error ? e.message : 'Could not update this meal. Please try again.');
     } finally {
@@ -689,39 +736,43 @@ export default function CoachTrainees({ coachId }: Props) {
   // unchanged (e.g. protein staying ~30% of calories), without needing to
   // know calories-per-gram constants or read `calc_inputs.macro_split`
   // (which is null for template-assigned/manually-typed plans anyway — this
-  // works from whatever protein/carbs/fat values are already in the editor,
-  // calculator-built or not). A macro left blank stays blank — nothing to
-  // scale from. If the plan has a calculator-built `meals` breakdown, each
-  // meal (targets, actuals, and item quantities) is rescaled by the same
-  // factor too, so it doesn't drift out of sync with the new daily totals.
+  // works from whatever protein/carbs/fat values were in the editor right
+  // before this edit started, calculator-built or not). Always scales from
+  // the frozen `planEditBaseline` snapshot (see captureCaloriesEditBaseline)
+  // rather than the previous keystroke's value — see that ref's own comment
+  // for why that distinction matters. A macro that was 0/blank in the
+  // baseline stays untouched — nothing to scale from. If the plan has a
+  // calculator-built `meals` breakdown, each meal (targets, actuals, and
+  // item quantities) is rescaled by the same factor too, so it doesn't
+  // drift out of sync with the new daily totals.
   const handlePlanCaloriesChange = useCallback((v: string) => {
     const sanitized = v.replace(/[^0-9]/g, '');
-    const oldCals = parseFloat(planCalories);
-    const newCals = parseFloat(sanitized);
     setPlanCalories(sanitized);
-    if (!oldCals || oldCals <= 0 || !newCals || newCals <= 0) return;
-    const scale = newCals / oldCals;
+    const baseline = planEditBaseline.current;
+    const newCals = parseFloat(sanitized);
+    if (!baseline || !baseline.calories || baseline.calories <= 0 || !newCals || newCals <= 0) return;
+    const scale = newCals / baseline.calories;
 
-    const oldProtein = parseFloat(planProtein);
-    const oldCarbs = parseFloat(planCarbs);
-    const oldFat = parseFloat(planFat);
-    if (oldProtein > 0) setPlanProtein(String(Math.round(oldProtein * scale)));
-    if (oldCarbs > 0) setPlanCarbs(String(Math.round(oldCarbs * scale)));
-    if (oldFat > 0) setPlanFat(String(Math.round(oldFat * scale)));
+    if (baseline.protein > 0) setPlanProtein(String(Math.round(baseline.protein * scale)));
+    if (baseline.carbs > 0) setPlanCarbs(String(Math.round(baseline.carbs * scale)));
+    if (baseline.fat > 0) setPlanFat(String(Math.round(baseline.fat * scale)));
 
-    setEditingMeals(prev => prev == null ? prev : prev.map(m => ({
-      ...m,
-      target_calories: Math.round(m.target_calories * scale),
-      target_protein: Math.round(m.target_protein * scale),
-      target_carbs: Math.round(m.target_carbs * scale),
-      target_fat: Math.round(m.target_fat * scale),
-      actual_calories: Math.round(m.actual_calories * scale),
-      actual_protein: Math.round(m.actual_protein * scale),
-      actual_carbs: Math.round(m.actual_carbs * scale),
-      actual_fat: Math.round(m.actual_fat * scale),
-      items: m.items.map(i => scaleItem(i, scale)),
-    })));
-  }, [planCalories, planProtein, planCarbs, planFat]);
+    if (baseline.meals) {
+      const scaledMeals = baseline.meals;
+      setEditingMeals(scaledMeals.map(m => ({
+        ...m,
+        target_calories: Math.round(m.target_calories * scale),
+        target_protein: Math.round(m.target_protein * scale),
+        target_carbs: Math.round(m.target_carbs * scale),
+        target_fat: Math.round(m.target_fat * scale),
+        actual_calories: Math.round(m.actual_calories * scale),
+        actual_protein: Math.round(m.actual_protein * scale),
+        actual_carbs: Math.round(m.actual_carbs * scale),
+        actual_fat: Math.round(m.actual_fat * scale),
+        items: m.items.map(i => scaleItem(i, scale)),
+      })));
+    }
+  }, []);
 
   const handleSavePlan = useCallback(async () => {
     if (!selectedTrainee || !planTitle.trim() || savingPlan || !editingPlanId) return;
@@ -817,6 +868,10 @@ export default function CoachTrainees({ coachId }: Props) {
     setAssigningTrainee(null);
   }, [assigningTrainee]);
 
+  // Closes the Trainee Detail modal before opening this one — see
+  // openEditModal's comment above (same bug, same fix): a second <Modal>
+  // opened while the first is still visible={true} doesn't reliably
+  // show/register touches on iOS.
   const openAssignModal = (trainee: DBUser) => {
     setAssigningTrainee(trainee);
     setAssignStep(1);
@@ -825,6 +880,7 @@ export default function CoachTrainees({ coachId }: Props) {
     setExercises([buildEmptyExercise()]);
     setActiveCategory('Push');
     setScheduledDays([]);
+    setSelectedTrainee(null);
     setShowAssignModal(true);
   };
 
@@ -916,6 +972,15 @@ export default function CoachTrainees({ coachId }: Props) {
   };
 
   // ── Edit flow ──
+  // Closes the Trainee Detail modal before opening this one, and reopens it
+  // on any close path (Cancel/X/back-gesture/Save) — see the app's own
+  // established rule (CLAUDE.md "Robustness Pitfalls" #7): two separate
+  // <Modal>s both visible={true} at once don't reliably show/register
+  // touches on iOS (the second one stacked on top can render invisible or
+  // untappable until the first is dismissed) — reported as "press Edit,
+  // nothing happens until I exit the trainee page," which is exactly that
+  // symptom: the Edit modal WAS opening, just hidden/inert behind the
+  // still-open Trainee Detail modal, until closing that one revealed it.
   const openEditModal = useCallback(async (trainee: DBUser, workout: DBWorkout) => {
     setOpeningEditWorkoutId(workout.id);
     try {
@@ -937,11 +1002,24 @@ export default function CoachTrainees({ coachId }: Props) {
       );
       setEditActiveCategory('Push');
       setEditScheduledDays(workout.scheduled_days ?? []);
+      setSelectedTrainee(null);
       setShowEditModal(true);
     } finally {
       setOpeningEditWorkoutId(null);
     }
   }, []);
+
+  // Reopens the trainee-detail modal for whoever was being edited — mirrors
+  // closeAssignModal/closeCalorieCalculator's already-established
+  // capture-and-restore shape. Reopening re-triggers the detail-load effect
+  // (keyed on selectedTrainee), which refetches workouts and so picks up
+  // whatever was just saved.
+  const closeEditModal = useCallback(() => {
+    setShowEditModal(false);
+    setSelectedTrainee(editingTrainee);
+    setEditingTrainee(null);
+    setEditingWorkoutId(null);
+  }, [editingTrainee]);
 
   const addEditSuggestedExercise = useCallback((item: { name: string; sets: string; reps: string; weight: string; time: string }) => {
     setEditExercises(prev => {
@@ -978,9 +1056,7 @@ export default function CoachTrainees({ coachId }: Props) {
         setExpandedWorkoutId(null);
         setExpandedWorkoutExercises([]);
       }
-      setShowEditModal(false);
-      setEditingTrainee(null);
-      setEditingWorkoutId(null);
+      closeEditModal();
     } catch (e) {
       console.warn('saveEdit error', e);
     } finally {
@@ -1393,10 +1469,29 @@ export default function CoachTrainees({ coachId }: Props) {
               // Wrapped for the Nutrition tab's inline plan editor (Plan
               // Title/Calories/Protein/Carbs/Fat/Water/Notes) — without
               // this, the keyboard could cover the lower fields (Notes,
-              // Water) while editing, same class of bug as the Chat tab
-              // right above needed fixing for.
-              <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={{ flex: 1 }}>
-              <ScrollView showsVerticalScrollIndicator={false} style={{ flex: 1 }}>
+              // Water) while editing. iOS deliberately does NOT use
+              // 'padding' here (unlike the naive first attempt) — per this
+              // app's own established "Chat keyboard-avoidance" lesson
+              // (CLAUDE.md), 'padding'/'height' behavior has never held up
+              // reliably inside a <Modal> in this codebase across three
+              // separate confirmed root causes, and this exact wrapper
+              // reproduced the same "button presses inside it don't
+              // reliably take visible effect" symptom for both the Program
+              // tab's workout Edit button and this tab's plan Edit button.
+              // behavior={undefined} on iOS (proven-safe inert passthrough,
+              // same value the Chat tab above already converged on) plus a
+              // keyboard-aware bottom padding on the ScrollView itself
+              // (same measured-height technique, applied as padding instead
+              // of a fixed height since there's no separate pinned input
+              // row here) replaces it. Android's own value ('height') is
+              // left completely untouched — it was already working.
+              <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? undefined : 'height'} style={{ flex: 1 }}>
+              <ScrollView
+                showsVerticalScrollIndicator={false}
+                style={{ flex: 1 }}
+                contentContainerStyle={keyboardOffset > 0 ? { paddingBottom: keyboardOffset } : undefined}
+                keyboardShouldPersistTaps="handled"
+              >
                 {/* Program tab */}
                 {detailTab === 'program' && (
                   <View>
@@ -1711,6 +1806,7 @@ export default function CoachTrainees({ coachId }: Props) {
                               style={styles.exMetaInput}
                               value={planCalories}
                               onChangeText={handlePlanCaloriesChange}
+                              onFocus={captureCaloriesEditBaseline}
                               keyboardType="number-pad"
                               placeholder="0"
                               placeholderTextColor={colors.textSecondary}
@@ -2528,7 +2624,7 @@ export default function CoachTrainees({ coachId }: Props) {
         visible={showEditModal}
         transparent
         animationType="slide"
-        onRequestClose={() => setShowEditModal(false)}
+        onRequestClose={closeEditModal}
       >
         <KeyboardAvoidingView
           style={styles.modalOverlay}
@@ -2540,7 +2636,7 @@ export default function CoachTrainees({ coachId }: Props) {
                 <Text style={styles.modalStep}>EDITING PROGRAM</Text>
                 <Text style={styles.modalTitle}>{editingTrainee?.name}</Text>
               </View>
-              <TouchableOpacity style={styles.closeBtn} onPress={() => setShowEditModal(false)}>
+              <TouchableOpacity style={styles.closeBtn} onPress={closeEditModal}>
                 <Ionicons name="close" size={22} color={colors.textSecondary} />
               </TouchableOpacity>
             </View>
@@ -2718,7 +2814,7 @@ export default function CoachTrainees({ coachId }: Props) {
             </ScrollView>
 
             <View style={styles.modalFooter}>
-              <TouchableOpacity style={styles.backBtn} onPress={() => setShowEditModal(false)}>
+              <TouchableOpacity style={styles.backBtn} onPress={closeEditModal}>
                 <Text style={styles.backBtnText}>Cancel</Text>
               </TouchableOpacity>
               <TouchableOpacity
