@@ -34,6 +34,7 @@ import {
 } from '../../lib/db';
 import { DBUser, DBWeightLog, DBNutritionPlan, DBCoachRequest } from '../../lib/supabase';
 import { ActivityLevel, Sex, ACTIVITY_LABELS } from '../../lib/nutritionCalc';
+import { PRIVACY_POLICY_URL } from '../../lib/links';
 import appJson from '../../../app.json';
 
 type InfoKey = 'privacy' | 'help';
@@ -871,6 +872,12 @@ export default function ProfileScreen({ onLogout, userId }: Props) {
               </TouchableOpacity>
             </View>
             <Text style={styles.infoBody}>{infoModal ? INFO_CONTENT[infoModal].body : ''}</Text>
+            {infoModal === 'privacy' && (
+              <TouchableOpacity style={styles.privacyLinkBtn} onPress={() => Linking.openURL(PRIVACY_POLICY_URL)}>
+                <Text style={styles.privacyLinkBtnText}>View Full Privacy Policy</Text>
+                <Ionicons name="open-outline" size={15} color={colors.xpBar} />
+              </TouchableOpacity>
+            )}
           </View>
         </View>
       </Modal>
@@ -1159,6 +1166,12 @@ const styles = StyleSheet.create({
 
   detailLabel: { fontSize: 11, fontWeight: '700', color: colors.textSecondary, letterSpacing: 1, marginBottom: 6 },
   infoBody: { fontSize: 14, color: colors.textSecondary, lineHeight: 21, paddingBottom: 8 },
+  privacyLinkBtn: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6,
+    marginTop: 8, paddingVertical: 12, borderRadius: 10,
+    borderWidth: 1, borderColor: colors.border,
+  },
+  privacyLinkBtnText: { fontSize: 14, fontWeight: '600', color: colors.xpBar },
   rowChips: { flexDirection: 'row', gap: 10 },
   chip: {
     paddingHorizontal: 18, paddingVertical: 10, borderRadius: 10,

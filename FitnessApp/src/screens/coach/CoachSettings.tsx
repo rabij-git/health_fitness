@@ -1,5 +1,5 @@
 import React, { useState, useCallback } from 'react';
-import { View, StyleSheet, ScrollView, TouchableOpacity, Modal, ActivityIndicator, Alert } from 'react-native';
+import { View, StyleSheet, ScrollView, TouchableOpacity, Modal, ActivityIndicator, Alert, Linking } from 'react-native';
 import { Text } from '../../components/AppText';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useFocusEffect } from '@react-navigation/native';
@@ -7,6 +7,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { colors } from '../../theme/colors';
 import { getProfile, deleteOwnAccount } from '../../lib/db';
 import { DBUser } from '../../lib/supabase';
+import { PRIVACY_POLICY_URL } from '../../lib/links';
 import appJson from '../../../app.json';
 
 type InfoKey = 'privacy' | 'help' | 'about';
@@ -188,6 +189,12 @@ export default function CoachSettings({ onLogout, coachId, navigation }: Props) 
               </TouchableOpacity>
             </View>
             <Text style={styles.infoBody}>{infoModal ? INFO_CONTENT[infoModal].body : ''}</Text>
+            {infoModal === 'privacy' && (
+              <TouchableOpacity style={styles.privacyLinkBtn} onPress={() => Linking.openURL(PRIVACY_POLICY_URL)}>
+                <Text style={styles.privacyLinkBtnText}>View Full Privacy Policy</Text>
+                <Ionicons name="open-outline" size={15} color={colors.xpBar} />
+              </TouchableOpacity>
+            )}
           </View>
         </View>
       </Modal>
@@ -282,4 +289,10 @@ const styles = StyleSheet.create({
   detailLabel: { fontSize: 11, fontWeight: '700', color: colors.textSecondary, letterSpacing: 1, marginBottom: 6 },
   detailValue: { fontSize: 15, color: colors.text },
   infoBody: { fontSize: 14, color: colors.textSecondary, lineHeight: 21, paddingBottom: 8 },
+  privacyLinkBtn: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6,
+    marginTop: 8, paddingVertical: 12, borderRadius: 10,
+    borderWidth: 1, borderColor: colors.border,
+  },
+  privacyLinkBtnText: { fontSize: 14, fontWeight: '600', color: colors.xpBar },
 });
