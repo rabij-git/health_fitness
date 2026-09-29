@@ -8,14 +8,25 @@ import { computeLevelFromXp, mockMedals } from '../data/mockData';
 // which sidesteps that whole class of failure.
 import * as LegacyFileSystem from 'expo-file-system/legacy';
 
+// `uploadAsync` builds its own bare HTTP request (see the comment above the
+// import), so it doesn't go through the supabase-js client and doesn't pick
+// up the caller's session automatically the way every other call in this
+// file does — it has to be fetched and attached explicitly. Using the anon
+// key here (the original bug) sends the request as an unauthenticated
+// request for storage.objects RLS purposes, regardless of who's actually
+// signed in: it wouldn't identify the uploader as themselves, and it would
+// outright fail against any bucket policy that isn't wide open to anon.
 async function uploadFileToStorage(localFileUri: string, bucket: string, storagePath: string, contentType: string) {
+  const { data: { session } } = await supabase.auth.getSession();
+  if (!session) throw new Error('Not authenticated');
+
   const uploadUrl = `${SUPABASE_URL}/storage/v1/object/${bucket}/${storagePath}`;
   const result = await LegacyFileSystem.uploadAsync(uploadUrl, localFileUri, {
     httpMethod: 'POST',
     uploadType: LegacyFileSystem.FileSystemUploadType.BINARY_CONTENT,
     headers: {
       apikey: SUPABASE_ANON_KEY,
-      Authorization: `Bearer ${SUPABASE_ANON_KEY}`,
+      Authorization: `Bearer ${session.access_token}`,
       'Content-Type': contentType,
     },
   });
