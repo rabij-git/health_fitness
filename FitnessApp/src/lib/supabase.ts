@@ -72,6 +72,10 @@ export interface DBWorkout {
   // Weekday numbers (0=Sunday..6=Saturday, matching JS Date.getDay()) this
   // workout can be done on. Null/empty = no restriction, any day.
   scheduled_days: number[] | null;
+  // How many weeks this assigned workout is meant to run — optional (unlike
+  // `duration`, a per-session length string, or programs.duration, an
+  // always-required weeks value on the template).
+  duration_weeks: number | null;
   created_at: string;
 }
 

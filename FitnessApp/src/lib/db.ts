@@ -358,12 +358,12 @@ export async function deleteLibraryExercise(id: string) {
 // ── Workouts ──────────────────────────────────────────────────────────────────
 
 export async function createWorkout(
-  workout: Omit<DBWorkout, 'id' | 'created_at' | 'active' | 'end_date' | 'scheduled_days'> & { scheduled_days?: number[] | null },
+  workout: Omit<DBWorkout, 'id' | 'created_at' | 'active' | 'end_date' | 'scheduled_days' | 'duration_weeks'> & { scheduled_days?: number[] | null; duration_weeks?: number | null },
   exercises: ExercisePayloadEntry[]
 ): Promise<DBWorkout> {
   const { data: wData, error: wError } = await supabase
     .from('workouts')
-    .insert({ scheduled_days: null, ...workout, active: true, end_date: null })
+    .insert({ scheduled_days: null, duration_weeks: null, ...workout, active: true, end_date: null })
     .select()
     .single();
   if (wError) throw wError;
@@ -375,6 +375,11 @@ export async function createWorkout(
     if (exError) throw exError;
   }
   return wData;
+}
+
+export async function updateWorkoutDurationWeeks(workoutId: string, weeks: number | null) {
+  const { error } = await supabase.from('workouts').update({ duration_weeks: weeks }).eq('id', workoutId);
+  if (error) throw error;
 }
 
 export async function updateWorkoutScheduledDays(workoutId: string, days: number[]) {
@@ -521,6 +526,24 @@ export async function getTraineeHistory(traineeId: string, limit: number = 20): 
     .limit(limit);
   if (error) return [];
   return (data ?? []).map((s: any) => ({ ...s, workout_name: s.workouts?.name ?? '' }));
+}
+
+// Most recent completed session for one specific workout — lets the coach's
+// Edit Workout screen show "what did they actually do last time" (reps,
+// weight, effort per set) inline, without leaving Program to go check
+// History and hunt for the matching session. workout_id alone is enough to
+// scope this (a workout belongs to exactly one trainee), no trainee_id
+// needed.
+export async function getLatestSessionForWorkout(workoutId: string): Promise<DBWorkoutSession | null> {
+  const { data, error } = await supabase
+    .from('workout_sessions')
+    .select('*')
+    .eq('workout_id', workoutId)
+    .order('completed_at', { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  if (error || !data) return null;
+  return data;
 }
 
 // ── Vitals (generic metric log: weight, steps, water, heart rate, ...) ────────

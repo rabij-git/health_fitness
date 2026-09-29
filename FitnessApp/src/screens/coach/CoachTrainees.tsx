@@ -36,8 +36,10 @@ import {
   getWorkoutWithExercises,
   setWorkoutActive,
   updateWorkoutScheduledDays,
+  updateWorkoutDurationWeeks,
   deleteWorkout,
   getTraineeHistory,
+  getLatestSessionForWorkout,
   getWeightLogs,
   getNutritionPlans,
   getNutritionTemplates,
@@ -54,7 +56,7 @@ import {
   getMyTraineeInvites,
   revokeTraineeInvite,
 } from '../../lib/db';
-import { DBProgram, DBUser, DBWorkout, DBExercise, DBWeightLog, DBNutritionPlan, DBNutritionPlanTemplate, DBCoachRequest, DBLibraryExercise, DBMessage, DBVital, DBMealCompletion, DBFoodLogEntry, DBTraineeInvite, MealSlot, SessionExerciseDetail, SessionSetDetail } from '../../lib/supabase';
+import { DBProgram, DBUser, DBWorkout, DBExercise, DBWeightLog, DBNutritionPlan, DBNutritionPlanTemplate, DBCoachRequest, DBLibraryExercise, DBMessage, DBVital, DBMealCompletion, DBFoodLogEntry, DBTraineeInvite, MealSlot, SessionExerciseDetail, SessionSetDetail, DBWorkoutSession } from '../../lib/supabase';
 import { templatesForMealType, scaleTemplateToTarget, scaleItem, MealType, MealTemplate, Diet } from '../../data/mealLibrary';
 import { sanitizeCount, sanitizeWeightInput, sanitizeTimeInput, stripKg, withKg } from '../../lib/exerciseInput';
 import CalorieCalculatorModal from './CalorieCalculatorModal';
@@ -368,6 +370,11 @@ export default function CoachTrainees({ coachId }: Props) {
   const [activeCategory, setActiveCategory] = useState('Push');
   // Weekday numbers (0=Sun..6=Sat) this workout can be done on — empty = any day.
   const [scheduledDays, setScheduledDays] = useState<number[]>([]);
+  // How many weeks this assignment is meant to run — optional, digits only.
+  // Pre-filled from the selected program's own (always-required) weeks
+  // value in selectProgram below, but freely editable/clearable here since
+  // it's a per-trainee choice, not locked to the template.
+  const [workoutDurationWeeks, setWorkoutDurationWeeks] = useState('');
 
   // ── Edit workout modal ──
   const [showEditModal, setShowEditModal] = useState(false);
@@ -377,6 +384,14 @@ export default function CoachTrainees({ coachId }: Props) {
   const [editExercises, setEditExercises] = useState<ExerciseEntry[]>([]);
   const [editActiveCategory, setEditActiveCategory] = useState('Push');
   const [editScheduledDays, setEditScheduledDays] = useState<number[]>([]);
+  const [editDurationWeeks, setEditDurationWeeks] = useState('');
+  // The trainee's most recently completed session for the workout currently
+  // being edited — shown inline so the coach can see what was actually
+  // logged last time (reps/weight/effort per set) without leaving this
+  // modal to go check the History tab. null while loading or if there's no
+  // completed session yet for this workout.
+  const [editingLastSession, setEditingLastSession] = useState<DBWorkoutSession | null>(null);
+  const [loadingLastSession, setLoadingLastSession] = useState(false);
 
   // ── Shared exercise library ──
   const [library, setLibrary] = useState<DBLibraryExercise[]>([]);
@@ -880,6 +895,7 @@ export default function CoachTrainees({ coachId }: Props) {
     setExercises([buildEmptyExercise()]);
     setActiveCategory('Push');
     setScheduledDays([]);
+    setWorkoutDurationWeeks('');
     setSelectedTrainee(null);
     setShowAssignModal(true);
   };
@@ -890,6 +906,10 @@ export default function CoachTrainees({ coachId }: Props) {
   const selectProgram = useCallback(async (program: DBProgram) => {
     setSelectedProgramId(program.id);
     setWorkoutName(program.name);
+    // Pre-fill from the template's own weeks value as a starting suggestion
+    // — still freely editable/clearable here, since how long THIS trainee
+    // runs it is a per-assignment choice, not locked to the template.
+    setWorkoutDurationWeeks(program.duration ?? '');
     const templateExercises = await getProgramExercises(program.id);
     setExercises(
       templateExercises.length > 0
@@ -961,6 +981,7 @@ export default function CoachTrainees({ coachId }: Props) {
           duration: '60 min',
           difficulty: selProgram.difficulty,
           scheduled_days: scheduledDays.length > 0 ? scheduledDays : null,
+          duration_weeks: workoutDurationWeeks.trim() ? parseInt(workoutDurationWeeks, 10) : null,
         }, exs);
         setAssignStep(3);
       } catch (e) {
@@ -1002,8 +1023,17 @@ export default function CoachTrainees({ coachId }: Props) {
       );
       setEditActiveCategory('Push');
       setEditScheduledDays(workout.scheduled_days ?? []);
+      setEditDurationWeeks(workout.duration_weeks != null ? String(workout.duration_weeks) : '');
       setSelectedTrainee(null);
       setShowEditModal(true);
+      // Loaded separately (not awaited with the rest) so the modal itself
+      // opens right away — this is "nice to have while you edit," not
+      // something that should delay the edit form appearing.
+      setEditingLastSession(null);
+      setLoadingLastSession(true);
+      getLatestSessionForWorkout(workout.id)
+        .then(setEditingLastSession)
+        .finally(() => setLoadingLastSession(false));
     } finally {
       setOpeningEditWorkoutId(null);
     }
@@ -1019,6 +1049,7 @@ export default function CoachTrainees({ coachId }: Props) {
     setSelectedTrainee(editingTrainee);
     setEditingTrainee(null);
     setEditingWorkoutId(null);
+    setEditingLastSession(null);
   }, [editingTrainee]);
 
   const addEditSuggestedExercise = useCallback((item: { name: string; sets: string; reps: string; weight: string; time: string }) => {
@@ -1045,11 +1076,13 @@ export default function CoachTrainees({ coachId }: Props) {
     setSaving(true);
     try {
       const scheduledDaysValue = editScheduledDays.length > 0 ? editScheduledDays : null;
+      const durationWeeksValue = editDurationWeeks.trim() ? parseInt(editDurationWeeks, 10) : null;
       await Promise.all([
         updateWorkoutExercises(editingWorkoutId, exs),
         updateWorkoutScheduledDays(editingWorkoutId, editScheduledDays),
+        updateWorkoutDurationWeeks(editingWorkoutId, durationWeeksValue),
       ]);
-      setSelectedTraineeWorkouts(prev => prev.map(w => w.id === editingWorkoutId ? { ...w, scheduled_days: scheduledDaysValue } : w));
+      setSelectedTraineeWorkouts(prev => prev.map(w => w.id === editingWorkoutId ? { ...w, scheduled_days: scheduledDaysValue, duration_weeks: durationWeeksValue } : w));
       // Collapse the workout row if it was expanded — re-expanding fetches
       // the freshly-saved exercises instead of showing stale ones.
       if (expandedWorkoutId === editingWorkoutId) {
@@ -1626,6 +1659,7 @@ export default function CoachTrainees({ coachId }: Props) {
                                   </View>
                                   <Text style={styles.workoutBlockMeta}>
                                     {w.duration} · {w.difficulty} · {scheduledDaysLabel(w.scheduled_days)}
+                                    {w.duration_weeks != null ? ` · ${w.duration_weeks} wk${w.duration_weeks === 1 ? '' : 's'}` : ''}
                                     {!w.active && w.end_date ? ` · Ended ${formatDate(w.end_date)}` : ''}
                                   </Text>
                                 </View>
@@ -2386,6 +2420,16 @@ export default function CoachTrainees({ coachId }: Props) {
                 </View>
                 <Text style={styles.readOnlyHint}>Set from the program template — edit it in the Programs tab.</Text>
 
+                <Text style={[styles.fieldLabel, { marginTop: 20 }]}>DURATION (WEEKS, OPTIONAL)</Text>
+                <TextInput
+                  style={[styles.exMetaInput, { alignSelf: 'flex-start', minWidth: 90 }]}
+                  value={workoutDurationWeeks}
+                  onChangeText={v => setWorkoutDurationWeeks(sanitizeCount(v, 1, 52))}
+                  keyboardType="number-pad"
+                  placeholder="e.g. 8"
+                  placeholderTextColor={colors.textSecondary}
+                />
+
                 <Text style={[styles.fieldLabel, { marginTop: 20 }]}>SCHEDULED DAYS</Text>
                 <View style={styles.dayRow}>
                   {DAY_ABBR.map((label, i) => (
@@ -2642,11 +2686,69 @@ export default function CoachTrainees({ coachId }: Props) {
             </View>
 
             <ScrollView showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
+              {/* What the trainee actually logged last time for THIS workout —
+                  shown right up front so the coach can see it while deciding
+                  how to adjust sets/reps/weight below, without leaving this
+                  screen to go check the History tab and hunt for the
+                  matching session. This is a genuine edit to the already-
+                  assigned workout, not a new one — same workout_id throughout. */}
+              {loadingLastSession ? (
+                <View style={styles.lastSessionLoadingRow}>
+                  <ActivityIndicator size="small" color={colors.xpBar} />
+                  <Text style={styles.readOnlyHint}>Loading last session...</Text>
+                </View>
+              ) : editingLastSession ? (
+                <View style={styles.lastSessionCard}>
+                  <View style={styles.lastSessionHeader}>
+                    <Ionicons name="time-outline" size={15} color={colors.xpBar} />
+                    <Text style={styles.lastSessionTitle}>Last Completed — {formatDate(editingLastSession.completed_at)}</Text>
+                    <Text style={styles.lastSessionPct}>{editingLastSession.completion_pct}%</Text>
+                  </View>
+                  {editingLastSession.details && editingLastSession.details.length > 0 ? (
+                    editingLastSession.details.map((ex: SessionExerciseDetail, exI: number) => (
+                      <View key={exI} style={styles.historyExerciseBlock}>
+                        <Text style={styles.historyExerciseName}>{ex.name}</Text>
+                        {ex.sets.map((s: SessionSetDetail, setI: number) => (
+                          <View key={setI} style={styles.historySetRow}>
+                            <Text style={styles.historySetLabel}>Set {setI + 1}</Text>
+                            <Text style={styles.historySetMeta}>{s.reps || '—'} reps{s.weight ? ` · ${s.weight}` : ''}</Text>
+                            {s.effort !== null ? (
+                              <View style={styles.effortPill}>
+                                <View style={[styles.effortPillDot, { backgroundColor: EFFORT_LABELS[s.effort]?.color ?? colors.textSecondary }]} />
+                                <Text style={styles.effortPillText}>{EFFORT_LABELS[s.effort]?.desc ?? `Effort ${s.effort}`}</Text>
+                              </View>
+                            ) : (
+                              <Text style={styles.historySetSkipped}>Not logged</Text>
+                            )}
+                          </View>
+                        ))}
+                      </View>
+                    ))
+                  ) : (
+                    <Text style={styles.readOnlyHint}>No per-set detail logged for that session.</Text>
+                  )}
+                </View>
+              ) : (
+                <View style={styles.lastSessionCard}>
+                  <Text style={styles.readOnlyHint}>No completed sessions yet for this workout.</Text>
+                </View>
+              )}
+
               <Text style={styles.fieldLabel}>WORKOUT NAME</Text>
               <View style={styles.readOnlyField}>
                 <Text style={styles.readOnlyFieldText}>{editWorkoutName}</Text>
               </View>
               <Text style={styles.readOnlyHint}>Set from the program template — edit it in the Programs tab.</Text>
+
+              <Text style={[styles.fieldLabel, { marginTop: 20 }]}>DURATION (WEEKS, OPTIONAL)</Text>
+              <TextInput
+                style={[styles.exMetaInput, { alignSelf: 'flex-start', minWidth: 90 }]}
+                value={editDurationWeeks}
+                onChangeText={v => setEditDurationWeeks(sanitizeCount(v, 1, 52))}
+                keyboardType="number-pad"
+                placeholder="e.g. 8"
+                placeholderTextColor={colors.textSecondary}
+              />
 
               <Text style={[styles.fieldLabel, { marginTop: 20 }]}>SCHEDULED DAYS</Text>
               <View style={styles.dayRow}>
@@ -3282,6 +3384,16 @@ const styles = StyleSheet.create({
   effortPill: { flexDirection: 'row', alignItems: 'center', gap: 5, flex: 1 },
   effortPillDot: { width: 8, height: 8, borderRadius: 4 },
   effortPillText: { fontSize: 11, color: colors.textSecondary, flexShrink: 1 },
+
+  // Edit Workout — last completed session card
+  lastSessionLoadingRow: { flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 16 },
+  lastSessionCard: {
+    backgroundColor: colors.card, borderRadius: 12, padding: 14, marginBottom: 20,
+    borderWidth: 1, borderColor: colors.border, gap: 10,
+  },
+  lastSessionHeader: { flexDirection: 'row', alignItems: 'center', gap: 6 },
+  lastSessionTitle: { flex: 1, fontSize: 13, fontWeight: '700', color: colors.text },
+  lastSessionPct: { fontSize: 12, fontWeight: '700', color: colors.xpBar },
 
   // Weight tab
   weightRow: {
