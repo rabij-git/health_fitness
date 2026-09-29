@@ -639,7 +639,7 @@ export default function ProfileScreen({ onLogout, userId }: Props) {
         {/* Settings Quick Links */}
         <View style={styles.menuCard}>
           {[
-            { icon: 'settings', label: 'Settings', onPress: openSettings },
+            { icon: 'body-outline', label: 'User Information', onPress: openSettings },
             { icon: 'shield-checkmark', label: 'Privacy', onPress: () => setShowPrivacy(true) },
             { icon: 'help-circle', label: 'Help & Support', onPress: () => setShowHelp(true) },
           ].map((item, index, arr) => (
@@ -738,12 +738,12 @@ export default function ProfileScreen({ onLogout, userId }: Props) {
         </KeyboardAvoidingView>
       </Modal>
 
-      {/* Settings — biometric profile used by the coach's calorie/macro calculator */}
+      {/* User Information — biometric profile used by the coach's calorie/macro calculator */}
       <Modal visible={showSettings} transparent animationType="slide" onRequestClose={() => setShowSettings(false)}>
         <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={styles.overlay}>
           <View style={[styles.sheet, styles.settingsSheet]}>
             <View style={styles.sheetHeader}>
-              <Text style={styles.sheetTitle}>Settings</Text>
+              <Text style={styles.sheetTitle}>User Information</Text>
               <TouchableOpacity onPress={() => setShowSettings(false)}>
                 <Ionicons name="close" size={22} color={colors.textSecondary} />
               </TouchableOpacity>
