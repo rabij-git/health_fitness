@@ -103,6 +103,42 @@ Or just close the emulator window directly.
 
 ---
 
+## Building a Standalone Android App (EAS Build)
+
+For installing Athera as a real app on an Android phone — a proper app icon, no Expo Go, no tunnel/Metro needed to run it day-to-day. This builds in Expo's cloud and hands you back a downloadable `.apk`.
+
+> **Note:** this is a snapshot, not live-reloading — it bundles whatever code is on disk at build time. Any later code change needs a new build + reinstall on the phone (there's no OTA update channel configured). Use Expo Go (`npx expo start --tunnel`) for day-to-day development; use this when you actually want the app installed standalone.
+
+### First time only
+
+```bash
+cd FitnessApp
+npm install -g eas-cli
+eas login       # sign in with your Expo account — GitHub login works if that's how the account was created
+eas init        # links this project to your Expo account (stamps a projectId into app.json — commit that change)
+eas build --platform android --profile preview
+```
+- The first Android build will offer to generate a signing keystore for you — accept the default (let EAS manage it).
+- The build itself runs in Expo's cloud (~10–20 min). When it finishes, the terminal (and the [expo.dev dashboard](https://expo.dev)) prints a download link + QR code.
+- On the Android phone: open that link (or scan the QR code), download the `.apk`, and tap it to install. Android will prompt once to allow "install unknown apps" for whichever app you downloaded it through (Chrome, Files, etc.) — allow it, then install normally.
+
+### Every time after that
+
+Already logged in and linked — just rebuild:
+```bash
+cd FitnessApp
+eas build --platform android --profile preview
+```
+Same download-link/QR-code flow as above once it finishes. Reinstalling over the existing app (same package name, `com.athera.app`) just updates it in place — no need to uninstall first.
+
+**To find a previous build's download link again** (without rebuilding):
+```bash
+eas build:list --platform android --limit 5
+```
+Or check the project's [Builds page on expo.dev](https://expo.dev/accounts/rabij/projects/athera/builds).
+
+---
+
 ## Troubleshooting
 
 **`command not found: npx` or Node not found**
