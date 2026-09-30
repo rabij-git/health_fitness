@@ -139,6 +139,47 @@ Or check the project's [Builds page on expo.dev](https://expo.dev/accounts/rabij
 
 ---
 
+## Building a Standalone iOS App (EAS Build)
+
+Same idea as Android above, but Apple requires one extra step: installing a custom build on a **physical iPhone** needs an [Apple Developer Program](https://developer.apple.com/programs/) membership ($99/year) and that specific iPhone registered in advance — there's no plain APK-style sideload on iOS.
+
+> **No Developer Program, or just want to try it on a Mac?** You can build for the **iOS Simulator** instead — free, no Apple account, no device registration, no code signing. Add `"ios": { "simulator": true }` to the `preview` profile in `eas.json`, then `eas build --platform ios --profile preview` and drag the resulting `.tar.gz`'s `.app` onto a running Simulator. This only runs in Xcode's Simulator, not on an actual iPhone.
+
+### First time only
+
+Assumes `eas login`/`eas init` were already done for the Android build above — that login/project link is shared across platforms, no need to repeat it.
+
+```bash
+cd FitnessApp
+eas device:create
+```
+This prints a link — open it **on the iPhone itself**. It installs a small profile that registers that device with Apple/EAS (one-time per physical device).
+
+```bash
+eas build --platform ios --profile preview
+```
+First run prompts for your Apple ID login and Developer Program membership — EAS generates the certificate/provisioning profile from there. Builds in the cloud (~10–20 min), then prints a download link + QR code, same as Android.
+
+- On the iPhone: open the link (or scan the QR code) and install.
+- **The first time you open the app**, iOS blocks it until you trust the developer certificate: **Settings → General → VPN & Device Management** → tap the certificate → Trust.
+
+### Every time after that
+
+Already logged in, linked, and the device is registered — just rebuild:
+```bash
+cd FitnessApp
+eas build --platform ios --profile preview
+```
+Same download-link/QR-code flow. Re-run `eas device:create` only if installing on a *different* iPhone that hasn't been registered yet.
+
+**To find a previous build's download link again** (without rebuilding):
+```bash
+eas build:list --platform ios --limit 5
+```
+Or check the project's [Builds page on expo.dev](https://expo.dev/accounts/rabij/projects/athera/builds).
+
+---
+
 ## Troubleshooting
 
 **`command not found: npx` or Node not found**
