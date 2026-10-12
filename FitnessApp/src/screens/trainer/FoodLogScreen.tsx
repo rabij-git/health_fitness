@@ -12,9 +12,9 @@ import {
 } from 'react-native';
 import { Text, TextInput } from '../../components/AppText';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { useFocusEffect } from '@react-navigation/native';
 import { Ionicons } from '@expo/vector-icons';
 import { colors } from '../../theme/colors';
+import { useLiveRefresh } from '../../lib/useLiveRefresh';
 import { getNutritionPlans, getFoodLogEntries, deleteFoodLogEntry, getMealCompletions, upsertMealCompletion, getTodayMetrics, recalculateStreak } from '../../lib/db';
 import { DBNutritionPlan, DBFoodLogEntry, DBMealCompletion, MealSlot } from '../../lib/supabase';
 import { sumTodayAsPlannedNutrition } from '../../lib/nutritionCalc';
@@ -454,7 +454,10 @@ export default function FoodLogScreen({ userId }: { userId: string }) {
     setLoading(false);
   }, [userId]);
 
-  useFocusEffect(useCallback(() => { load(); }, [load]));
+  // See useLiveRefresh.ts — a newly-assigned nutrition plan (or edit to an
+  // existing one) is a coach-side action this screen needs to pick up
+  // without the trainee having to leave the tab and come back.
+  useLiveRefresh(load);
 
   const handleCompletionsChange = useCallback((planId: string, completions: DBMealCompletion[]) => {
     setCompletionsByPlan(prev => ({ ...prev, [planId]: completions }));

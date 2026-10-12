@@ -17,6 +17,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { colors } from '../theme/colors';
 import { UserRole } from '../data/mockData';
 import { signIn, signUp, signUpCoach, signUpTraineeWithInvite, getProfile } from '../lib/db';
+import { Sex, MIN_BIRTH_YEAR, maxBirthYear, sanitizeBirthYear, isValidBirthYear } from '../lib/nutritionCalc';
 
 interface Props {
   onLogin: (role: UserRole, userId: string) => void;
@@ -44,6 +45,11 @@ export default function LoginScreen({ onLogin }: Props) {
   const [suInviteCode, setSuInviteCode] = useState('');
   const [showSuPass, setShowSuPass] = useState(false);
   const [signedUpMsg, setSignedUpMsg] = useState('');
+  // Required for trainee signup only — see db.ts's signUp()/
+  // signUpTraineeWithInvite() for why these are now collected up front
+  // instead of left for Profile Settings later.
+  const [suBirthYear, setSuBirthYear] = useState('');
+  const [suSex, setSuSex] = useState<Sex | null>(null);
 
   const clearError = () => setError('');
 
@@ -70,6 +76,13 @@ export default function LoginScreen({ onLogin }: Props) {
     if (suPassword.length < 6) { setError('Password must be at least 6 characters.'); return; }
     if (suPassword !== suConfirm) { setError('Passwords do not match.'); return; }
     if (suRole === 'coach' && !suInviteCode.trim()) { setError('Please enter your coach invite code.'); return; }
+    if (suRole === 'trainee') {
+      if (!isValidBirthYear(suBirthYear, { required: true })) {
+        setError(`Please enter a valid year of birth (between ${MIN_BIRTH_YEAR} and ${maxBirthYear()}).`);
+        return;
+      }
+      if (!suSex) { setError('Please select your biological sex.'); return; }
+    }
     setLoading(true);
     setError('');
     try {
@@ -80,9 +93,12 @@ export default function LoginScreen({ onLogin }: Props) {
         // A trainee invite code is optional — plain trainee signup stays
         // open/ungated as before. Providing one auto-connects to that
         // coach instead of leaving the trainee to search/request/wait.
-        data = await signUpTraineeWithInvite(suEmail.trim().toLowerCase(), suPassword, suName.trim(), suInviteCode.trim());
+        data = await signUpTraineeWithInvite(
+          suEmail.trim().toLowerCase(), suPassword, suName.trim(), suInviteCode.trim(),
+          parseInt(suBirthYear, 10), suSex!
+        );
       } else {
-        data = await signUp(suEmail.trim().toLowerCase(), suPassword, suName.trim());
+        data = await signUp(suEmail.trim().toLowerCase(), suPassword, suName.trim(), parseInt(suBirthYear, 10), suSex!);
       }
 
       // Supabase's own email-confirmation setting decides this, not this
@@ -295,6 +311,48 @@ export default function LoginScreen({ onLogin }: Props) {
               />
 
               {suRole === 'trainee' && (
+                <>
+                  <Text style={[styles.fieldLabel, { marginTop: 16 }]}>YEAR OF BIRTH</Text>
+                  <TextInput
+                    style={styles.input}
+                    value={suBirthYear}
+                    onChangeText={v => { setSuBirthYear(sanitizeBirthYear(v)); clearError(); }}
+                    placeholder={`e.g. 1995`}
+                    placeholderTextColor={colors.textSecondary}
+                    keyboardType="number-pad"
+                    maxLength={4}
+                  />
+                  {!!suBirthYear && !isValidBirthYear(suBirthYear, { required: true }) && (
+                    <Text style={styles.fieldError}>
+                      Enter a year between {MIN_BIRTH_YEAR} and {maxBirthYear()}.
+                    </Text>
+                  )}
+
+                  <Text style={[styles.fieldLabel, { marginTop: 16 }]}>BIOLOGICAL SEX</Text>
+                  <View style={styles.roleToggle}>
+                    {(['female', 'male'] as Sex[]).map(s => (
+                      <TouchableOpacity
+                        key={s}
+                        style={[styles.roleChip, suSex === s && styles.roleChipActive]}
+                        onPress={() => { setSuSex(s); clearError(); }}
+                      >
+                        <Text style={[styles.roleChipText, suSex === s && styles.roleChipTextActive]}>
+                          {s === 'female' ? 'Female' : 'Male'}
+                        </Text>
+                      </TouchableOpacity>
+                    ))}
+                  </View>
+
+                  <View style={styles.note}>
+                    <Ionicons name="information-circle-outline" size={15} color={colors.textSecondary} />
+                    <Text style={styles.noteText}>
+                      Used to calculate your calorie and macro targets — your coach can't change these once set, only you can (in Profile Settings).
+                    </Text>
+                  </View>
+                </>
+              )}
+
+              {suRole === 'trainee' && (
                 <View style={styles.note}>
                   <Ionicons name="information-circle-outline" size={15} color={colors.textSecondary} />
                   <Text style={styles.noteText}>
@@ -438,6 +496,7 @@ const styles = StyleSheet.create({
     color: colors.text, fontSize: 15, borderWidth: 1.5, borderColor: colors.border,
     marginBottom: 4,
   },
+  fieldError: { fontSize: 12, color: colors.warning, marginTop: 6 },
   passwordRow: { flexDirection: 'row', alignItems: 'center', gap: 0, marginBottom: 4 },
   eyeBtn: {
     position: 'absolute', right: 14, top: 0, bottom: 0,

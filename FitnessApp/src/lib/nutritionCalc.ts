@@ -23,6 +23,26 @@ export function ageFromBirthYear(birthYear: number): number {
   return new Date().getFullYear() - birthYear;
 }
 
+// Shared birth-year validation — used both where it's optional (ProfileScreen's
+// Settings modal, filled in any time after signup) and where it's now required
+// (LoginScreen's trainee signup form). A single source of truth for the
+// min/max bounds avoids the two screens silently drifting apart.
+export const MIN_BIRTH_YEAR = 1940;
+export const MIN_AGE = 10;
+export function maxBirthYear(): number {
+  return new Date().getFullYear() - MIN_AGE;
+}
+export function sanitizeBirthYear(v: string): string {
+  return v.replace(/[^0-9]/g, '').slice(0, 4);
+}
+// `required: false` (the default) treats a blank value as valid — the
+// ProfileScreen use case, where the field can legitimately be left empty.
+export function isValidBirthYear(v: string, options: { required?: boolean } = {}): boolean {
+  if (!v) return !options.required;
+  const year = parseInt(v, 10);
+  return v.length === 4 && year >= MIN_BIRTH_YEAR && year <= maxBirthYear();
+}
+
 // Mifflin-St Jeor equation.
 export function calculateBMR(sex: Sex, weightKg: number, heightCm: number, age: number): number {
   const base = 10 * weightKg + 6.25 * heightCm - 5 * age;

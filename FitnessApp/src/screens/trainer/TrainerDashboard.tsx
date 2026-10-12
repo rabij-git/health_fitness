@@ -11,13 +11,14 @@ import {
 } from 'react-native';
 import { Text, TextInput } from '../../components/AppText';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
-import { useFocusEffect } from '@react-navigation/native';
 import { Ionicons } from '@expo/vector-icons';
 import { Pedometer } from 'expo-sensors';
 import { colors } from '../../theme/colors';
 import { useKeyboardOffset } from '../../lib/useKeyboardOffset';
+import { useLiveRefresh } from '../../lib/useLiveRefresh';
 import { useIsUserOnline } from '../../lib/presence';
-import { getXpForNextLevel, getCurrentLevelXp } from '../../data/mockData';
+import { getXpForNextLevel, getCurrentLevelXp, mockMedals } from '../../data/mockData';
+import { notifyMedalsEarned, notifyNewActivity } from '../../lib/restNotifications';
 import {
   getProfile,
   logBodyWeight,
@@ -25,6 +26,9 @@ import {
   getMessages,
   sendMessage,
   markMessagesRead,
+  getMessagesForTrainee,
+  markMessageRead,
+  deleteMessage,
   getTodayMetrics,
   setTodaySteps,
   addTodayWater,
@@ -33,10 +37,23 @@ import {
   getMealCompletions,
   getWorkoutsForTrainee,
   getWorkoutIdsCompletedToday,
+  getIncomingCoachRequestForTrainee,
+  acceptCoachRequest,
+  declineCoachRequest,
   TodayVitals,
 } from '../../lib/db';
-import { DBUser, DBWeightLog, DBMessage, DBNutritionPlan, DBFoodLogEntry, DBMealCompletion, DBWorkout } from '../../lib/supabase';
+import { DBUser, DBWeightLog, DBMessage, DBNutritionPlan, DBFoodLogEntry, DBMealCompletion, DBWorkout, DBCoachRequest } from '../../lib/supabase';
 import { sumTodayAsPlannedNutrition } from '../../lib/nutritionCalc';
+
+function timeAgo(iso: string) {
+  const diffMs = Date.now() - new Date(iso).getTime();
+  const mins = Math.round(diffMs / 60000);
+  if (mins < 1) return 'just now';
+  if (mins < 60) return `${mins}m ago`;
+  const hours = Math.round(mins / 60);
+  if (hours < 24) return `${hours}h ago`;
+  return `${Math.round(hours / 24)}d ago`;
+}
 
 function todayStr() {
   return new Date().toISOString().split('T')[0];
@@ -94,7 +111,21 @@ export default function TrainerDashboard({ onLogout, userId, navigation, scrollR
   const [weightSaved, setWeightSaved] = useState(false);
   const [showMsgModal, setShowMsgModal] = useState(false);
   const [msgInput, setMsgInput] = useState('');
-  const [dismissedNotifs, setDismissedNotifs] = useState<string[]>([]);
+
+  // Incoming coach-initiated connection request — same data ProfileScreen's
+  // Coach card already surfaces, now ALSO shown right here on Home (not
+  // just passively on the Profile tab).
+  const [incomingCoachRequest, setIncomingCoachRequest] = useState<(DBCoachRequest & { coach: DBUser }) | null>(null);
+  const [respondingCoachRequest, setRespondingCoachRequest] = useState(false);
+
+  // Notification bell — every coach->trainee message (chat replies, new
+  // workout/nutrition-plan assignments — see createWorkout/
+  // notifyTraineeNutritionAssigned in db.ts) in one persistent list, mirroring
+  // CoachDashboard.tsx's own notification bell exactly.
+  const [coachNotifications, setCoachNotifications] = useState<(DBMessage & { fromUser?: DBUser })[]>([]);
+  const [showNotifications, setShowNotifications] = useState(false);
+  const hasUnreadNotif = !!incomingCoachRequest || coachNotifications.some(m => !m.read);
+
   const chatScrollRef = useRef<ScrollView>(null);
   // Measured (not guessed) chat area height — see CoachTrainees.tsx's Chat
   // tab, the confirmed-working reference this modal now mirrors exactly.
@@ -182,15 +213,18 @@ export default function TrainerDashboard({ onLogout, userId, navigation, scrollR
     }
   }, [userId, loggingWaterAmount]);
 
-  // Refetch every time the Home tab regains focus (not just on first mount) —
-  // otherwise finishing a workout on the Workout tab (which updates xp/level/streak)
-  // never shows up here since bottom-tab screens stay mounted between tab switches.
-  useFocusEffect(useCallback(() => { loadHome(); }, [loadHome]));
+  // See useLiveRefresh.ts — each of the loaders below now refetches on
+  // focus, on a ~15s poll, and immediately on app foreground-resume,
+  // instead of only on an actual navigation focus change. Reported
+  // concretely: a coach assigned a workout for today — the phone
+  // notification came through (that part already polled), but the
+  // "Workout Today" card itself stayed stale since `loadHome` was
+  // useFocusEffect-only.
+  useLiveRefresh(loadHome);
 
-  // Also refetch coach messages on every focus, not just when coachId first
-  // becomes known — otherwise the unread-message badge goes stale the moment
-  // you leave and return to Home, since it never re-checks for new messages.
-  useFocusEffect(useCallback(() => {
+  // Coach chat thread (messages + profile for the "Message Coach" modal) —
+  // also needs to stay live, same reasoning.
+  const loadCoachMessages = useCallback(() => {
     if (!coachId) return;
     Promise.all([
       getMessages(userId, coachId),
@@ -199,14 +233,117 @@ export default function TrainerDashboard({ onLogout, userId, navigation, scrollR
       setDbMessages(messages);
       setCoachProfile(coach);
     });
-  }, [coachId, userId]));
+  }, [coachId, userId]);
+
+  useLiveRefresh(loadCoachMessages);
+
+  // Notification bell — same persistent list CoachDashboard.tsx builds for
+  // coaches, now on the trainee side too (covers chat replies as well as
+  // the new program/nutrition-assignment notifications — see db.ts).
+  // `seenNotificationIds` (`null` = not loaded yet) lets the first load of
+  // a session record existing history silently — only an id that shows up
+  // in a LATER fetch and wasn't already seen is genuinely new, and gets a
+  // phone notification fired for it exactly once. Same pattern as
+  // CoachDashboard.tsx's own bell.
+  const seenNotificationIds = useRef<Set<string> | null>(null);
+
+  const loadNotifications = useCallback(() => {
+    getMessagesForTrainee(userId).then(fetched => {
+      setCoachNotifications(fetched);
+      if (seenNotificationIds.current === null) {
+        seenNotificationIds.current = new Set(fetched.map(m => m.id));
+        return;
+      }
+      const newlyArrived = fetched.filter(m => !seenNotificationIds.current!.has(m.id));
+      newlyArrived.forEach(m => {
+        seenNotificationIds.current!.add(m.id);
+        notifyNewActivity(m.fromUser?.name ?? 'Your coach', m.message).catch(() => {});
+      });
+    });
+  }, [userId]);
+
+  useLiveRefresh(loadNotifications);
+
+  // Incoming coach-initiated connection request — same query ProfileScreen's
+  // Coach card already uses. No Alert popup here (per feedback — the
+  // notification bell + its own row for this, plus the persistent card
+  // below, are enough; a popup on top was redundant) — but it still fires a
+  // phone notification the first time a NEW request shows up, same
+  // "silent first load, then diff" convention as loadNotifications above.
+  // `undefined` = not loaded yet, distinct from `null` (loaded, no pending
+  // request).
+  const seenCoachRequestId = useRef<string | null | undefined>(undefined);
+
+  const loadIncomingCoachRequest = useCallback(() => {
+    getIncomingCoachRequestForTrainee(userId).then(incoming => {
+      setIncomingCoachRequest(incoming);
+      if (seenCoachRequestId.current === undefined) {
+        seenCoachRequestId.current = incoming?.id ?? null;
+        return;
+      }
+      if (incoming && incoming.id !== seenCoachRequestId.current) {
+        seenCoachRequestId.current = incoming.id;
+        notifyNewActivity('Coach Request', `${incoming.coach.name} wants to be your coach.`).catch(() => {});
+      } else if (!incoming) {
+        seenCoachRequestId.current = null;
+      }
+    });
+  }, [userId]);
+
+  useLiveRefresh(loadIncomingCoachRequest);
+
+  const handleAcceptCoachRequest = useCallback(async () => {
+    if (!incomingCoachRequest) return;
+    setRespondingCoachRequest(true);
+    try {
+      await acceptCoachRequest(incomingCoachRequest.id, incomingCoachRequest.coach_id, userId, 'coach');
+      setIncomingCoachRequest(null);
+      await loadHome();
+    } catch (e) {
+      console.warn('acceptCoachRequest error', e);
+    } finally {
+      setRespondingCoachRequest(false);
+    }
+  }, [incomingCoachRequest, userId, loadHome]);
+
+  const handleDeclineCoachRequest = useCallback(async () => {
+    if (!incomingCoachRequest) return;
+    setRespondingCoachRequest(true);
+    try {
+      await declineCoachRequest(incomingCoachRequest.id);
+      setIncomingCoachRequest(null);
+    } catch (e) {
+      console.warn('declineCoachRequest error', e);
+    } finally {
+      setRespondingCoachRequest(false);
+    }
+  }, [incomingCoachRequest]);
+
+  const openNotifications = useCallback(() => {
+    setShowNotifications(true);
+    const unread = coachNotifications.filter(m => !m.read);
+    if (unread.length > 0) {
+      unread.forEach(m => markMessageRead(m.id));
+      setCoachNotifications(prev => prev.map(m => (m.read ? m : { ...m, read: true })));
+    }
+  }, [coachNotifications]);
+
+  const closeNotifications = useCallback(() => setShowNotifications(false), []);
+
+  const handleDeleteNotification = useCallback(async (id: string) => {
+    setCoachNotifications(prev => prev.filter(m => m.id !== id));
+    try {
+      await deleteMessage(id);
+    } catch (e) {
+      console.warn('deleteMessage error', e);
+    }
+  }, []);
 
   const user = profile ?? { name: '...', avatar: '?', level: 1, xp: 0, streak: 0 };
   const xpForNext = getXpForNextLevel(user.level);
   const currentLevelXp = getCurrentLevelXp(user.xp ?? 0);
   const xpPercent = currentLevelXp / xpForNext;
   const lastWeight = weightLogs[0];
-  const unreadNotifs: any[] = [];
   const hasUnreadMessages = useMemo(
     () => dbMessages.some(m => m.from_id === coachId && !m.read),
     [dbMessages, coachId]
@@ -279,6 +416,15 @@ export default function TrainerDashboard({ onLogout, userId, navigation, scrollR
     }
   }, [coachId, userId, hasUnreadMessages]);
 
+  // A notification is just a coach->trainee message under the hood (see
+  // db.ts) — there's only ever one coach to chat with here (unlike
+  // CoachDashboard's bell, which has to pick which trainee's thread to open),
+  // so tapping any notification just opens the existing full chat thread.
+  const openChatFromNotification = useCallback(() => {
+    setShowNotifications(false);
+    openMsgModal();
+  }, [openMsgModal]);
+
   const handleSend = useCallback(async () => {
     if (!msgInput.trim() || !coachId) return;
     const text = msgInput.trim();
@@ -303,6 +449,10 @@ export default function TrainerDashboard({ onLogout, userId, navigation, scrollR
             <Text style={styles.subtitle}>Keep pushing — great things take time.</Text>
           </View>
           <View style={styles.headerRight}>
+            <TouchableOpacity style={styles.bellBtn} onPress={openNotifications}>
+              <Ionicons name="notifications-outline" size={20} color={colors.xpBar} />
+              {hasUnreadNotif && <View style={styles.bellDot} />}
+            </TouchableOpacity>
             {coachId && (
               <TouchableOpacity style={styles.msgBtn} onPress={openMsgModal}>
                 <Ionicons name="chatbubble-ellipses" size={20} color={colors.xpBar} />
@@ -315,21 +465,42 @@ export default function TrainerDashboard({ onLogout, userId, navigation, scrollR
           </View>
         </View>
 
-        {/* Coach notification banners */}
-        {unreadNotifs.map(notif => (
-          <TouchableOpacity
-            key={notif.id}
-            style={styles.notifBanner}
-            onPress={() => setDismissedNotifs(prev => [...prev, notif.id])}
-            activeOpacity={0.85}
-          >
-            <View style={styles.notifLeft}>
-              <Ionicons name="notifications" size={16} color={colors.gold} />
-              <Text style={styles.notifText} numberOfLines={2}>{notif.message}</Text>
+        {/* Incoming coach connection request — same data/actions as
+            ProfileScreen's Coach card, surfaced here too so a trainee
+            doesn't have to already be on the Profile tab to see it. */}
+        {incomingCoachRequest && (
+          <View style={styles.requestBanner}>
+            <View style={styles.coachRow}>
+              <View style={styles.coachAvatar}>
+                <Text style={styles.coachAvatarText}>{incomingCoachRequest.coach.avatar}</Text>
+              </View>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.coachName}>{incomingCoachRequest.coach.name}</Text>
+                <Text style={styles.coachSub}>Wants to be your coach</Text>
+              </View>
             </View>
-            <Ionicons name="close" size={16} color={colors.textSecondary} />
-          </TouchableOpacity>
-        ))}
+            <View style={styles.requestActions}>
+              <TouchableOpacity
+                style={styles.declineBtn}
+                onPress={handleDeclineCoachRequest}
+                disabled={respondingCoachRequest}
+              >
+                <Text style={styles.declineBtnText}>Decline</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={styles.acceptBtn}
+                onPress={handleAcceptCoachRequest}
+                disabled={respondingCoachRequest}
+              >
+                {respondingCoachRequest ? (
+                  <ActivityIndicator size="small" color="#000" />
+                ) : (
+                  <Text style={styles.acceptBtnText}>Accept</Text>
+                )}
+              </TouchableOpacity>
+            </View>
+          </View>
+        )}
 
         {/* Gamification Hero Card */}
         <View style={styles.heroCard}>
@@ -524,6 +695,94 @@ export default function TrainerDashboard({ onLogout, userId, navigation, scrollR
 
       </ScrollView>
 
+      {/* Notifications Modal — mirrors CoachDashboard.tsx's bell exactly. */}
+      <Modal visible={showNotifications} transparent animationType="slide" onRequestClose={closeNotifications}>
+        <View style={styles.notifOverlay}>
+          <View style={styles.notifSheet}>
+            <View style={styles.notifHeader}>
+              <Text style={styles.notifTitle}>Notifications</Text>
+              <TouchableOpacity onPress={closeNotifications}>
+                <Ionicons name="close" size={22} color={colors.textSecondary} />
+              </TouchableOpacity>
+            </View>
+            {coachNotifications.length === 0 && !incomingCoachRequest ? (
+              <View style={{ alignItems: 'center', paddingVertical: 32, gap: 8 }}>
+                <Ionicons name="notifications-off-outline" size={32} color={colors.textSecondary} />
+                <Text style={{ color: colors.textSecondary }}>Nothing yet</Text>
+              </View>
+            ) : (
+              <ScrollView>
+                {/* Coach-connect request — surfaced here too (not just the
+                    persistent card above) so the bell is a genuine single
+                    place to see everything, not just messages. Same
+                    accept/decline handlers as that card. */}
+                {incomingCoachRequest && (
+                  <View style={styles.notifRow}>
+                    <View style={styles.notifUnreadDot} />
+                    <View style={styles.notifRowMain}>
+                      <View style={styles.coachAvatar}>
+                        <Text style={styles.coachAvatarText}>{incomingCoachRequest.coach.avatar}</Text>
+                      </View>
+                      <View style={{ flex: 1 }}>
+                        <Text style={styles.notifName}>{incomingCoachRequest.coach.name}</Text>
+                        <Text style={styles.notifMessage}>Wants to be your coach</Text>
+                      </View>
+                    </View>
+                    <View style={{ flexDirection: 'row', gap: 6 }}>
+                      <TouchableOpacity
+                        style={styles.notifDeclineBtn}
+                        onPress={handleDeclineCoachRequest}
+                        disabled={respondingCoachRequest}
+                      >
+                        <Text style={styles.notifDeclineBtnText}>Decline</Text>
+                      </TouchableOpacity>
+                      <TouchableOpacity
+                        style={styles.notifAcceptBtn}
+                        onPress={handleAcceptCoachRequest}
+                        disabled={respondingCoachRequest}
+                      >
+                        {respondingCoachRequest ? (
+                          <ActivityIndicator size="small" color="#000" />
+                        ) : (
+                          <Text style={styles.notifAcceptBtnText}>Accept</Text>
+                        )}
+                      </TouchableOpacity>
+                    </View>
+                  </View>
+                )}
+                {coachNotifications.map(msg => (
+                  <View key={msg.id} style={styles.notifRow}>
+                    {!msg.read && <View style={styles.notifUnreadDot} />}
+                    <TouchableOpacity
+                      style={styles.notifRowMain}
+                      activeOpacity={0.7}
+                      onPress={openChatFromNotification}
+                    >
+                      <View style={styles.coachAvatar}>
+                        <Text style={styles.coachAvatarText}>{msg.fromUser?.avatar ?? '?'}</Text>
+                      </View>
+                      <View style={{ flex: 1 }}>
+                        <Text style={styles.notifName}>{msg.fromUser?.name ?? 'Your coach'}</Text>
+                        <Text style={styles.notifMessage}>{msg.message}</Text>
+                        <Text style={styles.notifTime}>{timeAgo(msg.created_at)}</Text>
+                      </View>
+                      <Ionicons name="chevron-forward" size={16} color={colors.textSecondary} />
+                    </TouchableOpacity>
+                    <TouchableOpacity
+                      style={styles.notifDeleteBtn}
+                      onPress={() => handleDeleteNotification(msg.id)}
+                      hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                    >
+                      <Ionicons name="trash-outline" size={16} color={colors.danger} />
+                    </TouchableOpacity>
+                  </View>
+                ))}
+              </ScrollView>
+            )}
+          </View>
+        </View>
+      </Modal>
+
       {/* Message Coach Modal — full-screen, not a small transparent sheet.
           Mirrors CoachTrainees.tsx's Chat tab exactly (confirmed working
           there): a genuine full-screen Modal sidesteps the whole class of
@@ -656,21 +915,76 @@ const styles = StyleSheet.create({
     borderColor: colors.xpBar,
   },
 
-  // Notification banner
-  notifBanner: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    backgroundColor: colors.gold + '22',
-    borderRadius: 12,
-    padding: 12,
-    marginBottom: 12,
-    borderWidth: 1,
-    borderColor: colors.gold + '44',
-    gap: 10,
+  // Notification bell + its modal — mirrors CoachDashboard.tsx's own bell.
+  bellBtn: {
+    width: 40, height: 40, borderRadius: 12,
+    backgroundColor: colors.card, borderWidth: 1, borderColor: colors.border,
+    alignItems: 'center', justifyContent: 'center',
   },
-  notifLeft: { flexDirection: 'row', alignItems: 'center', gap: 8, flex: 1 },
-  notifText: { fontSize: 13, color: colors.text, fontWeight: '500', flex: 1 },
+  bellDot: {
+    position: 'absolute', top: 6, right: 6,
+    width: 8, height: 8, borderRadius: 4,
+    backgroundColor: colors.danger, borderWidth: 1, borderColor: colors.background,
+  },
+  notifOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.75)', justifyContent: 'flex-end' },
+  notifSheet: {
+    backgroundColor: colors.card, borderTopLeftRadius: 24, borderTopRightRadius: 24,
+    padding: 24, maxHeight: '75%',
+  },
+  notifHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 },
+  notifTitle: { fontSize: 18, fontWeight: '800', color: colors.text },
+  notifRow: {
+    flexDirection: 'row', alignItems: 'center', gap: 8,
+    paddingVertical: 12, borderBottomWidth: 1, borderBottomColor: colors.border,
+  },
+  notifRowMain: { flex: 1, flexDirection: 'row', alignItems: 'flex-start', gap: 12 },
+  notifUnreadDot: { width: 7, height: 7, borderRadius: 3.5, backgroundColor: colors.danger },
+  notifDeleteBtn: { padding: 6 },
+  notifName: { fontSize: 14, fontWeight: '700', color: colors.text },
+  notifMessage: { fontSize: 13, color: colors.textSecondary, marginTop: 2, lineHeight: 18 },
+  notifTime: { fontSize: 11, color: colors.textSecondary, marginTop: 4 },
+
+  // Incoming coach-request card — mirrors ProfileScreen.tsx's Coach card
+  // version exactly, same styling, same component tree.
+  requestBanner: {
+    backgroundColor: colors.xpBar + '11',
+    borderRadius: 14,
+    padding: 14,
+    marginBottom: 14,
+    borderWidth: 1,
+    borderColor: colors.xpBar + '44',
+    gap: 12,
+  },
+  coachRow: { flexDirection: 'row', alignItems: 'center', gap: 12 },
+  coachName: { fontSize: 15, fontWeight: '700', color: colors.text },
+  coachSub: { fontSize: 12, color: colors.textSecondary, marginTop: 2 },
+  requestActions: { flexDirection: 'row', gap: 10 },
+  declineBtn: {
+    flex: 1, paddingVertical: 10, borderRadius: 10,
+    backgroundColor: colors.secondary, alignItems: 'center',
+    borderWidth: 1, borderColor: colors.border,
+  },
+  declineBtnText: { fontSize: 13, fontWeight: '700', color: colors.textSecondary },
+  acceptBtn: {
+    flex: 1, paddingVertical: 10, borderRadius: 10,
+    backgroundColor: colors.xpBar, alignItems: 'center',
+  },
+  acceptBtnText: { fontSize: 13, fontWeight: '700', color: '#000' },
+
+  // Compact accept/decline pair for the request row inside the notification
+  // bell's list — same colors as declineBtn/acceptBtn above, just sized for
+  // a row rather than a full-width card.
+  notifDeclineBtn: {
+    paddingHorizontal: 12, paddingVertical: 7, borderRadius: 8,
+    backgroundColor: colors.secondary, alignItems: 'center',
+    borderWidth: 1, borderColor: colors.border,
+  },
+  notifDeclineBtnText: { fontSize: 12, fontWeight: '700', color: colors.textSecondary },
+  notifAcceptBtn: {
+    paddingHorizontal: 12, paddingVertical: 7, borderRadius: 8,
+    backgroundColor: colors.xpBar, alignItems: 'center', justifyContent: 'center',
+  },
+  notifAcceptBtnText: { fontSize: 12, fontWeight: '700', color: '#000' },
 
   // Hero card
   heroCard: {

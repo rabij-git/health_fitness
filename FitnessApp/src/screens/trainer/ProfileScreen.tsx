@@ -13,9 +13,9 @@ import {
 } from 'react-native';
 import { Text, TextInput } from '../../components/AppText';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { useFocusEffect } from '@react-navigation/native';
 import { Ionicons } from '@expo/vector-icons';
 import { colors } from '../../theme/colors';
+import { useLiveRefresh } from '../../lib/useLiveRefresh';
 import { getXpForNextLevel, getCurrentLevelXp, getLevelTitle, mockMedals } from '../../data/mockData';
 import { notifyMedalsEarned } from '../../lib/restNotifications';
 import {
@@ -31,33 +31,22 @@ import {
   updateProfile,
   evaluateAndAwardMedals,
   deleteOwnAccount,
+  sendMessage,
 } from '../../lib/db';
 import { DBUser, DBWeightLog, DBNutritionPlan, DBCoachRequest } from '../../lib/supabase';
-import { ActivityLevel, Sex, ACTIVITY_LABELS } from '../../lib/nutritionCalc';
+import { ActivityLevel, Sex, ACTIVITY_LABELS, MIN_BIRTH_YEAR, maxBirthYear, sanitizeBirthYear, isValidBirthYear } from '../../lib/nutritionCalc';
 import DocumentModal from '../../components/DocumentModal';
 import { PRIVACY_POLICY_SECTIONS, PRIVACY_POLICY_EFFECTIVE_DATE } from '../../data/privacyPolicyContent';
 import { HELP_SECTIONS_TRAINEE } from '../../data/helpContent';
 
 const ACTIVITY_LEVELS: ActivityLevel[] = ['sedentary', 'light', 'moderate', 'active', 'very_active'];
 
-const MIN_BIRTH_YEAR = 1940;
-const CURRENT_YEAR = new Date().getFullYear();
-const MIN_AGE = 10;
-const MAX_BIRTH_YEAR = CURRENT_YEAR - MIN_AGE;
 const MIN_HEIGHT_CM = 100;
 const MAX_HEIGHT_CM = 250;
 
-function sanitizeYear(v: string) {
-  return v.replace(/[^0-9]/g, '').slice(0, 4);
-}
 function sanitizeHeight(v: string) {
   const cleaned = v.replace(/[^0-9.]/g, '');
   return parseFloat(cleaned) > MAX_HEIGHT_CM ? String(MAX_HEIGHT_CM) : cleaned;
-}
-function isValidBirthYear(v: string) {
-  if (!v) return true; // optional field — blank is fine
-  const year = parseInt(v, 10);
-  return v.length === 4 && year >= MIN_BIRTH_YEAR && year <= MAX_BIRTH_YEAR;
 }
 function isValidHeight(v: string) {
   if (!v.trim()) return true; // optional field — blank is fine
@@ -226,9 +215,6 @@ export default function ProfileScreen({ onLogout, userId }: Props) {
   const [incomingRequest, setIncomingRequest] = useState<(DBCoachRequest & { coach: DBUser }) | null>(null);
   const [outgoingRequest, setOutgoingRequest] = useState<(DBCoachRequest & { coach: DBUser }) | null>(null);
   const [respondingRequest, setRespondingRequest] = useState(false);
-  // Session-scoped (not persisted) — just enough to avoid re-popping the
-  // same alert every time this screen refetches/regains focus.
-  const alertedRequestIds = useRef<Set<string>>(new Set());
   const [cancelingRequest, setCancelingRequest] = useState(false);
 
   const [showFindCoach, setShowFindCoach] = useState(false);
@@ -280,6 +266,13 @@ export default function ProfileScreen({ onLogout, userId }: Props) {
           setProfile(prev => (prev ? { ...prev, xp: newXp, level: newLevel } : prev));
           const names = newlyEarned.map(id => mockMedals.find(m => m.id === id)?.name).filter((n): n is string => !!n);
           notifyMedalsEarned(names).catch(() => {});
+          // Coach gets told too — same mechanism as WorkoutScreen.tsx's own
+          // medal-earned notification (see CLAUDE.md's Coach Notifications).
+          if (profile?.coach_id && names.length > 0) {
+            sendMessage(userId, profile.coach_id, `🏅 ${profile.name} earned: ${names.join(', ')}!`).catch(e =>
+              console.warn('evaluateAndAwardMedals (profile save): failed to notify coach', e)
+            );
+          }
         }
       } catch (e) {
         console.warn('evaluateAndAwardMedals (profile save) error', e);
@@ -308,19 +301,13 @@ export default function ProfileScreen({ onLogout, userId }: Props) {
       if (p?.coach_id) {
         getProfile(p.coach_id).then(setCoachProfile);
       }
-      // Popup, not just a passive accept/decline card — previously the
-      // only way to notice a coach-initiated request was to already be
-      // looking at the Coach card on this screen.
-      if (incoming && !alertedRequestIds.current.has(incoming.id)) {
-        alertedRequestIds.current.add(incoming.id);
-        Alert.alert('Coach Request', `${incoming.coach.name} wants to be your coach.`);
-      }
     });
   }, [userId]);
 
-  useFocusEffect(useCallback(() => {
-    loadAll();
-  }, [loadAll]));
+  // See useLiveRefresh.ts — the Coach card (incoming/outgoing request,
+  // coach connection) and nutrition documents are both things the coach's
+  // own side can change without the trainee navigating anywhere.
+  useLiveRefresh(loadAll);
 
   const handleSearchCoaches = useCallback(async (query: string) => {
     setCoachSearchQuery(query);
@@ -353,11 +340,7 @@ export default function ProfileScreen({ onLogout, userId }: Props) {
     if (!incomingRequest) return;
     setRespondingRequest(true);
     try {
-      const earnedNewMedal = await acceptCoachRequest(incomingRequest.id, incomingRequest.coach_id, userId);
-      if (earnedNewMedal) {
-        const name = mockMedals.find(m => m.id === '10')?.name;
-        if (name) notifyMedalsEarned([name]).catch(() => {});
-      }
+      await acceptCoachRequest(incomingRequest.id, incomingRequest.coach_id, userId, 'coach');
       await loadAll();
     } catch (e) {
       console.warn('acceptCoachRequest error', e);
@@ -755,13 +738,13 @@ export default function ProfileScreen({ onLogout, userId }: Props) {
                 <TextInput
                   style={styles.settingsInput}
                   value={birthYear}
-                  onChangeText={v => setBirthYear(sanitizeYear(v))}
+                  onChangeText={v => setBirthYear(sanitizeBirthYear(v))}
                   keyboardType="number-pad"
                   placeholder="e.g. 1995"
                   placeholderTextColor={colors.textSecondary}
                 />
                 {!birthYearValid && (
-                  <Text style={styles.fieldError}>Enter a year between {MIN_BIRTH_YEAR} and {MAX_BIRTH_YEAR}.</Text>
+                  <Text style={styles.fieldError}>Enter a year between {MIN_BIRTH_YEAR} and {maxBirthYear()}.</Text>
                 )}
               </View>
 

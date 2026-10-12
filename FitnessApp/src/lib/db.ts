@@ -41,7 +41,11 @@ async function uploadFileToStorage(localFileUri: string, bucket: string, storage
 // since a client-supplied role was the app's original privilege-escalation
 // hole (any account could self-elevate to admin/coach). Coach accounts can
 // only be created via signUpCoach below.
-export async function signUp(email: string, password: string, name: string) {
+// `birthYear`/`sex` are now required at trainee signup (LoginScreen.tsx
+// validates both before calling this) rather than left null until the
+// trainee fills in Profile Settings later — collected once, up front, same
+// as name/email.
+export async function signUp(email: string, password: string, name: string, birthYear: number, sex: 'male' | 'female') {
   const initials = name.split(' ').map(w => w[0]).join('').slice(0, 2).toUpperCase();
 
   const { data, error } = await supabase.auth.signUp({
@@ -64,6 +68,8 @@ export async function signUp(email: string, password: string, name: string) {
       xp: 0,
       streak: 0,
       status: 'pending',
+      birth_year: birthYear,
+      sex,
     });
     if (profileError) throw profileError;
   }
@@ -105,7 +111,14 @@ export async function signUpCoach(email: string, password: string, name: string,
 // ungated as before; this is only used when the trainee has a code, and
 // auto-connects them to that coach (coach_id set inside the RPC) instead of
 // leaving them to search/request/wait for acceptance.
-export async function signUpTraineeWithInvite(email: string, password: string, name: string, inviteCode: string) {
+// `birthYear`/`sex` — see signUp()'s own comment above for why these are now
+// required. redeem_trainee_invite (the SECURITY DEFINER RPC that creates the
+// row) doesn't take them as params — rather than a new migration just to add
+// two columns to its INSERT, this does a plain follow-up `updateProfile`
+// write instead, same as a trainee editing their own Profile Settings later;
+// the signup call already returned an authenticated session by this point,
+// so the normal "update your own row" RLS policy covers it.
+export async function signUpTraineeWithInvite(email: string, password: string, name: string, inviteCode: string, birthYear: number, sex: 'male' | 'female') {
   const initials = name.split(' ').map(w => w[0]).join('').slice(0, 2).toUpperCase();
   const { data, error } = await supabase.auth.signUp({
     email,
@@ -123,6 +136,27 @@ export async function signUpTraineeWithInvite(email: string, password: string, n
     p_avatar: initials,
   });
   if (redeemError) throw redeemError;
+
+  if (data.user) {
+    await updateProfile(data.user.id, { birth_year: birthYear, sex });
+
+    // Notify the coach their invite was redeemed — same in-app mechanism as
+    // every other coach<->trainee event (see sendCoachRequest/
+    // acceptCoachRequest above). redeem_trainee_invite (the SECURITY
+    // DEFINER RPC above) returns void, not the coach_id it just set — rather
+    // than a migration just to add a return value, re-reading the freshly
+    // written profile (coach_id is set by that RPC's own INSERT) is enough
+    // to know who to notify. Isolated in its own try/catch, same as the
+    // other notification call sites.
+    try {
+      const trainee = await getProfile(data.user.id);
+      if (trainee?.coach_id) {
+        await sendMessage(data.user.id, trainee.coach_id, `🎉 ${name} joined using your invite code!`);
+      }
+    } catch (e) {
+      console.warn('signUpTraineeWithInvite: failed to notify coach', e);
+    }
+  }
 
   return data;
 }
@@ -365,7 +399,12 @@ export async function deleteLibraryExercise(id: string) {
 
 // ── Workouts ──────────────────────────────────────────────────────────────────
 
+// `coachId` is only used to notify the trainee that a new workout landed —
+// workouts has no coach_id column of its own (it's reached via the trainee's
+// coach_id), so the caller (which already has it) passes it through rather
+// than this doing an extra lookup.
 export async function createWorkout(
+  coachId: string,
   workout: Omit<DBWorkout, 'id' | 'created_at' | 'active' | 'end_date' | 'scheduled_days' | 'duration_weeks'> & { scheduled_days?: number[] | null; duration_weeks?: number | null },
   exercises: ExercisePayloadEntry[]
 ): Promise<DBWorkout> {
@@ -382,6 +421,17 @@ export async function createWorkout(
     );
     if (exError) throw exError;
   }
+
+  // Same in-app notification mechanism as every other coach<->trainee event
+  // (see sendCoachRequest above, and CLAUDE.md's Coach Notifications) —
+  // isolated in its own try/catch so a notification failure never blocks the
+  // actual assignment.
+  try {
+    await sendMessage(coachId, workout.trainee_id, `📋 Your coach assigned you a new workout: "${wData.name}"`);
+  } catch (e) {
+    console.warn('createWorkout: failed to notify trainee', e);
+  }
+
   return wData;
 }
 
@@ -506,10 +556,12 @@ export async function updateWorkoutExercises(workoutId: string, exercises: Exerc
 // Called once when a trainee opens a workout to start logging — records a
 // real server-side timestamp (scripts/secure_gamification.sql's
 // workout_session_starts) that completeWorkoutSession uses to compute the
-// duration bonus itself, rather than trusting a client-reported elapsed
-// time. Fire-and-forget from the caller's point of view (WorkoutScreen.tsx
-// swallows failures) — worst case if this doesn't land is just no duration
-// bonus for that session, not a broken workout.
+// session's real elapsed time itself, rather than trusting a client-reported
+// value. No longer feeds an XP bonus (see scripts/xp_from_achievements_only.sql
+// — XP comes from the achievement list only now), but duration itself still
+// feeds a few achievements (Long Haul, 100/250 Hours). Fire-and-forget from
+// the caller's point of view (WorkoutScreen.tsx swallows failures) — worst
+// case if this doesn't land is just no recorded duration for that session.
 export async function startWorkoutSession(workoutId: string): Promise<void> {
   const { error } = await supabase.rpc('start_workout_session', { p_workout_id: workoutId });
   if (error) throw error;
@@ -521,22 +573,32 @@ export async function startWorkoutSession(workoutId: string): Promise<void> {
 // computed client-side and written via a plain, unrestricted update, so any
 // authenticated user could set their own xp/level/streak to anything, or
 // self-award any medal, by calling the API directly. The server now
-// recomputes everything itself from real workout_sessions/vitals/etc. data,
-// including the duration bonus (derived from startWorkoutSession's
-// server-recorded timestamp, not a client-reported duration).
-// `completedHourLocal` is the one remaining genuinely-client-only fact
-// (device timezone) — see that script's own comment for why that one stays.
+// recomputes everything itself from real workout_sessions/vitals/etc. data.
+// XP comes ONLY from newly-earned achievements now — no flat completion
+// bonus, no duration bonus, no daily-streak bonus (removed per feedback,
+// see scripts/xp_from_achievements_only.sql); `xpAwarded` below is exactly
+// the sum of whatever medals this specific completion newly earned, 0 if
+// none did.
+// `completedHourLocal`/`completedDateLocal` are genuinely client-only facts
+// (device timezone) — see that script's own comment for why those stay
+// client-reported. Used only for THIS completion's own time-of-day/calendar-
+// date achievements (Night Owl, Unstoppable, First One, etc.) — never
+// persisted, so historical date/weekday achievements (Seasonal Charger,
+// Weekend Warrior Plus, ...) fall back to the server's own UTC
+// `completed_at` instead (see scripts/achievements_expansion.sql).
 export async function completeWorkoutSession(
   workoutId: string,
   details: SessionExerciseDetail[],
   completionPct: number,
-  completedHourLocal: number
+  completedHourLocal: number,
+  completedDateLocal: string
 ): Promise<{ xpAwarded: number; newXp: number; newLevel: number; newStreak: number; newlyEarnedMedalIds: string[] }> {
   const { data, error } = await supabase.rpc('complete_workout_session', {
     p_workout_id: workoutId,
     p_details: details,
     p_completion_pct: completionPct,
     p_completed_hour_local: completedHourLocal,
+    p_completed_date_local: completedDateLocal,
   });
   if (error) throw error;
   return {
@@ -590,7 +652,7 @@ export async function getLatestSessionForWorkout(workoutId: string): Promise<DBW
 // schema change — just a new metric_name. Different metrics use different
 // write patterns (overwrite the day's value vs. accumulate), handled here.
 
-function todayDateString(): string {
+export function todayDateString(): string {
   const d = new Date();
   const y = d.getFullYear();
   const m = String(d.getMonth() + 1).padStart(2, '0');
@@ -753,6 +815,19 @@ async function deactivateOtherPlans(traineeId: string, exceptPlanId: string, isC
   if (error) throw error;
 }
 
+// Shared by every nutrition-assignment path below (upload, template-assign,
+// calculator-build) — same in-app notification mechanism as the rest of this
+// app's coach<->trainee events (see sendCoachRequest/createWorkout above),
+// isolated here so a notification failure never blocks the actual plan
+// creation at any of its three call sites.
+async function notifyTraineeNutritionAssigned(coachId: string, traineeId: string, title: string) {
+  try {
+    await sendMessage(coachId, traineeId, `🥗 Your coach assigned you a new nutrition plan: "${title}"`);
+  } catch (e) {
+    console.warn('notifyTraineeNutritionAssigned: failed to notify trainee', e);
+  }
+}
+
 // Quick PDF-only plan — structured targets (if any) are added/edited afterward
 // via updateNutritionPlan, same as any other plan.
 export async function uploadNutritionPlan(
@@ -785,6 +860,7 @@ export async function uploadNutritionPlan(
   if (error) throw error;
   // No template_id (not template-based) — grouped with the calorie/macro kind.
   await deactivateOtherPlans(traineeId, data.id, true);
+  await notifyTraineeNutritionAssigned(coachId, traineeId, data.title);
   return data;
 }
 
@@ -862,6 +938,7 @@ export async function assignNutritionTemplate(
     .single();
   if (error) throw error;
   await deactivateOtherPlans(traineeId, data.id, false);
+  await notifyTraineeNutritionAssigned(coachId, traineeId, data.title);
   return data;
 }
 
@@ -975,6 +1052,7 @@ export async function createCalculatedNutritionPlan(
     .single();
   if (error) throw error;
   await deactivateOtherPlans(traineeId, data.id, true);
+  await notifyTraineeNutritionAssigned(coachId, traineeId, data.title);
   return data;
 }
 
@@ -1180,27 +1258,30 @@ export async function getOutgoingCoachRequestForTrainee(traineeId: string): Prom
 // accept_coach_request, a SECURITY DEFINER RPC that re-validates the request
 // row itself (coach_id/trainee_id, status='pending', caller is one of the
 // two parties) rather than trusting these client-supplied ids directly.
-// Returns whether the "Coach Connected" medal was newly awarded (as opposed
-// to already held) — callers running on the trainee's own device (as
-// opposed to the coach's, which can also call this) use it to fire a local
-// achievement notification; see ProfileScreen.tsx.
-export async function acceptCoachRequest(requestId: string, coachId: string, traineeId: string): Promise<boolean> {
+// `initiatedBy` mirrors sendCoachRequest's own param — this function is
+// called from BOTH sides (a coach accepting a trainee-initiated request in
+// CoachTrainees.tsx, or a trainee accepting a coach-initiated one in
+// ProfileScreen.tsx/TrainerDashboard.tsx), but the coach only needs a
+// notification in the latter case (they already know when THEY do the
+// accepting). `'coach'` here means the ORIGINAL request was coach-initiated
+// — i.e. the trainee is the one accepting right now.
+// No longer awards a "Coach Connected" achievement — that medal isn't part
+// of the current catalog (see mockData.ts's "third pass" comment); this
+// used to call claim_coach_connected_medal (scripts/secure_gamification.sql)
+// for it, now removed entirely rather than awarding an id nothing displays.
+export async function acceptCoachRequest(requestId: string, coachId: string, traineeId: string, initiatedBy: 'coach' | 'trainee'): Promise<void> {
   const { error } = await supabase.rpc('accept_coach_request', { p_request_id: requestId });
   if (error) throw error;
-  // "Coach Connected" achievement — awarded here (the moment a connection is
-  // actually made) rather than in evaluateAndAwardMedals, since a trainee
-  // can't have completed any workout at all without a coach already
-  // assigned, so checking it at workout-completion time would always
-  // co-fire with "First Step" and never mean anything on its own. Goes
-  // through claim_coach_connected_medal (a SECURITY DEFINER RPC) rather than
-  // a direct client write — see scripts/secure_gamification.sql.
-  try {
-    const { data, error: medalError } = await supabase.rpc('claim_coach_connected_medal', { p_trainee_id: traineeId });
-    if (medalError) throw medalError;
-    return !!data?.newly_earned;
-  } catch (e) {
-    console.warn('acceptCoachRequest: failed to award Coach Connected medal', e);
-    return false;
+
+  if (initiatedBy === 'coach') {
+    try {
+      const trainee = await getProfile(traineeId);
+      if (trainee) {
+        await sendMessage(traineeId, coachId, `✅ ${trainee.name} accepted your coach request!`);
+      }
+    } catch (e) {
+      console.warn('acceptCoachRequest: failed to notify coach', e);
+    }
   }
 }
 
@@ -1263,14 +1344,15 @@ export async function getUnreadMessagesForCoach(coachId: string): Promise<(DBMes
   return data.map(m => ({ ...m, fromUser: userMap.get(m.from_id) }));
 }
 
-// All notifications a coach has ever received (read + unread), for a persistent
+// All notifications a user has ever received (read + unread), for a persistent
 // notifications list — unlike getUnreadMessagesForCoach, entries don't vanish
-// once marked read.
-export async function getMessagesForCoach(coachId: string, limit: number = 50): Promise<(DBMessage & { fromUser?: DBUser })[]> {
+// once marked read. Generic over `to_id` — used by both sides of the
+// relationship (a coach's own notification bell, and a trainee's).
+async function getMessagesTo(userId: string, limit: number): Promise<(DBMessage & { fromUser?: DBUser })[]> {
   const { data, error } = await supabase
     .from('messages')
     .select('*')
-    .eq('to_id', coachId)
+    .eq('to_id', userId)
     .order('created_at', { ascending: false })
     .limit(limit);
   if (error || !data) return [];
@@ -1279,6 +1361,17 @@ export async function getMessagesForCoach(coachId: string, limit: number = 50): 
   const { data: users } = await supabase.from('users').select('*').in('id', fromIds);
   const userMap = new Map((users ?? []).map(u => [u.id, u]));
   return data.map(m => ({ ...m, fromUser: userMap.get(m.from_id) }));
+}
+
+export async function getMessagesForCoach(coachId: string, limit: number = 50): Promise<(DBMessage & { fromUser?: DBUser })[]> {
+  return getMessagesTo(coachId, limit);
+}
+
+// Trainee-side equivalent of getMessagesForCoach, for a Home-screen
+// notification bell — now that coach->trainee events (new program, new
+// nutrition plan, chat replies) all flow through the same messages table.
+export async function getMessagesForTrainee(traineeId: string, limit: number = 50): Promise<(DBMessage & { fromUser?: DBUser })[]> {
+  return getMessagesTo(traineeId, limit);
 }
 
 export async function deleteMessage(messageId: string) {

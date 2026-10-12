@@ -180,6 +180,29 @@ export async function notifyMedalsEarned(medalNames: string[]): Promise<void> {
   }
 }
 
+// Reuses the achievement channel (same importance/behavior — no "rest"
+// suppression applies, since only the 'rest' type is suppressed while
+// foregrounded, see the shared handler above) for any other new-activity
+// notification: a chat message, a connect request, a trainee accepting
+// one, a new workout/nutrition-plan assignment. Fires immediately, same
+// as notifyMedalsEarned — these are one-off events with no persistent
+// in-app banner of their own, so they always show, foregrounded or not.
+export async function notifyNewActivity(title: string, body: string): Promise<void> {
+  const Notifications = getNotifications();
+  if (!Notifications) return;
+  const granted = await ensurePermission(Notifications);
+  if (!granted) return;
+  await ensureAchievementChannel(Notifications);
+  try {
+    await Notifications.scheduleNotificationAsync({
+      content: { title, body, data: { type: 'activity' } },
+      trigger: Platform.OS === 'android' ? { channelId: ACHIEVEMENT_CHANNEL_ID } : null,
+    });
+  } catch (e) {
+    console.warn('notifyNewActivity failed', e);
+  }
+}
+
 export async function cancelRestEndNotification(id: string | null) {
   if (!id) return;
   const Notifications = getNotifications();

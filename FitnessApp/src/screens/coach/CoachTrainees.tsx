@@ -15,10 +15,11 @@ import {
 } from 'react-native';
 import { Text, TextInput } from '../../components/AppText';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
-import { useRoute, useNavigation, useFocusEffect } from '@react-navigation/native';
+import { useRoute, useNavigation } from '@react-navigation/native';
 import { Ionicons } from '@expo/vector-icons';
 import { colors } from '../../theme/colors';
 import { useKeyboardOffset } from '../../lib/useKeyboardOffset';
+import { useLiveRefresh } from '../../lib/useLiveRefresh';
 import {
   getMyTrainees,
   getIncomingCoachRequests,
@@ -56,12 +57,15 @@ import {
   createTraineeInvite,
   getMyTraineeInvites,
   revokeTraineeInvite,
+  getUserMedals,
   ExercisePayloadEntry,
 } from '../../lib/db';
 import { DBProgram, DBUser, DBWorkout, DBExercise, DBWeightLog, DBNutritionPlan, DBNutritionPlanTemplate, DBCoachRequest, DBLibraryExercise, DBMessage, DBVital, DBMealCompletion, DBFoodLogEntry, DBTraineeInvite, MealSlot, SessionExerciseDetail, SessionSetDetail, DBWorkoutSession, ExerciseSetTarget } from '../../lib/supabase';
 import { templatesForMealType, scaleTemplateToTarget, scaleItem, MealType, MealTemplate, Diet } from '../../data/mealLibrary';
 import { sanitizeCount, sanitizeWeightInput, sanitizeTimeInput, stripKg, withKg } from '../../lib/exerciseInput';
 import { isWorkoutDurationExpired, formatWorkoutEndDate, getProgramWeekProgress } from '../../lib/workoutDuration';
+import { mockMedals } from '../../data/mockData';
+import MedalGrid from '../../components/MedalGrid';
 import CalorieCalculatorModal from './CalorieCalculatorModal';
 
 // One set's own row in the exercise builder — reps/weight/time/rest are
@@ -317,7 +321,7 @@ export default function CoachTrainees({ coachId }: Props) {
 
   // ── Trainee detail modal ──
   const [selectedTrainee, setSelectedTrainee] = useState<DBUser | null>(null);
-  const [detailTab, setDetailTab] = useState<'program' | 'weight' | 'steps' | 'nutrition' | 'chat'>('program');
+  const [detailTab, setDetailTab] = useState<'program' | 'weight' | 'steps' | 'nutrition' | 'medals' | 'chat'>('program');
   // Program tab is itself split into Program / History, same pattern as the
   // Nutrition tab's Plans / History toggle.
   const [programSubTab, setProgramSubTab] = useState<'program' | 'history'>('program');
@@ -348,6 +352,11 @@ export default function CoachTrainees({ coachId }: Props) {
   const [selectedTraineeFoodLog, setSelectedTraineeFoodLog] = useState<DBFoodLogEntry[]>([]);
   const [nutritionSubTab, setNutritionSubTab] = useState<'plans' | 'history'>('plans');
   const [selectedTraineeMessages, setSelectedTraineeMessages] = useState<DBMessage[]>([]);
+  // Earned medal ids for the selected trainee — lets the coach see the same
+  // achievement cards (with the same tap-to-see-description behavior) the
+  // trainee sees on their own Medals tab, instead of having no visibility
+  // into achievements at all.
+  const [selectedTraineeMedalIds, setSelectedTraineeMedalIds] = useState<Set<string>>(new Set());
   const [chatInput, setChatInput] = useState('');
   const [loadingDetail, setLoadingDetail] = useState(false);
 
@@ -492,12 +501,11 @@ export default function CoachTrainees({ coachId }: Props) {
     getNutritionTemplates(coachId).then(setNutritionTemplates);
   }, [coachId]);
 
-  // Refetch every time the Trainees tab regains focus (not just on first
-  // mount) — otherwise workouts assigned in a previous session, or changes
-  // made elsewhere, show up as stale roster counts until a full app reload.
-  useFocusEffect(useCallback(() => {
-    loadData();
-  }, [loadData]));
+  // See useLiveRefresh.ts — refetches on focus, on a ~15s poll, and on app
+  // foreground-resume, so the roster (and the new-request popup above)
+  // stay live while the coach just sits on this screen, not only after a
+  // focus change or full app reload.
+  useLiveRefresh(loadData);
 
   // Deep-link: another screen (e.g. the Coach Hub dashboard) navigated here
   // asking to open a specific trainee's detail view directly.
@@ -512,7 +520,51 @@ export default function CoachTrainees({ coachId }: Props) {
     navigation.setParams({ openTraineeId: undefined });
   }, [route.params?.openTraineeId, trainees, navigation]);
 
-  // Load detail data when a trainee is selected
+  // Load detail data for whichever trainee is selected. `isInitial` gates
+  // the loading-spinner toggle — the first load (right after selecting a
+  // trainee) should show it, but a background poll refresh (see
+  // useLiveRefresh below) shouldn't replace an already-visible detail view
+  // with a spinner every ~15s.
+  const loadSelectedTraineeDetail = useCallback((isInitial: boolean) => {
+    if (!selectedTrainee) return;
+    if (isInitial) setLoadingDetail(true);
+    Promise.all([
+      getWorkoutsForTrainee(selectedTrainee.id),
+      getTraineeHistory(selectedTrainee.id),
+      getWeightLogs(selectedTrainee.id),
+      getVitalsHistory(selectedTrainee.id, 'steps'),
+      getVitalsHistory(selectedTrainee.id, 'water'),
+      getNutritionPlans(selectedTrainee.id),
+      getFoodLogEntries(selectedTrainee.id),
+      getMessages(coachId, selectedTrainee.id),
+      getUserMedals(selectedTrainee.id),
+    ]).then(([workouts, history, weights, steps, water, nutrition, foodLog, messages, medals]) => {
+      setSelectedTraineeWorkouts(workouts);
+      setSelectedTraineeHistory(history);
+      setSelectedTraineeWeights(weights);
+      setSelectedTraineeSteps(steps);
+      setSelectedTraineeWater(water);
+      setSelectedTraineeNutrition(nutrition);
+      setSelectedTraineeFoodLog(foodLog);
+      setSelectedTraineeMessages(messages);
+      setSelectedTraineeMedalIds(new Set(medals.map(m => m.medal_id)));
+      if (isInitial) setLoadingDetail(false);
+
+      // Eagerly pull every plan's meal-tracking (not just the one the coach
+      // happens to expand) so the new "History" view has everything to pool
+      // as soon as it's opened, instead of an empty screen until each plan
+      // card is individually expanded.
+      const plansWithMeals = nutrition.filter(p => p.meals && p.meals.length > 0);
+      if (plansWithMeals.length > 0) {
+        Promise.all(plansWithMeals.map(p => getMealCompletions(selectedTrainee.id, p.id))).then(results => {
+          const map: Record<string, DBMealCompletion[]> = {};
+          plansWithMeals.forEach((p, i) => { map[p.id] = results[i]; });
+          setPlanCompletions(prev => ({ ...prev, ...map }));
+        });
+      }
+    });
+  }, [selectedTrainee, coachId]);
+
   useEffect(() => {
     if (!selectedTrainee) {
       setSelectedTraineeWorkouts([]);
@@ -529,44 +581,20 @@ export default function CoachTrainees({ coachId }: Props) {
       setNutritionSubTab('plans');
       setExpandedPlanId(null);
       setSelectedTraineeMessages([]);
+      setSelectedTraineeMedalIds(new Set());
       setEditingPlanId(null);
       return;
     }
-    setLoadingDetail(true);
-    Promise.all([
-      getWorkoutsForTrainee(selectedTrainee.id),
-      getTraineeHistory(selectedTrainee.id),
-      getWeightLogs(selectedTrainee.id),
-      getVitalsHistory(selectedTrainee.id, 'steps'),
-      getVitalsHistory(selectedTrainee.id, 'water'),
-      getNutritionPlans(selectedTrainee.id),
-      getFoodLogEntries(selectedTrainee.id),
-      getMessages(coachId, selectedTrainee.id),
-    ]).then(([workouts, history, weights, steps, water, nutrition, foodLog, messages]) => {
-      setSelectedTraineeWorkouts(workouts);
-      setSelectedTraineeHistory(history);
-      setSelectedTraineeWeights(weights);
-      setSelectedTraineeSteps(steps);
-      setSelectedTraineeWater(water);
-      setSelectedTraineeNutrition(nutrition);
-      setSelectedTraineeFoodLog(foodLog);
-      setSelectedTraineeMessages(messages);
-      setLoadingDetail(false);
+    loadSelectedTraineeDetail(true);
+  }, [selectedTrainee, loadSelectedTraineeDetail]);
 
-      // Eagerly pull every plan's meal-tracking (not just the one the coach
-      // happens to expand) so the new "History" view has everything to pool
-      // as soon as it's opened, instead of an empty screen until each plan
-      // card is individually expanded.
-      const plansWithMeals = nutrition.filter(p => p.meals && p.meals.length > 0);
-      if (plansWithMeals.length > 0) {
-        Promise.all(plansWithMeals.map(p => getMealCompletions(selectedTrainee.id, p.id))).then(results => {
-          const map: Record<string, DBMealCompletion[]> = {};
-          plansWithMeals.forEach((p, i) => { map[p.id] = results[i]; });
-          setPlanCompletions(prev => ({ ...prev, ...map }));
-        });
-      }
-    });
-  }, [selectedTrainee, coachId]);
+  // See useLiveRefresh.ts — a trainee completing a workout, logging
+  // weight/water, or tracking a meal while the coach has their detail view
+  // open (the exact bug reported: "the coach isn't able to see that it was
+  // completed in the history") needs to show up without the coach closing
+  // and reopening it. No-ops when no trainee is selected. Quiet refresh —
+  // doesn't toggle the loading spinner, see isInitial above.
+  useLiveRefresh(useCallback(() => loadSelectedTraineeDetail(false), [loadSelectedTraineeDetail]));
 
   const toggleExpandWorkout = useCallback(async (workout: DBWorkout) => {
     if (expandedWorkoutId === workout.id) {
@@ -902,7 +930,7 @@ export default function CoachTrainees({ coachId }: Props) {
   const handleAcceptRequest = useCallback(async (req: DBCoachRequest & { trainee: DBUser }) => {
     setRespondingId(req.id);
     try {
-      await acceptCoachRequest(req.id, coachId, req.trainee_id);
+      await acceptCoachRequest(req.id, coachId, req.trainee_id, 'trainee');
       await loadData();
     } catch (e) {
       console.warn('acceptCoachRequest error', e);
@@ -1052,7 +1080,7 @@ export default function CoachTrainees({ coachId }: Props) {
       const exs = exercises.filter(e => e.name.trim()).map(exerciseEntryToPayload);
       setSaving(true);
       try {
-        await createWorkout({
+        await createWorkout(coachId, {
           trainee_id: assigningTrainee!.id,
           program_id: selectedProgramId!,
           name: workoutName,
@@ -1517,7 +1545,7 @@ export default function CoachTrainees({ coachId }: Props) {
               style={styles.tabRow}
               contentContainerStyle={{ flexDirection: 'row', alignItems: 'center' }}
             >
-              {(['program', 'nutrition', 'weight', 'steps', 'chat'] as const).map(tab => (
+              {(['program', 'nutrition', 'weight', 'steps', 'medals', 'chat'] as const).map(tab => (
                 <TouchableOpacity
                   key={tab}
                   style={[styles.tab, detailTab === tab && styles.tabActive]}
@@ -1525,7 +1553,7 @@ export default function CoachTrainees({ coachId }: Props) {
                   hitSlop={{ top: 8, bottom: 8 }}
                 >
                   <Text style={[styles.tabText, detailTab === tab && styles.tabTextActive]} numberOfLines={1}>
-                    {tab === 'program' ? 'Program' : tab === 'weight' ? 'Weight' : tab === 'steps' ? 'Steps' : tab === 'nutrition' ? 'Nutrition' : 'Chat'}
+                    {tab === 'program' ? 'Program' : tab === 'weight' ? 'Weight' : tab === 'steps' ? 'Steps' : tab === 'nutrition' ? 'Nutrition' : tab === 'medals' ? 'Medals' : 'Chat'}
                   </Text>
                 </TouchableOpacity>
               ))}
@@ -1903,6 +1931,26 @@ export default function CoachTrainees({ coachId }: Props) {
                         )}
                       </View>
                     ))}
+                  </View>
+                )}
+
+                {/* Medals tab — same cards + tap-to-see-description modal as
+                    the trainee's own Gamification screen (MedalGrid,
+                    shared), so the coach can see what a trainee has earned
+                    and what each achievement is actually for. */}
+                {detailTab === 'medals' && (
+                  <View>
+                    <View style={styles.medalsSummaryRow}>
+                      <Text style={styles.fieldLabel}>ACHIEVEMENTS</Text>
+                      <View style={styles.medalCountBadge}>
+                        <Text style={styles.medalCountBadgeText}>
+                          {selectedTraineeMedalIds.size}/{mockMedals.length}
+                        </Text>
+                      </View>
+                    </View>
+                    <MedalGrid
+                      medals={mockMedals.map(m => ({ ...m, earned: selectedTraineeMedalIds.has(m.id) }))}
+                    />
                   </View>
                 )}
 
@@ -3587,6 +3635,9 @@ const styles = StyleSheet.create({
   weightVal: { fontSize: 16, fontWeight: '700', color: colors.text },
   latestTag: { backgroundColor: colors.xpBar + '22', paddingHorizontal: 8, paddingVertical: 3, borderRadius: 6 },
   latestTagText: { fontSize: 10, fontWeight: '800', color: colors.xpBar },
+  medalsSummaryRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 14 },
+  medalCountBadge: { backgroundColor: colors.primary + '33', paddingHorizontal: 12, paddingVertical: 6, borderRadius: 10 },
+  medalCountBadgeText: { fontSize: 13, fontWeight: '700', color: colors.primary },
   weightTrend: {
     flexDirection: 'row', alignItems: 'center', gap: 6,
     marginTop: 14, paddingTop: 14, borderTopWidth: 1, borderTopColor: colors.border,

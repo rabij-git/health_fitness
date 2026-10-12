@@ -14,6 +14,7 @@ import { Text, TextInput } from '../../components/AppText';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { colors } from '../../theme/colors';
+import { useLiveRefresh } from '../../lib/useLiveRefresh';
 import { DBUser } from '../../lib/supabase';
 import {
   getLeaderboard,
@@ -107,8 +108,13 @@ export default function SocialScreen({ userId }: Props) {
   // same alert every time this screen refetches/regains focus.
   const alertedRequestIds = useRef<Set<string>>(new Set());
 
+  // Only the very first load shows the full-screen spinner — later calls
+  // (focus revisits, the live-refresh poll, app foreground-resume; see
+  // useLiveRefresh.ts) update in place instead of flashing it back on.
+  const hasLoadedOnce = useRef(false);
+
   const loadAll = useCallback(async () => {
-    setLoading(true);
+    if (!hasLoadedOnce.current) setLoading(true);
     const [p, lb, fr, reqs, friendships] = await Promise.all([
       getProfile(userId),
       getLeaderboard(),
@@ -141,12 +147,17 @@ export default function SocialScreen({ userId }: Props) {
       const gymUsers = await getGymLeaderboard(p.gym_id);
       setGymMembers(gymUsers);
     }
-    setLoading(false);
+    if (!hasLoadedOnce.current) {
+      setLoading(false);
+      hasLoadedOnce.current = true;
+    }
   }, [userId]);
 
-  useEffect(() => {
-    loadAll();
-  }, [loadAll]);
+  // See useLiveRefresh.ts — the leaderboard, friends list, and pending
+  // requests are all data other people change; this used to only ever
+  // load once on mount (not even on focus), the most stale pattern in the
+  // app.
+  useLiveRefresh(loadAll);
 
   const handleSearch = useCallback(async (query: string) => {
     setSearchQuery(query);

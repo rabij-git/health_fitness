@@ -10,12 +10,13 @@ import {
 } from 'react-native';
 import { Text, TextInput } from '../../components/AppText';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
-import { useFocusEffect } from '@react-navigation/native';
 import { Ionicons } from '@expo/vector-icons';
 import { colors } from '../../theme/colors';
 import { useKeyboardOffset } from '../../lib/useKeyboardOffset';
+import { useLiveRefresh } from '../../lib/useLiveRefresh';
 import { getMyTrainees, getProfile, getPrograms, getTraineeHistory, getMessagesForCoach, markMessageRead, deleteMessage, getMessages, sendMessage } from '../../lib/db';
 import { DBUser, DBMessage } from '../../lib/supabase';
+import { notifyNewActivity } from '../../lib/restNotifications';
 
 function timeAgo(iso: string) {
   const diffMs = Date.now() - new Date(iso).getTime();
@@ -84,13 +85,34 @@ export default function CoachDashboard({ onLogout, coachId, navigation }: Props)
   }, [chatMessages, chatTrainee, keyboardOffset]);
   const [chatInput, setChatInput] = useState('');
 
+  // Ids already seen this session — `null` means "haven't loaded yet",
+  // distinct from an empty set, so the very first load can silently record
+  // existing history without firing a phone notification for every
+  // already-unread row from before this session started. Any id that shows
+  // up in a LATER fetch and isn't in this set is genuinely new since the
+  // last check, and gets a local notification fired for it exactly once.
+  const seenNotificationIds = useRef<Set<string> | null>(null);
+
   const loadNotifications = useCallback(() => {
-    getMessagesForCoach(coachId).then(setNotifications);
+    getMessagesForCoach(coachId).then(fetched => {
+      setNotifications(fetched);
+      if (seenNotificationIds.current === null) {
+        seenNotificationIds.current = new Set(fetched.map(m => m.id));
+        return;
+      }
+      const newlyArrived = fetched.filter(m => !seenNotificationIds.current!.has(m.id));
+      newlyArrived.forEach(m => {
+        seenNotificationIds.current!.add(m.id);
+        notifyNewActivity(m.fromUser?.name ?? 'New notification', m.message).catch(() => {});
+      });
+    });
   }, [coachId]);
 
-  useEffect(() => {
-    loadNotifications();
-  }, [loadNotifications]);
+  // See useLiveRefresh.ts — refetches on focus, on a ~15s poll, and
+  // immediately on app foreground-resume, so the bell updates live while
+  // the coach just sits on this screen instead of only after navigating
+  // away and back.
+  useLiveRefresh(loadNotifications);
 
   const openNotifications = useCallback(() => {
     setShowNotifications(true);
@@ -124,6 +146,14 @@ export default function CoachDashboard({ onLogout, coachId, navigation }: Props)
     getMessages(coachId, chatTrainee.id).then(setChatMessages);
   }, [chatTrainee, coachId]);
 
+  // A trainee replying while the coach already has this exact thread open
+  // needs to show up without closing and reopening it. No-ops when no
+  // thread is open. See useLiveRefresh.ts.
+  useLiveRefresh(useCallback(() => {
+    if (!chatTrainee) return;
+    getMessages(coachId, chatTrainee.id).then(setChatMessages);
+  }, [chatTrainee, coachId]));
+
   const handleSendReply = useCallback(async () => {
     if (!chatInput.trim() || !chatTrainee) return;
     const text = chatInput.trim();
@@ -137,35 +167,34 @@ export default function CoachDashboard({ onLogout, coachId, navigation }: Props)
     }
   }, [coachId, chatTrainee, chatInput]);
 
-  // useFocusEffect, not a plain useEffect — this used to only ever fetch
-  // once on mount, so a trainee accepted on the Trainees tab (or a request
-  // accepted from the notification bell here) never showed up in this
-  // screen's own trainee count/preview until the app was fully reloaded.
-  // Re-running on every focus keeps it current, same pattern already used
-  // for the trainee's own Home screen (see CLAUDE.md's Coach Notifications
-  // section).
-  useFocusEffect(
-    useCallback(() => {
-      getProfile(coachId).then(setCoachProfile);
-      getPrograms(coachId).then(progs => setProgramCount(progs.length));
-      getMyTrainees(coachId).then(async (ts) => {
-        setTrainees(ts);
-        if (ts.length === 0) {
-          setCompliance(null);
-          return;
-        }
-        const histories = await Promise.all(ts.map(t => getTraineeHistory(t.id)));
-        const weekAgo = Date.now() - 7 * 86400000;
-        const recentSessions = histories.flat().filter(s => new Date(s.completed_at).getTime() >= weekAgo);
-        if (recentSessions.length === 0) {
-          setCompliance(null);
-          return;
-        }
-        const avg = recentSessions.reduce((sum, s) => sum + (s.completion_pct ?? 0), 0) / recentSessions.length;
-        setCompliance(Math.round(avg));
-      });
-    }, [coachId])
-  );
+  // Trainee list/program count/7-day compliance — all data a trainee's own
+  // actions (completing a workout, a program getting accepted elsewhere)
+  // can change out from under the coach. See useLiveRefresh.ts: refetches
+  // on focus, on a ~15s poll, and immediately on app foreground-resume —
+  // this used to be useFocusEffect-only, which left it stale while the
+  // coach just sat on this screen.
+  const loadDashboard = useCallback(() => {
+    getProfile(coachId).then(setCoachProfile);
+    getPrograms(coachId).then(progs => setProgramCount(progs.length));
+    getMyTrainees(coachId).then(async (ts) => {
+      setTrainees(ts);
+      if (ts.length === 0) {
+        setCompliance(null);
+        return;
+      }
+      const histories = await Promise.all(ts.map(t => getTraineeHistory(t.id)));
+      const weekAgo = Date.now() - 7 * 86400000;
+      const recentSessions = histories.flat().filter(s => new Date(s.completed_at).getTime() >= weekAgo);
+      if (recentSessions.length === 0) {
+        setCompliance(null);
+        return;
+      }
+      const avg = recentSessions.reduce((sum, s) => sum + (s.completion_pct ?? 0), 0) / recentSessions.length;
+      setCompliance(Math.round(avg));
+    });
+  }, [coachId]);
+
+  useLiveRefresh(loadDashboard);
 
   return (
     <SafeAreaView style={styles.container}>

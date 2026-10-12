@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo, useRef } from 'react';
+import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import {
   View,
   StyleSheet,
@@ -14,6 +14,7 @@ import { Text, TextInput } from '../../components/AppText';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { colors } from '../../theme/colors';
+import { useLiveRefresh } from '../../lib/useLiveRefresh';
 import { DBUser, DBGym } from '../../lib/supabase';
 import {
   getMyTrainees,
@@ -45,12 +46,13 @@ export default function CoachRankings({ coachId }: Props) {
   const [searching, setSearching] = useState(false);
   const addMemberInputRef = useRef<TextInput>(null);
 
-  useEffect(() => {
-    loadData();
-  }, [coachId]);
+  // Only the very first load shows the full-screen spinner — later calls
+  // (focus revisits, the live-refresh poll, app foreground-resume; see
+  // useLiveRefresh.ts) update in place instead of flashing it back on.
+  const hasLoadedOnce = useRef(false);
 
-  async function loadData() {
-    setLoading(true);
+  const loadData = useCallback(async () => {
+    if (!hasLoadedOnce.current) setLoading(true);
     const [myTrainees, myGym] = await Promise.all([
       getMyTrainees(coachId),
       getCoachGym(coachId),
@@ -60,9 +62,20 @@ export default function CoachRankings({ coachId }: Props) {
     if (myGym) {
       const members = myTrainees.filter(t => t.gym_id === myGym.id);
       setGymMembers(members);
+    } else {
+      setGymMembers([]);
     }
-    setLoading(false);
-  }
+    if (!hasLoadedOnce.current) {
+      setLoading(false);
+      hasLoadedOnce.current = true;
+    }
+  }, [coachId]);
+
+  // See useLiveRefresh.ts — the gym roster and trainee leaderboard are both
+  // data other people (trainees earning XP, a trainee joining/leaving the
+  // gym) change; this used to only ever load once on mount (not even on
+  // focus).
+  useLiveRefresh(loadData);
 
   async function handleCreateGym() {
     if (!gymName.trim()) return;

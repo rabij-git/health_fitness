@@ -4,6 +4,7 @@ import { Text } from '../../components/AppText';
 import { Ionicons } from '@expo/vector-icons';
 import { colors } from '../../theme/colors';
 import { getTraineeHistory } from '../../lib/db';
+import { useLiveRefresh } from '../../lib/useLiveRefresh';
 import { DBWorkoutSession } from '../../lib/supabase';
 
 type TraineeSession = DBWorkoutSession & { workout_name: string };
@@ -76,7 +77,13 @@ export default function ExerciseLogScreen({ userId }: { userId: string }) {
     }
   }, [userId]);
 
-  useEffect(() => { loadSessions(); }, [loadSessions]);
+  // See useLiveRefresh.ts — refetches on focus, on a ~15s poll, and on app
+  // foreground-resume. This screen remounts fresh on every switch back to
+  // the "History" segment (WorkoutTabScreen.tsx conditionally renders it),
+  // so a plain mount-effect already covered most cases — this additionally
+  // keeps it live while a trainee just sits on History without switching
+  // away and back.
+  useLiveRefresh(loadSessions);
 
   const buckets = useMemo(
     () => (chartMode === 'week' ? buildWeekBuckets(sessions, 8) : buildMonthBuckets(sessions, 6)),

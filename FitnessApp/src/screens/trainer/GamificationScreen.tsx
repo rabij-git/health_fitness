@@ -6,80 +6,28 @@ import {
 } from 'react-native';
 import { Text } from '../../components/AppText';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { useFocusEffect } from '@react-navigation/native';
 import { Ionicons } from '@expo/vector-icons';
 import { colors } from '../../theme/colors';
+import { useLiveRefresh } from '../../lib/useLiveRefresh';
 import { mockMedals, getXpForNextLevel, getCurrentLevelXp, getLevelTitle } from '../../data/mockData';
 import { getProfile, getUserMedals } from '../../lib/db';
 import { DBUser } from '../../lib/supabase';
-
-const MedalCard = React.memo(function MedalCard({ medal }: { medal: typeof mockMedals[0] }) {
-  const rarityColors = {
-    common: colors.textSecondary,
-    rare: '#4A9EFF',
-    ultra_rare: colors.gold,
-  };
-
-  const rarityLabels = {
-    common: 'Common',
-    rare: 'Rare',
-    ultra_rare: 'Ultra Rare',
-  };
-
-  const iconMap: Record<string, any> = {
-    fitness: 'fitness',
-    flame: 'flame',
-    trophy: 'trophy',
-    medal: 'medal',
-    star: 'star',
-    sunny: 'sunny',
-    rocket: 'rocket',
-  };
-
-  const iconColor = medal.earned ? rarityColors[medal.rarity] : colors.border;
-
-  return (
-    <View style={[styles.medalCard, !medal.earned && styles.medalCardUnearned]}>
-      <View style={[
-        styles.medalIconContainer,
-        { borderColor: medal.earned ? rarityColors[medal.rarity] : colors.border },
-        medal.earned && { backgroundColor: rarityColors[medal.rarity] + '22' },
-      ]}>
-        <Ionicons
-          name={iconMap[medal.icon]}
-          size={28}
-          color={iconColor}
-        />
-        {medal.earned && (
-          <View style={styles.earnedBadge}>
-            <Ionicons name="checkmark" size={10} color={colors.text} />
-          </View>
-        )}
-      </View>
-      <Text style={[styles.medalName, !medal.earned && styles.textDimmed]}>
-        {medal.name}
-      </Text>
-      <View style={[styles.rarityTag, { backgroundColor: rarityColors[medal.rarity] + '22' }]}>
-        <Text style={[styles.rarityText, { color: rarityColors[medal.rarity] }]}>
-          {rarityLabels[medal.rarity]}
-        </Text>
-      </View>
-      <Text style={[styles.medalXP, !medal.earned && styles.textDimmed]}>
-        +{medal.xpReward} XP
-      </Text>
-    </View>
-  );
-});
+import MedalGrid from '../../components/MedalGrid';
 
 export default function GamificationScreen({ userId }: { userId?: string }) {
   const [profile, setProfile] = useState<DBUser | null>(null);
   const [earnedMedalIds, setEarnedMedalIds] = useState<Set<string>>(new Set());
 
-  useFocusEffect(useCallback(() => {
+  // See useLiveRefresh.ts — refetches on focus, on a ~15s poll, and on app
+  // foreground-resume, so a medal earned while sitting on this tab shows
+  // up without navigating away and back.
+  const loadMedals = useCallback(() => {
     if (!userId) return;
     getProfile(userId).then(setProfile);
     getUserMedals(userId).then(rows => setEarnedMedalIds(new Set(rows.map(r => r.medal_id))));
-  }, [userId]));
+  }, [userId]);
+
+  useLiveRefresh(loadMedals);
 
   const user = profile
     ? { name: profile.name, avatar: profile.avatar, level: profile.level, xp: profile.xp, streak: profile.streak }
@@ -91,23 +39,17 @@ export default function GamificationScreen({ userId }: { userId?: string }) {
 
   const medals = mockMedals.map(m => ({ ...m, earned: earnedMedalIds.has(m.id) }));
   const earnedMedals = medals.filter((m) => m.earned).length;
-  const isNewUser = user.xp === 0 && user.streak === 0;
 
-  if (isNewUser) {
-    return (
-      <SafeAreaView style={styles.container}>
-        <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.scrollContent}>
-          <Text style={styles.title}>Achievements</Text>
-          <View style={styles.emptyState}>
-            <Ionicons name="trophy-outline" size={64} color={colors.border} />
-            <Text style={styles.emptyTitle}>No achievements yet</Text>
-            <Text style={styles.emptySubtitle}>Complete workouts and hit streaks to earn medals and XP.</Text>
-          </View>
-        </ScrollView>
-      </SafeAreaView>
-    );
-  }
-
+  // No "new user" empty state anymore — it used to hide the entire catalog
+  // (XP card, streak card, and every medal) whenever xp===0 && streak===0.
+  // That was fine when a flat completion bonus meant 0 XP only ever lasted
+  // until the trainee's first workout — now that XP comes from achievements
+  // only (see CLAUDE.md's "XP & Leveling System"), 0/0 is the normal state
+  // for every trainee until they earn their first one, so this was hiding
+  // the whole achievement list — the one place a trainee can see what's
+  // even available to go earn — from every brand-new account indefinitely.
+  // The grid already renders unearned medals correctly (dimmed, no fake
+  // progress), so there's nothing a separate empty state needed to do.
   return (
     <SafeAreaView style={styles.container}>
       <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.scrollContent}>
@@ -203,10 +145,8 @@ export default function GamificationScreen({ userId }: { userId?: string }) {
           </View>
         </View>
 
-        <View style={styles.medalsGrid}>
-          {medals.map((medal) => (
-            <MedalCard key={medal.id} medal={medal} />
-          ))}
+        <View style={{ marginBottom: 24 }}>
+          <MedalGrid medals={medals} />
         </View>
 
         {/* Stats summary */}
@@ -237,15 +177,6 @@ const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: colors.background },
   scrollContent: { padding: 20, paddingBottom: 40 },
   title: { fontSize: 26, fontWeight: '800', color: colors.text, marginBottom: 20, marginTop: 8 },
-
-  emptyState: {
-    alignItems: 'center',
-    justifyContent: 'center',
-    paddingVertical: 80,
-    gap: 16,
-  },
-  emptyTitle: { fontSize: 20, fontWeight: '700', color: colors.textSecondary },
-  emptySubtitle: { fontSize: 14, color: colors.textSecondary, textAlign: 'center', lineHeight: 22, paddingHorizontal: 24 },
 
   // XP Card
   xpCard: {
@@ -342,54 +273,6 @@ const styles = StyleSheet.create({
     borderRadius: 10,
   },
   medalCountText: { fontSize: 13, fontWeight: '700', color: colors.primary },
-  medalsGrid: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 12,
-    marginBottom: 24,
-  },
-  medalCard: {
-    width: '47%',
-    backgroundColor: colors.card,
-    borderRadius: 16,
-    padding: 16,
-    alignItems: 'center',
-    borderWidth: 1,
-    borderColor: colors.border,
-  },
-  medalCardUnearned: { opacity: 0.5 },
-  medalIconContainer: {
-    width: 64,
-    height: 64,
-    borderRadius: 20,
-    borderWidth: 2,
-    borderColor: colors.border,
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginBottom: 10,
-    position: 'relative',
-  },
-  earnedBadge: {
-    position: 'absolute',
-    top: -4,
-    right: -4,
-    width: 18,
-    height: 18,
-    borderRadius: 9,
-    backgroundColor: colors.success,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  medalName: { fontSize: 13, fontWeight: '700', color: colors.text, textAlign: 'center', marginBottom: 6 },
-  textDimmed: { color: colors.textSecondary },
-  rarityTag: {
-    paddingHorizontal: 10,
-    paddingVertical: 3,
-    borderRadius: 8,
-    marginBottom: 6,
-  },
-  rarityText: { fontSize: 10, fontWeight: '700' },
-  medalXP: { fontSize: 12, color: colors.xpBar, fontWeight: '700' },
 
   // Stats
   statsRow: {

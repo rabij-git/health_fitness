@@ -24,10 +24,12 @@ import {
   completeWorkoutSession,
   sendMessage,
   logExerciseWeight,
+  todayDateString,
 } from '../../lib/db';
 import { DBWorkout } from '../../lib/supabase';
 import { scheduleRestEndNotification, cancelRestEndNotification, notifyMedalsEarned } from '../../lib/restNotifications';
 import { isWorkoutDurationExpired, formatWorkoutEndDate, getProgramWeekProgress } from '../../lib/workoutDuration';
+import { useLiveRefresh } from '../../lib/useLiveRefresh';
 
 const DAY_ABBR = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 
@@ -167,6 +169,27 @@ export default function WorkoutScreen({ userId }: Props) {
     return () => { cancelled = true; };
   }, [userId]));
 
+  // A coach assigning a new workout, or the daily completion lock clearing
+  // at midnight, needs to show up without the trainee leaving this tab and
+  // coming back — see useLiveRefresh.ts. Deliberately a separate, simpler
+  // "quiet" reload (no cancel-guard, no loading-spinner/isPending toggling)
+  // layered on top of the focus-effect above rather than replacing it —
+  // that one's cancel-guard specifically protects the picker's very first
+  // load against a stale overwrite if the trainee navigates away again
+  // quickly, which this poll/resume-only addition doesn't need to touch.
+  const reloadWorkoutsQuiet = useCallback(async () => {
+    const profile = await getProfile(userId);
+    if (!profile || profile.status === 'pending') return;
+    const [list, completedIds] = await Promise.all([
+      getWorkoutsForTrainee(userId),
+      getWorkoutIdsCompletedToday(userId),
+    ]);
+    setWorkouts(list);
+    setCompletedTodayIds(completedIds);
+  }, [userId]);
+
+  useLiveRefresh(reloadWorkoutsQuiet);
+
   const toDoWorkouts = useMemo(
     () => workouts.filter(w => w.active && !completedTodayIds.has(w.id) && isScheduledForToday(w) && !isWorkoutDurationExpired(w)),
     [workouts, completedTodayIds]
@@ -281,10 +304,12 @@ export default function WorkoutScreen({ userId }: Props) {
       setNewlyEarnedMedalIds([]);
       return;
     }
-    // Records a real server-side start time for the duration XP bonus at
-    // Finish (see completeWorkoutSession/scripts/secure_gamification.sql) —
-    // fire-and-forget, since the worst case if this doesn't land is just no
-    // duration bonus for this session, not a broken workout.
+    // Records a real server-side start time so Finish can compute this
+    // session's real duration (see completeWorkoutSession/
+    // scripts/xp_from_achievements_only.sql) — fed into a few achievements
+    // (Long Haul, 100/250 Hours), not an XP bonus of its own anymore.
+    // Fire-and-forget, since the worst case if this doesn't land is just no
+    // recorded duration for this session.
     startWorkoutSession(selectedWorkoutId).catch(e => console.warn('startWorkoutSession error', e));
     let cancelled = false;
     setLoadingDetail(true);
@@ -400,10 +425,9 @@ export default function WorkoutScreen({ userId }: Props) {
 
     // completeWorkoutSession (db.ts) does everything that used to happen
     // here client-side — saving the session, recomputing the streak,
-    // evaluating medals, and computing/writing xp+level (including the
-    // duration bonus, derived server-side from startWorkoutSession's
-    // recorded timestamp, not a client-reported elapsed time) — atomically,
-    // server-side (see scripts/secure_gamification.sql). The local hour is
+    // evaluating medals, and writing whatever XP those medals earned
+    // (nothing else — no flat completion/duration/streak bonus, see
+    // scripts/xp_from_achievements_only.sql) — atomically, server-side. The local hour is
     // the one remaining genuinely-client-only fact (device timezone).
     try {
       const details = exercises
@@ -416,7 +440,8 @@ export default function WorkoutScreen({ userId }: Props) {
         selectedWorkoutId,
         details,
         Math.round(progress * 100),
-        new Date().getHours()
+        new Date().getHours(),
+        todayDateString()
       );
       // Locks this workout for the rest of today — it reopens tomorrow.
       setCompletedTodayIds(prev => new Set(prev).add(selectedWorkoutId));
@@ -428,6 +453,16 @@ export default function WorkoutScreen({ userId }: Props) {
       if (result.newlyEarnedMedalIds.length > 0) {
         const names = result.newlyEarnedMedalIds.map(id => mockMedals.find(m => m.id === id)?.name).filter((n): n is string => !!n);
         notifyMedalsEarned(names).catch(() => {});
+        // Coach gets told too — same in-app mechanism as every other
+        // coach<->trainee event (see CLAUDE.md's Coach Notifications).
+        // Isolated from the rest of this try block's own error handling
+        // (console.warn only) so a notify failure never surfaces as a
+        // "workout completion failed" warning.
+        if (profile?.coach_id && names.length > 0) {
+          sendMessage(userId, profile.coach_id, `🏅 ${profile.name} earned: ${names.join(', ')}!`).catch(e =>
+            console.warn('Workout completion: failed to notify coach of medal', e)
+          );
+        }
       }
     } catch (e) {
       console.warn('Workout completion: failed to save session', e);
