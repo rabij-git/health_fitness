@@ -77,6 +77,10 @@ export interface DBWorkout {
   // always-required weeks value on the template).
   duration_weeks: number | null;
   created_at: string;
+  // Last time a coach edited this workout's exercises after it was already
+  // assigned — null if never (don't show a "modified" badge in that case).
+  // Set by updateWorkoutExercises (db.ts); see scripts/workout_exercises_modified_week.sql.
+  exercises_updated_at: string | null;
 }
 
 // One set's own target, when an exercise uses a per-set breakdown instead of

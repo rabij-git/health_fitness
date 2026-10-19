@@ -58,7 +58,12 @@ export default function ExerciseLibraryManager({ visible, coachId, onClose, onCh
   }, [visible, load]);
 
   const categories = useMemo(() => {
-    const known = ['Push', 'Pull', 'Legs', 'Core', 'Cardio', 'Stretch'];
+    // 'Stretch' was the old broad category before the ~650-exercise catalog
+    // expansion (scripts/exercise_library_full_catalog.sql) replaced it with
+    // the more specific 'Stretching, Mobility and Recovery' — no row ever
+    // used literally 'Stretch', so keeping it here just showed an always-
+    // empty category. Drop it; the real one comes through via `library`.
+    const known = ['Push', 'Pull', 'Legs', 'Core', 'Cardio'];
     const fromLibrary = Array.from(new Set(library.map(e => e.category)));
     return Array.from(new Set([...known, ...fromLibrary]));
   }, [library]);

@@ -409,7 +409,7 @@ export async function deleteLibraryExercise(id: string) {
 // than this doing an extra lookup.
 export async function createWorkout(
   coachId: string,
-  workout: Omit<DBWorkout, 'id' | 'created_at' | 'active' | 'end_date' | 'scheduled_days' | 'duration_weeks'> & { scheduled_days?: number[] | null; duration_weeks?: number | null },
+  workout: Omit<DBWorkout, 'id' | 'created_at' | 'active' | 'end_date' | 'scheduled_days' | 'duration_weeks' | 'exercises_updated_at'> & { scheduled_days?: number[] | null; duration_weeks?: number | null },
   exercises: ExercisePayloadEntry[]
 ): Promise<DBWorkout> {
   const { data: wData, error: wError } = await supabase
@@ -551,8 +551,17 @@ export async function getWorkoutWithExercises(workoutId: string) {
   return { workout, exercises: exercises ?? [] };
 }
 
+// Stamps `exercises_updated_at` alongside the actual row sync — lets the
+// coach see which program week an edit landed in later (getProgramWeekProgress
+// in workoutDuration.ts, against duration_weeks/created_at), e.g. "Modified
+// in Week 2" on an 8-week program. Only this function sets the stamp (not
+// createWorkout) — it should stay null for a workout that's never been
+// edited since assignment, not get set on day one.
 export async function updateWorkoutExercises(workoutId: string, exercises: ExercisePayloadEntry[]) {
-  await syncExerciseRows('exercises', 'id', 'workout_id', workoutId, exercises);
+  await Promise.all([
+    syncExerciseRows('exercises', 'id', 'workout_id', workoutId, exercises),
+    supabase.from('workouts').update({ exercises_updated_at: new Date().toISOString() }).eq('id', workoutId),
+  ]);
 }
 
 // ── Workout sessions ──────────────────────────────────────────────────────────

@@ -470,7 +470,12 @@ export default function CoachTrainees({ coachId }: Props) {
   // ── Shared exercise library ──
   const [library, setLibrary] = useState<DBLibraryExercise[]>([]);
   const categories = useMemo(() => {
-    const known = ['Push', 'Pull', 'Legs', 'Core', 'Cardio', 'Stretch'];
+    // 'Stretch' was the old broad category before the ~650-exercise catalog
+    // expansion (scripts/exercise_library_full_catalog.sql) replaced it with
+    // the more specific 'Stretching, Mobility and Recovery' — no row ever
+    // used literally 'Stretch', so keeping it here just showed an always-
+    // empty category. Drop it; the real one comes through via `library`.
+    const known = ['Push', 'Pull', 'Legs', 'Core', 'Cardio'];
     return Array.from(new Set([...known, ...library.map(e => e.category)]));
   }, [library]);
 
@@ -1292,7 +1297,7 @@ export default function CoachTrainees({ coachId }: Props) {
         updates.push(updateWorkoutDurationWeeks(editingWorkoutId, durationWeeksValue));
       }
       await Promise.all(updates);
-      setSelectedTraineeWorkouts(prev => prev.map(w => w.id === editingWorkoutId ? { ...w, name: finalWorkoutName, scheduled_days: scheduledDaysValue, duration_weeks: durationWeeksValue } : w));
+      setSelectedTraineeWorkouts(prev => prev.map(w => w.id === editingWorkoutId ? { ...w, name: finalWorkoutName, scheduled_days: scheduledDaysValue, duration_weeks: durationWeeksValue, exercises_updated_at: new Date().toISOString() } : w));
       // Collapse the workout row if it was expanded — re-expanding fetches
       // the freshly-saved exercises instead of showing stale ones.
       if (expandedWorkoutId === editingWorkoutId) {
@@ -1306,6 +1311,15 @@ export default function CoachTrainees({ coachId }: Props) {
       setSaving(false);
     }
   };
+
+  // Which program week *right now* is, for whatever workout is open in the
+  // Edit modal — shown so the coach can see, while editing, which week this
+  // change will land in (e.g. "Editing in Week 2 of 8") rather than only
+  // finding out after the fact from the saved exercises_updated_at stamp.
+  const editingWorkoutWeek = useMemo(() => {
+    const w = selectedTraineeWorkouts.find(w => w.id === editingWorkoutId);
+    return w ? getProgramWeekProgress(w) : null;
+  }, [selectedTraineeWorkouts, editingWorkoutId]);
 
   const selectedProgram = programs.find(p => p.id === selectedProgramId);
   const step2Valid = exercises.some(e => e.name.trim()) && scheduledDays.length > 0;
@@ -1883,6 +1897,21 @@ export default function CoachTrainees({ coachId }: Props) {
                                     {!w.active && w.end_date ? ` · Ended ${formatDate(w.end_date)}` : ''}
                                     {w.active && isExpired ? ` · Duration ended ${formatWorkoutEndDate(w)}` : ''}
                                   </Text>
+                                  {/* Only meaningful once the coach has actually edited this
+                                      already-assigned workout — shows which program week that
+                                      edit landed in (e.g. "Modified in Week 2" of an 8-week
+                                      program), not just when it was first assigned. */}
+                                  {w.exercises_updated_at && w.duration_weeks != null && (() => {
+                                    const modifiedWeek = getProgramWeekProgress(w, new Date(w.exercises_updated_at));
+                                    return modifiedWeek ? (
+                                      <View style={styles.modifiedWeekTag}>
+                                        <Ionicons name="create-outline" size={11} color={colors.xpBar} />
+                                        <Text style={styles.modifiedWeekTagText}>
+                                          Modified in Week {modifiedWeek.current} of {modifiedWeek.total}
+                                        </Text>
+                                      </View>
+                                    ) : null;
+                                  })()}
                                 </View>
                                 <Ionicons
                                   name={isExpanded ? 'chevron-up' : 'chevron-down'}
@@ -2947,6 +2976,21 @@ export default function CoachTrainees({ coachId }: Props) {
                     </Text>
                   </View>
                 ) : null}
+                {/* So the coach can see, while making this change, which
+                    week of the program it's landing in — e.g. editing an
+                    8-week program's exercises partway through shows
+                    "Editing in Week 2", not just the original assignment
+                    date. Saved to exercises_updated_at on save, so the same
+                    week number is what shows up later on the workout card
+                    (see "Modified in Week" tag below, in the Program tab). */}
+                {editingWorkoutWeek && (
+                  <View style={[styles.blockDurationBadge, { marginTop: 4 }]}>
+                    <Ionicons name="create-outline" size={12} color={colors.xpBar} />
+                    <Text style={styles.blockDurationBadgeText}>
+                      Editing in Week {editingWorkoutWeek.current} of {editingWorkoutWeek.total}
+                    </Text>
+                  </View>
+                )}
               </View>
               <TouchableOpacity style={styles.closeBtn} onPress={closeEditModal}>
                 <Ionicons name="close" size={22} color={colors.textSecondary} />
@@ -3237,7 +3281,16 @@ export default function CoachTrainees({ coachId }: Props) {
       >
         <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={{ flex: 1 }}>
           <View style={styles.overlay}>
-            <View style={styles.sheet}>
+            {/* Android's KeyboardAvoidingView 'height' behavior shrinks the
+                whole flex-end container to sit flush against the keyboard's
+                top edge — reported as this picker looking "squashed" right
+                against the keyboard. `exercisePickerSheet`'s bottom margin
+                lifts just this one modal off the keyboard — `styles.sheet`
+                is shared with Find Trainee/Invite a Trainee, which don't
+                have this problem (no search input auto-focusing a keyboard
+                the instant they open), so it's applied as an addition here
+                rather than changed on the shared style itself. */}
+            <View style={[styles.sheet, styles.exercisePickerSheet]}>
               <View style={styles.modalHeader}>
                 <Text style={styles.modalTitle}>Select Exercise</Text>
                 <TouchableOpacity style={styles.closeBtn} onPress={closeExercisePicker}>
@@ -3426,6 +3479,9 @@ const styles = StyleSheet.create({
     borderTopLeftRadius: 24, borderTopRightRadius: 24,
     padding: 24, maxHeight: '80%',
   },
+  // See the Exercise Picker Modal's comment above — scoped addition, not a
+  // change to the shared `sheet` style other modals also use.
+  exercisePickerSheet: { marginBottom: 16 },
   sheetHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 },
   sheetTitle: { fontSize: 18, fontWeight: '800', color: colors.text },
   searchInput: {
@@ -3725,6 +3781,11 @@ const styles = StyleSheet.create({
   workoutBlockNameRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
   workoutBlockName: { fontSize: 16, fontWeight: '700', color: colors.text },
   workoutBlockMeta: { fontSize: 12, color: colors.textSecondary, marginTop: 3 },
+  modifiedWeekTag: {
+    flexDirection: 'row', alignItems: 'center', gap: 4, alignSelf: 'flex-start',
+    backgroundColor: colors.xpBar + '18', paddingHorizontal: 8, paddingVertical: 3, borderRadius: 6, marginTop: 6,
+  },
+  modifiedWeekTagText: { fontSize: 11, fontWeight: '700', color: colors.xpBar },
   workoutBlockBody: { marginTop: 12, borderTopWidth: 1, borderTopColor: colors.border, paddingTop: 10 },
   workoutBlockActions: {
     flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',

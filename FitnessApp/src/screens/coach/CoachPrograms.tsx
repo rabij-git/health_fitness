@@ -171,7 +171,12 @@ export default function CoachPrograms({ coachId }: Props) {
   }, [loadPrograms, loadLibrary]);
 
   const categories = useMemo(() => {
-    const known = ['Push', 'Pull', 'Legs', 'Core', 'Cardio', 'Stretch'];
+    // 'Stretch' was the old broad category before the ~650-exercise catalog
+    // expansion (scripts/exercise_library_full_catalog.sql) replaced it with
+    // the more specific 'Stretching, Mobility and Recovery' — no row ever
+    // used literally 'Stretch', so keeping it here just showed an always-
+    // empty category. Drop it; the real one comes through via `library`.
+    const known = ['Push', 'Pull', 'Legs', 'Core', 'Cardio'];
     return Array.from(new Set([...known, ...library.map(e => e.category)]));
   }, [library]);
 
@@ -1138,6 +1143,12 @@ const styles = StyleSheet.create({
   namePickerSheet: {
     backgroundColor: colors.card, borderTopLeftRadius: 28,
     borderTopRightRadius: 28, padding: 24, maxHeight: '85%',
+    // Android's KeyboardAvoidingView 'height' behavior shrinks this sheet's
+    // whole flex-end container to sit flush against the keyboard's top
+    // edge — reported as the picker looking "squashed" right against the
+    // keyboard with no breathing room. A bottom margin lifts the sheet up
+    // off the keyboard instead of touching it directly.
+    marginBottom: 16,
   },
   namePickerRow: {
     flexDirection: 'row', alignItems: 'center', gap: 10,
