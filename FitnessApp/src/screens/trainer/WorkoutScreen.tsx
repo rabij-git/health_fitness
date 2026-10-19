@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
+import React, { useEffect } from 'react';
 import {
   View,
   StyleSheet,
@@ -6,34 +6,18 @@ import {
   TouchableOpacity,
   Modal,
   ActivityIndicator,
-  AppState,
-  Vibration,
 } from 'react-native';
 import { Text } from '../../components/AppText';
-import { useFocusEffect, useRoute, useNavigation } from '@react-navigation/native';
+import { useRoute, useNavigation } from '@react-navigation/native';
 import { Ionicons } from '@expo/vector-icons';
-import { useAudioPlayer } from 'expo-audio';
 import { colors } from '../../theme/colors';
-import { Workout, mockMedals } from '../../data/mockData';
-import {
-  getWorkoutsForTrainee,
-  getWorkoutWithExercises,
-  getWorkoutIdsCompletedToday,
-  getProfile,
-  startWorkoutSession,
-  completeWorkoutSession,
-  sendMessage,
-  logExerciseWeight,
-  todayDateString,
-} from '../../lib/db';
-import { DBWorkout } from '../../lib/supabase';
-import { scheduleRestEndNotification, cancelRestEndNotification, notifyMedalsEarned } from '../../lib/restNotifications';
+import { mockMedals } from '../../data/mockData';
 import { isWorkoutDurationExpired, formatWorkoutEndDate, getProgramWeekProgress } from '../../lib/workoutDuration';
-import { useLiveRefresh } from '../../lib/useLiveRefresh';
+import { useActiveWorkout } from '../../contexts/ActiveWorkoutContext';
 
 const DAY_ABBR = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 
-function isScheduledForToday(workout: DBWorkout): boolean {
+function isScheduledForToday(workout: { scheduled_days?: number[] | null }): boolean {
   if (!workout.scheduled_days || workout.scheduled_days.length === 0) return true;
   return workout.scheduled_days.includes(new Date().getDay());
 }
@@ -63,337 +47,26 @@ const EFFORT_LABELS: Record<number, { short: string; desc: string; color: string
   4: { short: '4',  desc: "Couldn't finish",     color: '#E94560' },
 };
 
-interface SetLog {
-  reps: string;
-  weight: string;
-  effort: number | null;
-}
-
-interface ExerciseLog {
-  id: string;
-  name: string;
-  coachSets: number;
-  coachReps: string;
-  coachWeight?: string;
-  coachTime?: string;
-  restSeconds?: number;
-  completed: boolean;
-  sets: SetLog[];
-}
-
-interface RestTimerState {
-  exerciseId: string;
-  exerciseName: string;
-  setIndex: number;
-  // Countdown to a fixed end timestamp rather than a decrementing counter —
-  // RN fully suspends JS timers while the app is backgrounded, so a
-  // decrement-per-tick counter just stops advancing and "freezes" until the
-  // app resumes. Deriving the remaining time from Date.now() instead means
-  // the moment the app comes back to the foreground, the display jumps
-  // straight to the correct real-elapsed value instead of resuming from
-  // wherever it was paused.
-  endAt: number;
-  totalSeconds: number;
-}
-
 interface Props {
   userId: string;
 }
 
-function buildInitialExercises(workout: Workout): ExerciseLog[] {
-  return workout.exercises.map((ex) => ({
-    id: ex.id,
-    name: ex.name,
-    coachSets: ex.sets,
-    coachReps: ex.reps,
-    coachWeight: ex.weight,
-    coachTime: ex.time,
-    restSeconds: ex.restSeconds,
-    completed: false,
-    // A real per-set breakdown (e.g. a lighter warm-up set before heavier
-    // working sets) means each row targets its own reps/weight, not the
-    // same exercise-level value repeated — falls back to the old
-    // repeat-one-value behavior for exercises assigned before this existed.
-    sets: ex.setDetails && ex.setDetails.length > 0
-      ? ex.setDetails.map(sd => ({ reps: sd.reps, weight: sd.weight ?? '', effort: null }))
-      : Array.from({ length: ex.sets }, () => ({
-          reps: ex.reps,
-          weight: ex.weight ?? '',
-          effort: null,
-        })),
-  }));
-}
-
-function formatRestTime(seconds: number): string {
-  const m = Math.floor(seconds / 60);
-  const s = seconds % 60;
-  return `${m}:${String(s).padStart(2, '0')}`;
-}
-
 export default function WorkoutScreen({ userId }: Props) {
-  // ── Workout list (a trainee can have several workouts; only active ones can be done) ──
-  const [workouts, setWorkouts] = useState<DBWorkout[]>([]);
-  // A workout locks once completed, but only for the rest of today — it's
-  // open again tomorrow. Scoped per calendar day, not permanent.
-  const [completedTodayIds, setCompletedTodayIds] = useState<Set<string>>(new Set());
-  const [loadingWorkouts, setLoadingWorkouts] = useState(true);
-  const [isPending, setIsPending] = useState(false);
-  const [selectedWorkoutId, setSelectedWorkoutId] = useState<string | null>(null);
+  const aw = useActiveWorkout();
+  const {
+    workouts, loadingWorkouts, isPending, completedTodayIds,
+    toDoWorkouts, completedTodayWorkouts, notTodayWorkouts, durationEndedWorkouts, pastWorkouts, selectedWorkoutMeta,
+    selectedWorkoutId, setSelectedWorkoutId, dbWorkout, loadingDetail, exercises, submitted,
+    showMedal, setShowMedal, modalXp, modalIsComplete, newlyEarnedMedalIds,
+    completedCount, loggedSets, progress, isFullyComplete, activeExerciseIndex, sessionActive,
+    restTimer, setEffort, reorderExercise, handleSubmit,
+  } = aw;
 
   // Deep-link from the Home screen's "Workout Today" list — same
   // openXId route-param pattern CoachDashboard uses to jump into a specific
-  // trainee on CoachTrainees. Guarded further down (once `sessionActive` is
-  // known) so it can't yank the trainee into a different workout mid-session.
+  // trainee on CoachTrainees.
   const route = useRoute<any>();
   const navigation = useNavigation<any>();
-
-  useFocusEffect(useCallback(() => {
-    let cancelled = false;
-    async function load() {
-      const profile = await getProfile(userId);
-      if (cancelled) return;
-      if (!profile) { setLoadingWorkouts(false); return; }
-      if (profile.status === 'pending') { setIsPending(true); setLoadingWorkouts(false); return; }
-      setIsPending(false);
-      const [list, completedIds] = await Promise.all([
-        getWorkoutsForTrainee(userId),
-        getWorkoutIdsCompletedToday(userId),
-      ]);
-      if (!cancelled) {
-        setWorkouts(list);
-        setCompletedTodayIds(completedIds);
-        setLoadingWorkouts(false);
-      }
-    }
-    load();
-    return () => { cancelled = true; };
-  }, [userId]));
-
-  // A coach assigning a new workout, or the daily completion lock clearing
-  // at midnight, needs to show up without the trainee leaving this tab and
-  // coming back — see useLiveRefresh.ts. Deliberately a separate, simpler
-  // "quiet" reload (no cancel-guard, no loading-spinner/isPending toggling)
-  // layered on top of the focus-effect above rather than replacing it —
-  // that one's cancel-guard specifically protects the picker's very first
-  // load against a stale overwrite if the trainee navigates away again
-  // quickly, which this poll/resume-only addition doesn't need to touch.
-  const reloadWorkoutsQuiet = useCallback(async () => {
-    const profile = await getProfile(userId);
-    if (!profile || profile.status === 'pending') return;
-    const [list, completedIds] = await Promise.all([
-      getWorkoutsForTrainee(userId),
-      getWorkoutIdsCompletedToday(userId),
-    ]);
-    setWorkouts(list);
-    setCompletedTodayIds(completedIds);
-  }, [userId]);
-
-  useLiveRefresh(reloadWorkoutsQuiet);
-
-  const toDoWorkouts = useMemo(
-    () => workouts.filter(w => w.active && !completedTodayIds.has(w.id) && isScheduledForToday(w) && !isWorkoutDurationExpired(w)),
-    [workouts, completedTodayIds]
-  );
-  const completedTodayWorkouts = useMemo(
-    () => workouts.filter(w => w.active && completedTodayIds.has(w.id)),
-    [workouts, completedTodayIds]
-  );
-  const notTodayWorkouts = useMemo(
-    () => workouts.filter(w => w.active && !completedTodayIds.has(w.id) && !isScheduledForToday(w) && !isWorkoutDurationExpired(w)),
-    [workouts, completedTodayIds]
-  );
-  // Duration ran out — distinct from a coach manually deactivating it
-  // (`!w.active`, below): the coach never toggled anything, the assigned
-  // number of weeks just elapsed.
-  const durationEndedWorkouts = useMemo(
-    () => workouts.filter(w => w.active && !completedTodayIds.has(w.id) && isWorkoutDurationExpired(w)),
-    [workouts, completedTodayIds]
-  );
-  const pastWorkouts = useMemo(() => workouts.filter(w => !w.active), [workouts]);
-  const selectedWorkoutMeta = useMemo(
-    () => workouts.find(w => w.id === selectedWorkoutId) ?? null,
-    [workouts, selectedWorkoutId]
-  );
-
-  // ── Selected workout detail (exercise log / read-only view) ──
-  const [dbWorkout, setDbWorkout] = useState<Workout | null>(null);
-  const [loadingDetail, setLoadingDetail] = useState(false);
-  const [exercises, setExercises] = useState<ExerciseLog[]>([]);
-  const [submitted, setSubmitted] = useState(false);
-  const [showMedal, setShowMedal] = useState(false);
-  const [modalXp, setModalXp] = useState(0);
-  const [modalIsComplete, setModalIsComplete] = useState(false);
-  const [newlyEarnedMedalIds, setNewlyEarnedMedalIds] = useState<string[]>([]);
-
-  // ── Rest timer (between sets) ──
-  const [restTimer, setRestTimer] = useState<RestTimerState | null>(null);
-  const [restSecondsLeft, setRestSecondsLeft] = useState(0);
-  const tickPlayer = useAudioPlayer(require('../../../assets/sounds/tick.wav'));
-  const restNotificationId = useRef<string | null>(null);
-
-  // Keyed on endAt (fixed once a rest period starts) rather than a
-  // decrementing value, so this effect only (re)subscribes once per rest
-  // period instead of tearing down and rebuilding every second.
-  useEffect(() => {
-    if (!restTimer) {
-      setRestSecondsLeft(0);
-      return;
-    }
-    // Local notification so the trainee is alerted even if they've left the
-    // app during rest (email, social media, etc.) — see restNotifications.ts
-    // for why this needs a dev-client/EAS build for the custom tick sound
-    // (it still fires in Expo Go, just with the default system sound).
-    scheduleRestEndNotification(restTimer.exerciseName, restTimer.totalSeconds).then(id => {
-      restNotificationId.current = id;
-    });
-    const update = () => {
-      const left = Math.max(0, Math.ceil((restTimer.endAt - Date.now()) / 1000));
-      setRestSecondsLeft(left);
-      if (left <= 0) {
-        setRestTimer(null);
-        return;
-      }
-      // Tick once per second for the final 3 seconds only ("3... 2... 1...")
-      // so the trainee knows to start the next set — previously ticked for
-      // 5 seconds, which didn't match the intended countdown. Only
-      // attempted while genuinely foregrounded — iOS refuses to activate
-      // the audio session while backgrounded or mid-transition, and that
-      // failure throws synchronously through Expo's native bridge
-      // (uncaught, crashes the app) rather than rejecting a promise — so
-      // this is also wrapped in a try/catch as a second line of defense
-      // against that same race (e.g. backgrounding starts in the instant
-      // between this check and the native call).
-      if (left <= 3 && left > 0) {
-        // Vibrate regardless of foreground/silent-switch state — this is
-        // the whole point of it: still noticeable when sound can't play
-        // (silent switch) or wouldn't be safe to trigger (backgrounded).
-        Vibration.vibrate(200);
-        if (AppState.currentState === 'active') {
-          try {
-            tickPlayer.seekTo(0);
-            tickPlayer.play();
-          } catch (e) {
-            console.warn('Rest timer tick sound failed', e);
-          }
-        }
-      }
-    };
-    update();
-    const interval = setInterval(update, 1000);
-    // The interval above is suspended while the app is backgrounded (RN
-    // fully halts JS timers), so force an immediate recompute the moment the
-    // app comes back — otherwise the display would sit frozen for up to a
-    // second more before the next interval tick corrects it.
-    const subscription = AppState.addEventListener('change', (state) => {
-      if (state === 'active') update();
-    });
-    return () => {
-      clearInterval(interval);
-      subscription.remove();
-      cancelRestEndNotification(restNotificationId.current);
-      restNotificationId.current = null;
-    };
-  }, [restTimer?.endAt]);
-
-  useEffect(() => {
-    if (!selectedWorkoutId) {
-      setDbWorkout(null);
-      setExercises([]);
-      setSubmitted(false);
-      setShowMedal(false);
-      setNewlyEarnedMedalIds([]);
-      return;
-    }
-    // Records a real server-side start time so Finish can compute this
-    // session's real duration (see completeWorkoutSession/
-    // scripts/xp_from_achievements_only.sql) — fed into a few achievements
-    // (Long Haul, 100/250 Hours), not an XP bonus of its own anymore.
-    // Fire-and-forget, since the worst case if this doesn't land is just no
-    // recorded duration for this session.
-    startWorkoutSession(selectedWorkoutId).catch(e => console.warn('startWorkoutSession error', e));
-    let cancelled = false;
-    setLoadingDetail(true);
-    getWorkoutWithExercises(selectedWorkoutId).then((result) => {
-      if (cancelled) return;
-      if (result) {
-        const w: Workout = {
-          id: result.workout.id,
-          name: result.workout.name,
-          description: result.workout.description ?? '',
-          duration: result.workout.duration ?? '60 min',
-          difficulty: (result.workout.difficulty as any) ?? 'Intermediate',
-          exercises: result.exercises.map((ex: any) => ({
-            id: ex.id,
-            name: ex.name,
-            sets: ex.sets,
-            reps: ex.reps,
-            weight: ex.weight ?? undefined,
-            time: ex.time ?? undefined,
-            restSeconds: ex.rest_seconds ?? undefined,
-            completed: false,
-            setDetails: ex.set_details ?? null,
-          })),
-        };
-        setDbWorkout(w);
-        setExercises(buildInitialExercises(w));
-      } else {
-        setDbWorkout(null);
-      }
-      setSubmitted(false);
-      setLoadingDetail(false);
-    });
-    return () => { cancelled = true; };
-  }, [selectedWorkoutId]);
-
-  const updateSet = useCallback((exId: string, setIndex: number, field: 'reps' | 'weight' | 'effort', value: string | number | null) => {
-    setExercises(prev => prev.map(ex => {
-      if (ex.id !== exId) return ex;
-      const newSets = ex.sets.map((s, i) => i === setIndex ? { ...s, [field]: value } : s);
-      return { ...ex, sets: newSets };
-    }));
-  }, []);
-
-  // Auto-tick an exercise's checkbox the moment every one of its sets has a
-  // logged effort — the trainee no longer has to tap it manually to advance.
-  useEffect(() => {
-    setExercises(prev => {
-      let changed = false;
-      const next = prev.map(ex => {
-        if (!ex.completed && ex.sets.length > 0 && ex.sets.every(s => s.effort !== null)) {
-          changed = true;
-          return { ...ex, completed: true };
-        }
-        return ex;
-      });
-      return changed ? next : prev;
-    });
-  }, [exercises]);
-
-  const { completedCount, totalSets, loggedSets, progress, isFullyComplete } = useMemo(() => {
-    const completed = exercises.filter(e => e.completed).length;
-    const total = exercises.reduce((sum, e) => sum + e.sets.length, 0);
-    const logged = exercises.reduce((sum, e) => sum + e.sets.filter(s => s.effort !== null).length, 0);
-    return {
-      completedCount: completed,
-      totalSets: total,
-      loggedSets: logged,
-      progress: total > 0 ? logged / total : 0,
-      isFullyComplete: completed === exercises.length && exercises.length > 0,
-    };
-  }, [exercises]);
-
-  // Exercises must be done in order — only the first not-yet-completed exercise
-  // is interactive; everything before it (already completed) and after it (not
-  // reached yet) is locked. Equals exercises.length once every exercise is done.
-  const activeExerciseIndex = useMemo(() => {
-    const idx = exercises.findIndex(e => !e.completed);
-    return idx === -1 ? exercises.length : idx;
-  }, [exercises]);
-
-  // A session is "active" once at least one set has a logged effort and the
-  // workout hasn't been finished yet — while true, the trainee is locked into
-  // this workout and can't switch to or start a different one.
-  const sessionActive = loggedSets > 0 && !submitted;
 
   useEffect(() => {
     const openId = route.params?.openWorkoutId;
@@ -406,94 +79,7 @@ export default function WorkoutScreen({ userId }: Props) {
     }
     setSelectedWorkoutId(openId);
     navigation.setParams({ openWorkoutId: undefined });
-  }, [route.params?.openWorkoutId, navigation, selectedWorkoutId, sessionActive]);
-
-  const handleSubmit = async () => {
-    if (submitted || loggedSets === 0 || !selectedWorkoutId) return;
-    setModalIsComplete(isFullyComplete);
-    setSubmitted(true);
-    setShowMedal(true);
-
-    // Each step is isolated so a failure in one (e.g. the coach notification)
-    // can never silently block the ones after it.
-    let profile: Awaited<ReturnType<typeof getProfile>> = null;
-    try {
-      profile = await getProfile(userId);
-    } catch (e) {
-      console.warn('Workout completion: failed to load profile', e);
-    }
-
-    // completeWorkoutSession (db.ts) does everything that used to happen
-    // here client-side — saving the session, recomputing the streak,
-    // evaluating medals, and writing whatever XP those medals earned
-    // (nothing else — no flat completion/duration/streak bonus, see
-    // scripts/xp_from_achievements_only.sql) — atomically, server-side. The local hour is
-    // the one remaining genuinely-client-only fact (device timezone).
-    try {
-      const details = exercises
-        .filter(ex => ex.sets.some(s => s.effort !== null))
-        .map(ex => ({
-          name: ex.name,
-          sets: ex.sets.map(s => ({ reps: s.reps, weight: s.weight, effort: s.effort })),
-        }));
-      const result = await completeWorkoutSession(
-        selectedWorkoutId,
-        details,
-        Math.round(progress * 100),
-        new Date().getHours(),
-        todayDateString()
-      );
-      // Locks this workout for the rest of today — it reopens tomorrow.
-      setCompletedTodayIds(prev => new Set(prev).add(selectedWorkoutId));
-      setModalXp(result.xpAwarded);
-      setNewlyEarnedMedalIds(result.newlyEarnedMedalIds);
-      // A real notification, not just the completion modal below — that
-      // modal only ever shows the first medal if several were earned at
-      // once, and nothing at all if the trainee doesn't linger on it.
-      if (result.newlyEarnedMedalIds.length > 0) {
-        const names = result.newlyEarnedMedalIds.map(id => mockMedals.find(m => m.id === id)?.name).filter((n): n is string => !!n);
-        notifyMedalsEarned(names).catch(() => {});
-        // Coach gets told too — same in-app mechanism as every other
-        // coach<->trainee event (see CLAUDE.md's Coach Notifications).
-        // Isolated from the rest of this try block's own error handling
-        // (console.warn only) so a notify failure never surfaces as a
-        // "workout completion failed" warning.
-        if (profile?.coach_id && names.length > 0) {
-          sendMessage(userId, profile.coach_id, `🏅 ${profile.name} earned: ${names.join(', ')}!`).catch(e =>
-            console.warn('Workout completion: failed to notify coach of medal', e)
-          );
-        }
-      }
-    } catch (e) {
-      console.warn('Workout completion: failed to save session', e);
-    }
-
-    // Record what was actually done today against each attempted exercise —
-    // kept for potential future reporting; the Workout tab's History segment
-    // reads from workout_sessions directly, not this table.
-    try {
-      const attempted = exercises.filter(ex => ex.sets.some(s => s.effort !== null));
-      for (const ex of attempted) {
-        await logExerciseWeight(userId, ex.name, ex.coachWeight ?? 'BW', ex.coachReps, ex.coachSets);
-      }
-    } catch (e) {
-      console.warn('Workout completion: failed to write exercise log entries', e);
-    }
-
-    try {
-      if (profile?.coach_id) {
-        // Coaches don't need XP/points detail — just that the client did the
-        // work. See CLAUDE.md's Coach Notifications section.
-        await sendMessage(
-          userId,
-          profile.coach_id,
-          `🏋️ ${profile.name} completed "${dbWorkout?.name}" — ${Math.round(progress * 100)}% done`
-        );
-      }
-    } catch (e) {
-      console.warn('Workout completion: failed to notify coach', e);
-    }
-  };
+  }, [route.params?.openWorkoutId, navigation, selectedWorkoutId, sessionActive, setSelectedWorkoutId]);
 
   if (loadingWorkouts) {
     return (
@@ -775,15 +361,6 @@ export default function WorkoutScreen({ userId }: Props) {
 
   return (
     <View style={styles.container}>
-      {restTimer && (
-        <View style={styles.restTimerBanner}>
-          <Ionicons name="time" size={20} color={colors.text} />
-          <View style={{ flex: 1 }}>
-            <Text style={styles.restTimerLabel}>Resting — {restTimer.exerciseName}</Text>
-            <Text style={styles.restTimerTime}>{formatRestTime(restSecondsLeft)}</Text>
-          </View>
-        </View>
-      )}
       <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.scrollContent}>
         {sessionActive ? (
           <View style={[styles.backRow, styles.backRowLocked]}>
@@ -828,12 +405,35 @@ export default function WorkoutScreen({ userId }: Props) {
           </View>
         </View>
 
+        {/* Effort scale key — moved up here (was at the bottom, after every
+            exercise card) so the trainee can see what each effort number
+            means before they start tapping, not just after scrolling past
+            the whole workout. */}
+        <View style={styles.effortKey}>
+          <Text style={styles.effortKeyTitle}>EFFORT SCALE</Text>
+          {Object.entries(EFFORT_LABELS).map(([k, v]) => (
+            <View key={k} style={styles.effortKeyRow}>
+              <View style={[styles.effortKeyDot, { backgroundColor: v.color }]}>
+                <Text style={styles.effortKeyNum}>{k}</Text>
+              </View>
+              <Text style={styles.effortKeyDesc}>{v.desc}</Text>
+            </View>
+          ))}
+        </View>
+
         {/* Exercise cards */}
         <Text style={styles.sectionTitle}>EXERCISES</Text>
         {exercises.map((exercise, exIndex) => {
           const isPastLocked = exIndex < activeExerciseIndex;
           const isFutureLocked = exIndex > activeExerciseIndex;
           const isLocked = isPastLocked || isFutureLocked;
+          // Reordering is only offered among exercises not yet completed —
+          // the in-order completion lock already fixes everything before
+          // activeExerciseIndex in place, so letting those move too would
+          // just silently undo work already logged against them.
+          const canReorder = exIndex >= activeExerciseIndex && !submitted;
+          const canMoveUp = canReorder && exIndex > activeExerciseIndex;
+          const canMoveDown = canReorder && exIndex < exercises.length - 1;
           return (
           <View
             key={exercise.id}
@@ -847,10 +447,38 @@ export default function WorkoutScreen({ userId }: Props) {
               <Text style={[styles.exerciseName, exercise.completed && styles.exerciseNameDone]}>
                 {exercise.name}
               </Text>
+              {exercise.laterality && (
+                <View style={styles.lateralityBadge}>
+                  <Ionicons name="swap-horizontal" size={12} color={colors.primary} />
+                  <Text style={styles.lateralityBadgeText}>
+                    {exercise.laterality === 'single_arm' ? 'Single Arm' : 'Single Leg'}
+                  </Text>
+                </View>
+              )}
               {exercise.coachTime && exercise.coachTime !== '0' && (
                 <View style={styles.exerciseTimeBadge}>
                   <Ionicons name="time-outline" size={12} color={colors.xpBar} />
                   <Text style={styles.exerciseTimeBadgeText}>{exercise.coachTime}</Text>
+                </View>
+              )}
+              {canReorder && (
+                <View style={styles.reorderCol}>
+                  <TouchableOpacity
+                    style={[styles.reorderBtn, !canMoveUp && styles.reorderBtnDisabled]}
+                    onPress={() => reorderExercise(exercise.id, 'up')}
+                    disabled={!canMoveUp}
+                    hitSlop={{ top: 4, bottom: 2, left: 8, right: 8 }}
+                  >
+                    <Ionicons name="chevron-up" size={14} color={canMoveUp ? colors.textSecondary : colors.border} />
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={[styles.reorderBtn, !canMoveDown && styles.reorderBtnDisabled]}
+                    onPress={() => reorderExercise(exercise.id, 'down')}
+                    disabled={!canMoveDown}
+                    hitSlop={{ top: 2, bottom: 4, left: 8, right: 8 }}
+                  >
+                    <Ionicons name="chevron-down" size={14} color={canMoveDown ? colors.textSecondary : colors.border} />
+                  </TouchableOpacity>
                 </View>
               )}
               {isFutureLocked ? (
@@ -925,23 +553,7 @@ export default function WorkoutScreen({ userId }: Props) {
                           (isSetLocked || !!restTimer) && styles.effortBtnLocked,
                         ]}
                         disabled={isSetLocked || !!restTimer}
-                        onPress={() => {
-                          const newValue = selected ? null : level;
-                          updateSet(exercise.id, setIndex, 'effort', newValue);
-                          // No rest timer after the very last set of the very
-                          // last exercise — the workout is over, there's
-                          // nothing left to rest for.
-                          const isVeryLastSet = exIndex === exercises.length - 1 && setIndex === exercise.sets.length - 1;
-                          if (newValue !== null && !isVeryLastSet && exercise.restSeconds && exercise.restSeconds > 0) {
-                            setRestTimer({
-                              exerciseId: exercise.id,
-                              exerciseName: exercise.name,
-                              setIndex,
-                              endAt: Date.now() + exercise.restSeconds * 1000,
-                              totalSeconds: exercise.restSeconds,
-                            });
-                          }
-                        }}
+                        onPress={() => setEffort(exercise.id, setIndex, level)}
                         activeOpacity={0.7}
                       >
                         <Text style={[styles.effortBtnText, selected && styles.effortBtnTextSelected]}>
@@ -974,19 +586,6 @@ export default function WorkoutScreen({ userId }: Props) {
           </View>
           );
         })}
-
-        {/* Effort scale key */}
-        <View style={styles.effortKey}>
-          <Text style={styles.effortKeyTitle}>EFFORT SCALE</Text>
-          {Object.entries(EFFORT_LABELS).map(([k, v]) => (
-            <View key={k} style={styles.effortKeyRow}>
-              <View style={[styles.effortKeyDot, { backgroundColor: v.color }]}>
-                <Text style={styles.effortKeyNum}>{k}</Text>
-              </View>
-              <Text style={styles.effortKeyDesc}>{v.desc}</Text>
-            </View>
-          ))}
-        </View>
 
         {/* Status banner — shown once finished */}
         {submitted && (
@@ -1068,16 +667,6 @@ const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: colors.background },
   scrollContent: { padding: 20, paddingBottom: 48 },
 
-  // Rest timer banner — floats above the scroll content between sets
-  restTimerBanner: {
-    position: 'absolute', top: 8, left: 16, right: 16, zIndex: 10,
-    flexDirection: 'row', alignItems: 'center', gap: 10,
-    backgroundColor: colors.primary, borderRadius: 14, padding: 14,
-    shadowColor: '#000', shadowOpacity: 0.3, shadowRadius: 8, shadowOffset: { width: 0, height: 4 }, elevation: 6,
-  },
-  restTimerLabel: { fontSize: 12, fontWeight: '700', color: colors.text, opacity: 0.85 },
-  restTimerTime: { fontSize: 20, fontWeight: '800', color: colors.text },
-
   // Pending state
   pendingContainer: { flex: 1, alignItems: 'center', justifyContent: 'center', padding: 32 },
   pendingTitle: { fontSize: 24, fontWeight: '800', color: colors.text, marginTop: 20, marginBottom: 10 },
@@ -1135,7 +724,7 @@ const styles = StyleSheet.create({
   weekProgressBadgeText: { fontSize: 18, fontWeight: '800', color: colors.xpBar },
   weekProgressBadgeLabel: { fontSize: 9, fontWeight: '700', color: colors.textSecondary, letterSpacing: 1, marginTop: 1 },
 
-  progressSection: { marginBottom: 28 },
+  progressSection: { marginBottom: 20 },
   progressLabelRow: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 8 },
   progressLabel: { fontSize: 14, color: colors.textSecondary, fontWeight: '500' },
   progressPercent: { fontSize: 14, color: colors.text, fontWeight: '700' },
@@ -1162,6 +751,17 @@ const styles = StyleSheet.create({
     backgroundColor: colors.xpBar + '22', paddingHorizontal: 8, paddingVertical: 4, borderRadius: 8,
   },
   exerciseTimeBadgeText: { fontSize: 12, fontWeight: '700', color: colors.xpBar },
+  lateralityBadge: {
+    flexDirection: 'row', alignItems: 'center', gap: 3,
+    backgroundColor: colors.primary + '22', paddingHorizontal: 8, paddingVertical: 4, borderRadius: 8,
+  },
+  lateralityBadgeText: { fontSize: 11, fontWeight: '700', color: colors.primary },
+  reorderCol: { gap: 2 },
+  reorderBtn: {
+    width: 22, height: 16, borderRadius: 4,
+    backgroundColor: colors.secondary, alignItems: 'center', justifyContent: 'center',
+  },
+  reorderBtnDisabled: { opacity: 0.4 },
   exerciseNumber: {
     width: 32, height: 32, borderRadius: 10,
     backgroundColor: colors.accent, alignItems: 'center', justifyContent: 'center',

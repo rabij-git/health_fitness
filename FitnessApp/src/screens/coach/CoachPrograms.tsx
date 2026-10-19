@@ -32,11 +32,18 @@ interface ExerciseEntry {
   weight: string;
   time: string; // minutes, default '0'
   restSeconds: string; // rest between sets, in seconds; '0' = no rest timer
+  laterality: 'single_arm' | 'single_leg' | null; // null = both sides together
 }
 
 function buildEmptyExercise(): ExerciseEntry {
-  return { id: String(Date.now() + Math.random()), name: '', sets: '3', reps: '10', weight: '', time: '0', restSeconds: '0' };
+  return { id: String(Date.now() + Math.random()), name: '', sets: '3', reps: '10', weight: '', time: '0', restSeconds: '0', laterality: null };
 }
+
+const LATERALITY_OPTIONS: { value: 'single_arm' | 'single_leg' | null; label: string }[] = [
+  { value: null, label: 'Both' },
+  { value: 'single_arm', label: 'Single Arm' },
+  { value: 'single_leg', label: 'Single Leg' },
+];
 
 const CATEGORY_ICONS: Record<string, string> = {
   Push: 'arrow-up-circle',
@@ -61,6 +68,7 @@ function exercisesPayload(exercises: ExerciseEntry[]) {
     weight: withKg(e.weight),
     time: e.time.trim() || '0',
     rest_seconds: parseInt(e.restSeconds) || 0,
+    laterality: e.laterality,
   }));
 }
 
@@ -172,8 +180,25 @@ export default function CoachPrograms({ coachId }: Props) {
   const [namePickerQuery, setNamePickerQuery] = useState('');
   const [savingNewName, setSavingNewName] = useState(false);
   const namePickerOnSelectRef = useRef<((name: string) => void) | null>(null);
+  // Optional — only the "add a suggested exercise" call sites pass one, so
+  // their picker can show/disable already-added items; the rename-an-
+  // existing-row call sites don't, since "already added" isn't a
+  // meaningful concept there.
+  const namePickerIsAddedRef = useRef<((name: string) => boolean) | null>(null);
   const namePickerInputRef = useRef<TextInput>(null);
   const [namePickerCategory, setNamePickerCategory] = useState('Push');
+  // Which outer flow opened the picker — lets the in-modal category chips
+  // (below) sync back to the right "last selected category" state
+  // (activeCategory for Add, editActiveCategory for Edit) so the picker
+  // field's own label stays in sync after the coach switches category from
+  // inside the modal.
+  const namePickerWhichRef = useRef<'add' | 'edit'>('add');
+  // Replaces the old horizontal chip-scroll for category selection — with
+  // up to 20 categories, scrolling through chips was worse than just
+  // picking from a list. Collapsed by default; tapping the category field
+  // expands this inline list (no nested Modal — see Robustness Pitfalls #7
+  // in CLAUDE.md about two simultaneous Modals on iOS).
+  const [showNamePickerCategoryList, setShowNamePickerCategoryList] = useState(false);
 
   const uniqueLibraryNames = useMemo(
     () => Array.from(new Set(
@@ -192,9 +217,16 @@ export default function CoachPrograms({ coachId }: Props) {
     n => n.toLowerCase() === namePickerQuery.trim().toLowerCase()
   );
 
-  const openNamePicker = useCallback((onSelect: (name: string) => void, category: string, which: 'add' | 'edit') => {
+  const openNamePicker = useCallback((
+    onSelect: (name: string) => void,
+    category: string,
+    which: 'add' | 'edit',
+    isAdded?: (name: string) => boolean
+  ) => {
     closeOuterForInner(which);
     namePickerOnSelectRef.current = onSelect;
+    namePickerIsAddedRef.current = isAdded ?? null;
+    namePickerWhichRef.current = which;
     setNamePickerCategory(category);
     setNamePickerQuery('');
     setShowNamePicker(true);
@@ -202,10 +234,25 @@ export default function CoachPrograms({ coachId }: Props) {
 
   const closeNamePicker = useCallback(() => {
     setShowNamePicker(false);
+    setShowNamePickerCategoryList(false);
     reopenOuterAfterInner();
   }, [reopenOuterAfterInner]);
 
+  // Switching category from inside the picker modal (replaces the old
+  // always-visible horizontal chip row on the main screen) — also syncs
+  // the outer "last selected category" state so the picker field's own
+  // label reflects it next time it's shown, and the next open of this
+  // same flow defaults back to it.
+  const handleNamePickerCategoryChange = useCallback((cat: string) => {
+    setNamePickerCategory(cat);
+    setNamePickerQuery('');
+    setShowNamePickerCategoryList(false);
+    if (namePickerWhichRef.current === 'add') setActiveCategory(cat);
+    else setEditActiveCategory(cat);
+  }, []);
+
   const handlePickName = useCallback((name: string) => {
+    if (namePickerIsAddedRef.current?.(name)) return;
     namePickerOnSelectRef.current?.(name);
     closeNamePicker();
   }, [closeNamePicker]);
@@ -250,7 +297,7 @@ export default function CoachPrograms({ coachId }: Props) {
       if (prev[lastIdx] && !prev[lastIdx].name.trim()) {
         return prev.map((e, i) => i === lastIdx ? { ...e, ...item, id: e.id } : e);
       }
-      return [...prev, { id: String(Date.now() + Math.random()), restSeconds: '0', ...item }];
+      return [...prev, { id: String(Date.now() + Math.random()), restSeconds: '0', laterality: null, ...item }];
     });
   }, []);
 
@@ -296,6 +343,7 @@ export default function CoachPrograms({ coachId }: Props) {
             weight: stripKg(ex.weight),
             time: sanitizeTimeInput(ex.time ?? '0'),
             restSeconds: String(ex.rest_seconds ?? '0'),
+            laterality: ex.laterality ?? null,
           }))
         : [buildEmptyExercise()]
     );
@@ -308,7 +356,7 @@ export default function CoachPrograms({ coachId }: Props) {
       if (prev[lastIdx] && !prev[lastIdx].name.trim()) {
         return prev.map((e, i) => i === lastIdx ? { ...e, ...item, id: e.id } : e);
       }
-      return [...prev, { id: String(Date.now() + Math.random()), restSeconds: '0', ...item }];
+      return [...prev, { id: String(Date.now() + Math.random()), restSeconds: '0', laterality: null, ...item }];
     });
   }, []);
 
@@ -493,53 +541,33 @@ export default function CoachPrograms({ coachId }: Props) {
                   <Text style={styles.manageLibraryText}>Manage Library</Text>
                 </TouchableOpacity>
               </View>
-              <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.categoryRow}>
-                {categories.map(cat => (
-                  <TouchableOpacity
-                    key={cat}
-                    style={[styles.categoryChip, activeCategory === cat && styles.categoryChipActive]}
-                    onPress={() => setActiveCategory(cat)}
-                  >
-                    <Ionicons
-                      name={(CATEGORY_ICONS[cat] ?? 'ellipse') as any}
-                      size={14}
-                      color={activeCategory === cat ? colors.text : colors.textSecondary}
-                    />
-                    <Text style={[styles.categoryChipText, activeCategory === cat && styles.categoryChipTextActive]}>
-                      {cat}
-                    </Text>
-                  </TouchableOpacity>
-                ))}
-              </ScrollView>
-
-              <View style={styles.suggestedGrid}>
-                {activeCategoryItems.map(item => {
-                  const alreadyAdded = exercises.some(e => e.name === item.name);
-                  return (
-                    <TouchableOpacity
-                      key={item.id}
-                      style={[styles.suggestedChip, alreadyAdded && styles.suggestedChipAdded]}
-                      onPress={() => !alreadyAdded && addSuggestedExercise({
-                        name: item.name,
-                        sets: sanitizeCount(String(item.default_sets), 1, 6),
-                        reps: sanitizeCount(item.default_reps, 1, 30),
-                        weight: stripKg(item.default_weight),
-                        time: sanitizeTimeInput(item.default_time ?? '0'),
-                      })}
-                      activeOpacity={alreadyAdded ? 1 : 0.7}
-                    >
-                      <Text style={[styles.suggestedChipText, alreadyAdded && styles.suggestedChipTextAdded]}>
-                        {item.name}
-                      </Text>
-                      <Ionicons
-                        name={alreadyAdded ? 'checkmark' : 'add'}
-                        size={14}
-                        color={alreadyAdded ? colors.xpBar : colors.textSecondary}
-                      />
-                    </TouchableOpacity>
-                  );
-                })}
-              </View>
+              <TouchableOpacity
+                style={styles.suggestedPickerField}
+                onPress={() => openNamePicker(
+                  name => {
+                    const item = library.find(e => e.category === activeCategory && e.name === name);
+                    if (!item) return;
+                    addSuggestedExercise({
+                      name: item.name,
+                      sets: sanitizeCount(String(item.default_sets), 1, 6),
+                      reps: sanitizeCount(item.default_reps, 1, 30),
+                      weight: stripKg(item.default_weight),
+                      time: sanitizeTimeInput(item.default_time ?? '0'),
+                    });
+                  },
+                  activeCategory,
+                  'add',
+                  name => exercises.some(e => e.name === name)
+                )}
+              >
+                <Ionicons name="search" size={16} color={colors.textSecondary} />
+                <Text style={styles.suggestedPickerFieldText} numberOfLines={1}>
+                  {activeCategoryItems.length > 0
+                    ? `Choose a ${activeCategory} exercise (${activeCategoryItems.length})…`
+                    : `No ${activeCategory} exercises in the library yet`}
+                </Text>
+                <Ionicons name="chevron-down" size={16} color={colors.textSecondary} />
+              </TouchableOpacity>
 
               <Text style={[styles.fieldLabel, { marginTop: 20 }]}>EXERCISES</Text>
               {exercises.map((ex, i) => (
@@ -624,6 +652,19 @@ export default function CoachPrograms({ coachId }: Props) {
                           <Ionicons name="trash-outline" size={18} color={colors.danger} />
                         </TouchableOpacity>
                       )}
+                    </View>
+                    <View style={styles.lateralityRow}>
+                      {LATERALITY_OPTIONS.map(opt => (
+                        <TouchableOpacity
+                          key={opt.label}
+                          style={[styles.lateralityChip, ex.laterality === opt.value && styles.lateralityChipActive]}
+                          onPress={() => setExercises(prev => prev.map(e => e.id === ex.id ? { ...e, laterality: opt.value } : e))}
+                        >
+                          <Text style={[styles.lateralityChipText, ex.laterality === opt.value && styles.lateralityChipTextActive]}>
+                            {opt.label}
+                          </Text>
+                        </TouchableOpacity>
+                      ))}
                     </View>
                   </View>
                 </View>
@@ -726,53 +767,33 @@ export default function CoachPrograms({ coachId }: Props) {
                     <Text style={styles.manageLibraryText}>Manage Library</Text>
                   </TouchableOpacity>
                 </View>
-                <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.categoryRow}>
-                  {categories.map(cat => (
-                    <TouchableOpacity
-                      key={cat}
-                      style={[styles.categoryChip, editActiveCategory === cat && styles.categoryChipActive]}
-                      onPress={() => setEditActiveCategory(cat)}
-                    >
-                      <Ionicons
-                        name={(CATEGORY_ICONS[cat] ?? 'ellipse') as any}
-                        size={14}
-                        color={editActiveCategory === cat ? colors.text : colors.textSecondary}
-                      />
-                      <Text style={[styles.categoryChipText, editActiveCategory === cat && styles.categoryChipTextActive]}>
-                        {cat}
-                      </Text>
-                    </TouchableOpacity>
-                  ))}
-                </ScrollView>
-
-                <View style={styles.suggestedGrid}>
-                  {editActiveCategoryItems.map(item => {
-                    const alreadyAdded = editExercises.some(e => e.name === item.name);
-                    return (
-                      <TouchableOpacity
-                        key={item.id}
-                        style={[styles.suggestedChip, alreadyAdded && styles.suggestedChipAdded]}
-                        onPress={() => !alreadyAdded && addEditSuggestedExercise({
-                          name: item.name,
-                          sets: sanitizeCount(String(item.default_sets), 1, 6),
-                          reps: sanitizeCount(item.default_reps, 1, 30),
-                          weight: stripKg(item.default_weight),
-                          time: sanitizeTimeInput(item.default_time ?? '0'),
-                        })}
-                        activeOpacity={alreadyAdded ? 1 : 0.7}
-                      >
-                        <Text style={[styles.suggestedChipText, alreadyAdded && styles.suggestedChipTextAdded]}>
-                          {item.name}
-                        </Text>
-                        <Ionicons
-                          name={alreadyAdded ? 'checkmark' : 'add'}
-                          size={14}
-                          color={alreadyAdded ? colors.xpBar : colors.textSecondary}
-                        />
-                      </TouchableOpacity>
-                    );
-                  })}
-                </View>
+                <TouchableOpacity
+                  style={styles.suggestedPickerField}
+                  onPress={() => openNamePicker(
+                    name => {
+                      const item = library.find(e => e.category === editActiveCategory && e.name === name);
+                      if (!item) return;
+                      addEditSuggestedExercise({
+                        name: item.name,
+                        sets: sanitizeCount(String(item.default_sets), 1, 6),
+                        reps: sanitizeCount(item.default_reps, 1, 30),
+                        weight: stripKg(item.default_weight),
+                        time: sanitizeTimeInput(item.default_time ?? '0'),
+                      });
+                    },
+                    editActiveCategory,
+                    'edit',
+                    name => editExercises.some(e => e.name === name)
+                  )}
+                >
+                  <Ionicons name="search" size={16} color={colors.textSecondary} />
+                  <Text style={styles.suggestedPickerFieldText} numberOfLines={1}>
+                    {editActiveCategoryItems.length > 0
+                      ? `Choose a ${editActiveCategory} exercise (${editActiveCategoryItems.length})…`
+                      : `No ${editActiveCategory} exercises in the library yet`}
+                  </Text>
+                  <Ionicons name="chevron-down" size={16} color={colors.textSecondary} />
+                </TouchableOpacity>
 
                 <Text style={[styles.fieldLabel, { marginTop: 20 }]}>
                   EXERCISES ({editExercises.filter(e => e.name.trim()).length})
@@ -858,6 +879,19 @@ export default function CoachPrograms({ coachId }: Props) {
                           <Ionicons name="trash-outline" size={18} color={colors.danger} />
                         </TouchableOpacity>
                       </View>
+                      <View style={styles.lateralityRow}>
+                        {LATERALITY_OPTIONS.map(opt => (
+                          <TouchableOpacity
+                            key={opt.label}
+                            style={[styles.lateralityChip, ex.laterality === opt.value && styles.lateralityChipActive]}
+                            onPress={() => setEditExercises(prev => prev.map(e => e.id === ex.id ? { ...e, laterality: opt.value } : e))}
+                          >
+                            <Text style={[styles.lateralityChipText, ex.laterality === opt.value && styles.lateralityChipTextActive]}>
+                              {opt.label}
+                            </Text>
+                          </TouchableOpacity>
+                        ))}
+                      </View>
                     </View>
                   </View>
                 ))}
@@ -910,30 +944,87 @@ export default function CoachPrograms({ coachId }: Props) {
         onRequestClose={closeNamePicker}
         onShow={() => namePickerInputRef.current?.focus()}
       >
-        <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={{ flex: 1 }}>
+        <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={{ flex: 1 }}>
           <View style={styles.namePickerOverlay}>
             <View style={styles.namePickerSheet}>
               <View style={styles.modalHeader}>
-                <Text style={styles.modalTitle}>Select {namePickerCategory} Exercise</Text>
+                <Text style={styles.modalTitle}>Select Exercise</Text>
                 <TouchableOpacity style={styles.closeBtn} onPress={closeNamePicker}>
                   <Ionicons name="close" size={22} color={colors.textSecondary} />
                 </TouchableOpacity>
               </View>
+              {/* Category now lives inside the picker — replaces the old
+                  always-visible horizontal chip row on the main screen,
+                  which didn't scale once categories got this many. A
+                  dropdown (tap to expand an inline list, not a second
+                  nested Modal — see Robustness Pitfalls #7) reads better
+                  than a horizontal chip scroll once there are ~20 of them.
+                  Picking one here filters the list below, same as search does. */}
+              <TouchableOpacity
+                style={styles.categoryDropdownField}
+                onPress={() => setShowNamePickerCategoryList(v => !v)}
+              >
+                <Ionicons
+                  name={(CATEGORY_ICONS[namePickerCategory] ?? 'ellipse') as any}
+                  size={16}
+                  color={colors.textSecondary}
+                />
+                <Text style={styles.categoryDropdownFieldText}>{namePickerCategory}</Text>
+                <Ionicons
+                  name={showNamePickerCategoryList ? 'chevron-up' : 'chevron-down'}
+                  size={16}
+                  color={colors.textSecondary}
+                />
+              </TouchableOpacity>
+              {showNamePickerCategoryList && (
+                <ScrollView style={styles.categoryDropdownList} keyboardShouldPersistTaps="handled">
+                  {categories.map(cat => (
+                    <TouchableOpacity
+                      key={cat}
+                      style={[styles.categoryDropdownRow, namePickerCategory === cat && styles.categoryDropdownRowActive]}
+                      onPress={() => handleNamePickerCategoryChange(cat)}
+                    >
+                      <Ionicons
+                        name={(CATEGORY_ICONS[cat] ?? 'ellipse') as any}
+                        size={15}
+                        color={namePickerCategory === cat ? colors.xpBar : colors.textSecondary}
+                      />
+                      <Text style={[styles.categoryDropdownRowText, namePickerCategory === cat && styles.categoryDropdownRowTextActive]}>
+                        {cat}
+                      </Text>
+                      {namePickerCategory === cat && <Ionicons name="checkmark" size={16} color={colors.xpBar} />}
+                    </TouchableOpacity>
+                  ))}
+                </ScrollView>
+              )}
               <TextInput
                 ref={namePickerInputRef}
                 style={styles.textInput}
-                placeholder="Search or type a new exercise name..."
+                placeholder={`Search ${namePickerCategory} exercises, or type a new name...`}
                 placeholderTextColor={colors.textSecondary}
                 value={namePickerQuery}
                 onChangeText={setNamePickerQuery}
               />
               <ScrollView keyboardShouldPersistTaps="handled" style={{ maxHeight: 340 }}>
-                {filteredLibraryNames.map(name => (
-                  <TouchableOpacity key={name} style={styles.namePickerRow} onPress={() => handlePickName(name)}>
-                    <Ionicons name="barbell-outline" size={16} color={colors.textSecondary} />
-                    <Text style={styles.namePickerRowText}>{name}</Text>
-                  </TouchableOpacity>
-                ))}
+                {filteredLibraryNames.map(name => {
+                  const alreadyAdded = namePickerIsAddedRef.current?.(name) ?? false;
+                  return (
+                    <TouchableOpacity
+                      key={name}
+                      style={styles.namePickerRow}
+                      onPress={() => handlePickName(name)}
+                      disabled={alreadyAdded}
+                      activeOpacity={alreadyAdded ? 1 : 0.7}
+                    >
+                      <Ionicons
+                        name={alreadyAdded ? 'checkmark-circle' : 'barbell-outline'}
+                        size={16}
+                        color={alreadyAdded ? colors.xpBar : colors.textSecondary}
+                      />
+                      <Text style={[styles.namePickerRowText, alreadyAdded && { color: colors.xpBar }]}>{name}</Text>
+                    </TouchableOpacity>
+                  );
+                })}
                 {namePickerQuery.trim().length > 0 && !namePickerExactMatch && (
                   <TouchableOpacity
                     style={[styles.namePickerRow, styles.namePickerAddRow]}
@@ -1068,25 +1159,37 @@ const styles = StyleSheet.create({
   diffChipTextActive: { color: colors.xpBar },
 
   // Exercise builder
-  categoryRow: { marginBottom: 12 },
-  categoryChip: {
-    flexDirection: 'row', alignItems: 'center', gap: 6,
-    paddingHorizontal: 14, paddingVertical: 8, borderRadius: 20,
-    backgroundColor: colors.secondary, marginRight: 8,
+  // Category dropdown inside the picker modal — replaced the old
+  // horizontal chip-scroll row (see openNamePicker).
+  categoryDropdownField: {
+    flexDirection: 'row', alignItems: 'center', gap: 10,
+    backgroundColor: colors.secondary, borderRadius: 10,
     borderWidth: 1, borderColor: colors.border,
+    paddingHorizontal: 12, paddingVertical: 12, marginBottom: 8,
   },
-  categoryChipActive: { backgroundColor: colors.primary, borderColor: colors.primary },
-  categoryChipText: { fontSize: 13, fontWeight: '600', color: colors.textSecondary },
-  categoryChipTextActive: { color: colors.text },
-  suggestedGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginBottom: 8 },
-  suggestedChip: {
-    flexDirection: 'row', alignItems: 'center', gap: 4,
-    paddingHorizontal: 12, paddingVertical: 8, borderRadius: 10,
-    backgroundColor: colors.secondary, borderWidth: 1, borderColor: colors.border,
+  categoryDropdownFieldText: { flex: 1, fontSize: 14, fontWeight: '600', color: colors.text },
+  categoryDropdownList: {
+    maxHeight: 220, marginBottom: 8, borderRadius: 10,
+    borderWidth: 1, borderColor: colors.border, backgroundColor: colors.secondary,
   },
-  suggestedChipAdded: { borderColor: colors.xpBar, backgroundColor: colors.xpBar + '22' },
-  suggestedChipText: { fontSize: 12, color: colors.textSecondary, fontWeight: '500' },
-  suggestedChipTextAdded: { color: colors.xpBar },
+  categoryDropdownRow: {
+    flexDirection: 'row', alignItems: 'center', gap: 10,
+    paddingHorizontal: 12, paddingVertical: 11,
+    borderBottomWidth: 1, borderBottomColor: colors.border,
+  },
+  categoryDropdownRowActive: { backgroundColor: colors.xpBar + '14' },
+  categoryDropdownRowText: { flex: 1, fontSize: 14, color: colors.text },
+  categoryDropdownRowTextActive: { color: colors.xpBar, fontWeight: '700' },
+  // Replaces the old always-expanded chip grid — a single tappable field
+  // that opens the searchable name picker modal instead (reused from the
+  // per-row "rename" flow, now also used for "add", see openNamePicker).
+  suggestedPickerField: {
+    flexDirection: 'row', alignItems: 'center', gap: 10,
+    backgroundColor: colors.secondary, borderRadius: 10,
+    borderWidth: 1, borderColor: colors.border,
+    paddingHorizontal: 12, paddingVertical: 12, marginBottom: 8,
+  },
+  suggestedPickerFieldText: { flex: 1, fontSize: 13, color: colors.textSecondary, fontWeight: '500' },
   exerciseRow: { flexDirection: 'row', gap: 10, marginBottom: 14 },
   exNumBadge: {
     width: 28, height: 28, borderRadius: 8, marginTop: 14,
@@ -1102,6 +1205,18 @@ const styles = StyleSheet.create({
     color: colors.text, fontSize: 13, borderWidth: 1, borderColor: colors.border, textAlign: 'center',
   },
   removeBtn: { padding: 8 },
+  // Single Arm / Single Leg — a 3-way exclusive toggle, same visual
+  // language as diffChip above but compact enough to sit under a row of
+  // sets/reps/weight/time/rest fields without pushing the card too tall.
+  lateralityRow: { flexDirection: 'row', gap: 6, marginTop: 8 },
+  lateralityChip: {
+    flex: 1, paddingVertical: 7, borderRadius: 8,
+    backgroundColor: colors.secondary, alignItems: 'center',
+    borderWidth: 1, borderColor: colors.border,
+  },
+  lateralityChipActive: { borderColor: colors.xpBar, backgroundColor: colors.xpBar + '22' },
+  lateralityChipText: { fontSize: 11, fontWeight: '600', color: colors.textSecondary },
+  lateralityChipTextActive: { color: colors.xpBar },
   addExerciseBtn: {
     flexDirection: 'row', alignItems: 'center', justifyContent: 'center',
     gap: 8, paddingVertical: 14, borderRadius: 12,

@@ -254,6 +254,10 @@ export interface ExercisePayloadEntry {
   // payload is what keeps the two tables' shapes compatible with one
   // shared sync function.
   set_details?: ExerciseSetTarget[] | null;
+  // Which side this is done on — null/omitted = both sides together. Exists
+  // on both program_exercises and exercises (see scripts/exercise_laterality.sql),
+  // unlike set_details above which is exercises-only.
+  laterality?: 'single_arm' | 'single_leg' | null;
 }
 
 // Diffs an edited exercise list against what's currently in the DB for a given

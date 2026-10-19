@@ -85,14 +85,24 @@ interface ExerciseEntry {
   dbId?: string; // real DB row id when this entry was loaded from an existing exercises row
   name: string;
   setRows: SetRow[];
+  // Which side this exercise is done on — a whole-exercise property (every
+  // set shares it), not a per-set one like SetRow's own fields. Null =
+  // both sides together (the default).
+  laterality: 'single_arm' | 'single_leg' | null;
 }
+
+const LATERALITY_OPTIONS: { value: 'single_arm' | 'single_leg' | null; label: string }[] = [
+  { value: null, label: 'Both' },
+  { value: 'single_arm', label: 'Single Arm' },
+  { value: 'single_leg', label: 'Single Leg' },
+];
 
 function buildEmptySetRow(): SetRow {
   return { id: String(Date.now() + Math.random()), reps: '10', weight: '', time: '0', restSeconds: '0' };
 }
 
 function buildEmptyExercise(): ExerciseEntry {
-  return { id: String(Date.now() + Math.random()), name: '', setRows: [buildEmptySetRow()] };
+  return { id: String(Date.now() + Math.random()), name: '', setRows: [buildEmptySetRow()], laterality: null };
 }
 
 // Expands a program template's (or a legacy pre-per-set exercise's) single
@@ -122,6 +132,7 @@ function exerciseEntryToPayload(e: ExerciseEntry): ExercisePayloadEntry {
     weight: withKg(first.weight),
     time: first.time.trim() || '0',
     rest_seconds: parseInt(first.restSeconds, 10) || 0,
+    laterality: e.laterality,
     set_details: rows.map(s => ({
       reps: s.reps || '10',
       weight: withKg(s.weight) ?? '',
@@ -462,6 +473,77 @@ export default function CoachTrainees({ coachId }: Props) {
     const known = ['Push', 'Pull', 'Legs', 'Core', 'Cardio', 'Stretch'];
     return Array.from(new Set([...known, ...library.map(e => e.category)]));
   }, [library]);
+
+  // ── Exercise picker (search dropdown over the active category's library
+  // items) — replaces the always-expanded "Suggested Exercises" chip grid.
+  // Reported: with ~650 exercises now in the library (see
+  // scripts/exercise_library_full_catalog.sql), several categories have 30+
+  // exercises — rendered as a flat wrapped grid of chips, that's "can't see
+  // the exercises" in practice, not literally broken. One shared modal
+  // (search input + scrollable filtered list) used by both the assign-flow
+  // and edit-workout-modal "Suggested Exercises" sections below — they pass
+  // their own category + an onSelect callback (mirrors CoachPrograms.tsx's
+  // own openNamePicker, built fresh here since this file never had an
+  // equivalent picker at all, not even for renaming an already-added row).
+  const [showExercisePicker, setShowExercisePicker] = useState(false);
+  const [exercisePickerQuery, setExercisePickerQuery] = useState('');
+  const [exercisePickerCategory, setExercisePickerCategory] = useState('Push');
+  const exercisePickerOnSelectRef = useRef<((item: DBLibraryExercise) => void) | null>(null);
+  const exercisePickerIsAddedRef = useRef<((item: DBLibraryExercise) => boolean) | null>(null);
+  const exercisePickerInputRef = useRef<TextInput>(null);
+  // Which outer flow opened the picker — lets the in-modal category chips
+  // sync back to the right "last selected category" state (activeCategory
+  // for the assign flow, editActiveCategory for the edit-workout modal).
+  const exercisePickerWhichRef = useRef<'add' | 'edit'>('add');
+  // Replaces the old horizontal chip-scroll for category selection, same
+  // reasoning as CoachPrograms.tsx's openNamePicker — a dropdown (inline
+  // expand/collapse, not a nested Modal) reads better than scrolling
+  // through ~20 chips. Collapsed by default.
+  const [showExercisePickerCategoryList, setShowExercisePickerCategoryList] = useState(false);
+
+  const openExercisePicker = useCallback((
+    category: string,
+    onSelect: (item: DBLibraryExercise) => void,
+    isAdded: (item: DBLibraryExercise) => boolean,
+    which: 'add' | 'edit'
+  ) => {
+    setExercisePickerCategory(category);
+    exercisePickerOnSelectRef.current = onSelect;
+    exercisePickerIsAddedRef.current = isAdded;
+    exercisePickerWhichRef.current = which;
+    setExercisePickerQuery('');
+    setShowExercisePicker(true);
+  }, []);
+
+  const closeExercisePicker = useCallback(() => {
+    setShowExercisePicker(false);
+    setShowExercisePickerCategoryList(false);
+  }, []);
+
+  // Switching category from inside the picker modal (replaces the old
+  // always-visible horizontal chip row on each "Suggested Exercises"
+  // section) — also syncs the outer "last selected category" state so the
+  // picker field's own label reflects it afterward.
+  const handleExercisePickerCategoryChange = useCallback((cat: string) => {
+    setExercisePickerCategory(cat);
+    setExercisePickerQuery('');
+    setShowExercisePickerCategoryList(false);
+    if (exercisePickerWhichRef.current === 'add') setActiveCategory(cat);
+    else setEditActiveCategory(cat);
+  }, []);
+
+  const handlePickExercise = useCallback((item: DBLibraryExercise) => {
+    if (exercisePickerIsAddedRef.current?.(item)) return;
+    exercisePickerOnSelectRef.current?.(item);
+    closeExercisePicker();
+  }, [closeExercisePicker]);
+
+  const filteredExercisePickerItems = useMemo(() => {
+    const q = exercisePickerQuery.trim().toLowerCase();
+    const items = library.filter(e => e.category === exercisePickerCategory);
+    const filtered = q ? items.filter(e => e.name.toLowerCase().includes(q)) : items;
+    return [...filtered].sort((a, b) => a.name.localeCompare(b.name));
+  }, [library, exercisePickerCategory, exercisePickerQuery]);
 
   // ── Load data ──
   const loadData = useCallback(async () => {
@@ -1002,6 +1084,7 @@ export default function CoachTrainees({ coachId }: Props) {
             // single shared sets-count/reps/weight/time/rest into that many
             // identical starting rows, same as picking a suggested exercise.
             setRows: expandToSetRows(ex.sets, ex.reps, stripKg(ex.weight), sanitizeTimeInput(ex.time ?? '0'), String(ex.rest_seconds ?? '0')),
+            laterality: ex.laterality ?? null,
           }))
         : [buildEmptyExercise()]
     );
@@ -1014,7 +1097,7 @@ export default function CoachTrainees({ coachId }: Props) {
       if (prev[lastIdx] && !prev[lastIdx].name.trim()) {
         return prev.map((e, i) => i === lastIdx ? { ...e, name: item.name, setRows } : e);
       }
-      return [...prev, { id: String(Date.now() + Math.random()), name: item.name, setRows }];
+      return [...prev, { id: String(Date.now() + Math.random()), name: item.name, setRows, laterality: null }];
     });
   }, []);
 
@@ -1141,6 +1224,7 @@ export default function CoachTrainees({ coachId }: Props) {
                 restSeconds: String(s.rest_seconds ?? 0),
               }))
             : expandToSetRows(ex.sets, ex.reps, stripKg(ex.weight), sanitizeTimeInput(ex.time ?? '0'), String(ex.rest_seconds ?? '0')),
+          laterality: ex.laterality ?? null,
         }))
       );
       setEditActiveCategory('Push');
@@ -1182,7 +1266,7 @@ export default function CoachTrainees({ coachId }: Props) {
       if (prev[lastIdx] && !prev[lastIdx].name.trim()) {
         return prev.map((e, i) => i === lastIdx ? { ...e, name: item.name, setRows } : e);
       }
-      return [...prev, { id: String(Date.now() + Math.random()), name: item.name, setRows }];
+      return [...prev, { id: String(Date.now() + Math.random()), name: item.name, setRows, laterality: null }];
     });
   }, []);
 
@@ -2503,7 +2587,15 @@ export default function CoachTrainees({ coachId }: Props) {
 
       {/* ── Assign Workout Modal (3-step) ── */}
       <Modal
-        visible={showAssignModal}
+        // Gated on the exercise picker NOT being open, not just
+        // showAssignModal — same fix as every other nested-modal case in
+        // this file (see Robustness Pitfall #7 in CLAUDE.md): two Modals
+        // both visible={true} at once don't reliably show/register touches
+        // on iOS. No state capture/restore needed here, unlike that
+        // pattern's other instances — showAssignModal itself never
+        // changes while the picker is open, so this is just hiding and
+        // reshowing the same still-open modal.
+        visible={showAssignModal && !showExercisePicker}
         transparent
         animationType="slide"
         onRequestClose={closeAssignModal}
@@ -2608,53 +2700,29 @@ export default function CoachTrainees({ coachId }: Props) {
                 </Text>
 
                 <Text style={[styles.fieldLabel, { marginTop: 20 }]}>SUGGESTED EXERCISES</Text>
-                <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.categoryRow}>
-                  {categories.map(cat => (
-                    <TouchableOpacity
-                      key={cat}
-                      style={[styles.categoryChip, activeCategory === cat && styles.categoryChipActive]}
-                      onPress={() => setActiveCategory(cat)}
-                    >
-                      <Ionicons
-                        name={(CATEGORY_ICONS[cat] ?? 'ellipse') as any}
-                        size={14}
-                        color={activeCategory === cat ? colors.text : colors.textSecondary}
-                      />
-                      <Text style={[styles.categoryChipText, activeCategory === cat && styles.categoryChipTextActive]}>
-                        {cat}
-                      </Text>
-                    </TouchableOpacity>
-                  ))}
-                </ScrollView>
-
-                <View style={styles.suggestedGrid}>
-                  {activeCategoryItems.map(item => {
-                    const alreadyAdded = exercises.some(e => e.name === item.name);
-                    return (
-                      <TouchableOpacity
-                        key={item.id}
-                        style={[styles.suggestedChip, alreadyAdded && styles.suggestedChipAdded]}
-                        onPress={() => !alreadyAdded && addSuggestedExercise({
-                          name: item.name,
-                          sets: sanitizeCount(String(item.default_sets), 1, 6),
-                          reps: sanitizeCount(item.default_reps, 1, 30),
-                          weight: stripKg(item.default_weight),
-                          time: sanitizeTimeInput(item.default_time ?? '0'),
-                        })}
-                        activeOpacity={alreadyAdded ? 1 : 0.7}
-                      >
-                        <Text style={[styles.suggestedChipText, alreadyAdded && styles.suggestedChipTextAdded]}>
-                          {item.name}
-                        </Text>
-                        <Ionicons
-                          name={alreadyAdded ? 'checkmark' : 'add'}
-                          size={14}
-                          color={alreadyAdded ? colors.xpBar : colors.textSecondary}
-                        />
-                      </TouchableOpacity>
-                    );
-                  })}
-                </View>
+                <TouchableOpacity
+                  style={styles.suggestedPickerField}
+                  onPress={() => openExercisePicker(
+                    activeCategory,
+                    item => addSuggestedExercise({
+                      name: item.name,
+                      sets: sanitizeCount(String(item.default_sets), 1, 6),
+                      reps: sanitizeCount(item.default_reps, 1, 30),
+                      weight: stripKg(item.default_weight),
+                      time: sanitizeTimeInput(item.default_time ?? '0'),
+                    }),
+                    item => exercises.some(e => e.name === item.name),
+                    'add'
+                  )}
+                >
+                  <Ionicons name="search" size={16} color={colors.textSecondary} />
+                  <Text style={styles.suggestedPickerFieldText} numberOfLines={1}>
+                    {activeCategoryItems.length > 0
+                      ? `Choose a ${activeCategory} exercise (${activeCategoryItems.length})…`
+                      : `No ${activeCategory} exercises in the library yet`}
+                  </Text>
+                  <Ionicons name="chevron-down" size={16} color={colors.textSecondary} />
+                </TouchableOpacity>
 
                 <Text style={[styles.fieldLabel, { marginTop: 20 }]}>YOUR EXERCISES</Text>
                 {exercises.map((ex, i) => (
@@ -2689,6 +2757,20 @@ export default function CoachTrainees({ coachId }: Props) {
                             <Ionicons name="trash-outline" size={18} color={colors.danger} />
                           </TouchableOpacity>
                         )}
+                      </View>
+
+                      <View style={styles.lateralityRow}>
+                        {LATERALITY_OPTIONS.map(opt => (
+                          <TouchableOpacity
+                            key={opt.label}
+                            style={[styles.lateralityChip, ex.laterality === opt.value && styles.lateralityChipActive]}
+                            onPress={() => setExercises(prev => prev.map(e => e.id === ex.id ? { ...e, laterality: opt.value } : e))}
+                          >
+                            <Text style={[styles.lateralityChipText, ex.laterality === opt.value && styles.lateralityChipTextActive]}>
+                              {opt.label}
+                            </Text>
+                          </TouchableOpacity>
+                        ))}
                       </View>
 
                       {ex.setRows.map((set, setI) => (
@@ -2842,7 +2924,8 @@ export default function CoachTrainees({ coachId }: Props) {
 
       {/* ── Edit Program Modal ── */}
       <Modal
-        visible={showEditModal}
+        // See the matching comment on the Assign Workout Modal above.
+        visible={showEditModal && !showExercisePicker}
         transparent
         animationType="slide"
         onRequestClose={closeEditModal}
@@ -2965,53 +3048,29 @@ export default function CoachTrainees({ coachId }: Props) {
               </Text>
 
               <Text style={[styles.fieldLabel, { marginTop: 20 }]}>ADD EXERCISES</Text>
-              <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.categoryRow}>
-                {categories.map(cat => (
-                  <TouchableOpacity
-                    key={cat}
-                    style={[styles.categoryChip, editActiveCategory === cat && styles.categoryChipActive]}
-                    onPress={() => setEditActiveCategory(cat)}
-                  >
-                    <Ionicons
-                      name={(CATEGORY_ICONS[cat] ?? 'ellipse') as any}
-                      size={14}
-                      color={editActiveCategory === cat ? colors.text : colors.textSecondary}
-                    />
-                    <Text style={[styles.categoryChipText, editActiveCategory === cat && styles.categoryChipTextActive]}>
-                      {cat}
-                    </Text>
-                  </TouchableOpacity>
-                ))}
-              </ScrollView>
-
-              <View style={styles.suggestedGrid}>
-                {editActiveCategoryItems.map(item => {
-                  const alreadyAdded = editExercises.some(e => e.name === item.name);
-                  return (
-                    <TouchableOpacity
-                      key={item.id}
-                      style={[styles.suggestedChip, alreadyAdded && styles.suggestedChipAdded]}
-                      onPress={() => !alreadyAdded && addEditSuggestedExercise({
-                        name: item.name,
-                        sets: sanitizeCount(String(item.default_sets), 1, 6),
-                        reps: sanitizeCount(item.default_reps, 1, 30),
-                        weight: stripKg(item.default_weight),
-                        time: sanitizeTimeInput(item.default_time ?? '0'),
-                      })}
-                      activeOpacity={alreadyAdded ? 1 : 0.7}
-                    >
-                      <Text style={[styles.suggestedChipText, alreadyAdded && styles.suggestedChipTextAdded]}>
-                        {item.name}
-                      </Text>
-                      <Ionicons
-                        name={alreadyAdded ? 'checkmark' : 'add'}
-                        size={14}
-                        color={alreadyAdded ? colors.xpBar : colors.textSecondary}
-                      />
-                    </TouchableOpacity>
-                  );
-                })}
-              </View>
+              <TouchableOpacity
+                style={styles.suggestedPickerField}
+                onPress={() => openExercisePicker(
+                  editActiveCategory,
+                  item => addEditSuggestedExercise({
+                    name: item.name,
+                    sets: sanitizeCount(String(item.default_sets), 1, 6),
+                    reps: sanitizeCount(item.default_reps, 1, 30),
+                    weight: stripKg(item.default_weight),
+                    time: sanitizeTimeInput(item.default_time ?? '0'),
+                  }),
+                  item => editExercises.some(e => e.name === item.name),
+                  'edit'
+                )}
+              >
+                <Ionicons name="search" size={16} color={colors.textSecondary} />
+                <Text style={styles.suggestedPickerFieldText} numberOfLines={1}>
+                  {editActiveCategoryItems.length > 0
+                    ? `Choose a ${editActiveCategory} exercise (${editActiveCategoryItems.length})…`
+                    : `No ${editActiveCategory} exercises in the library yet`}
+                </Text>
+                <Ionicons name="chevron-down" size={16} color={colors.textSecondary} />
+              </TouchableOpacity>
 
               <Text style={[styles.fieldLabel, { marginTop: 20 }]}>
                 EXERCISES ({editExercises.filter(e => e.name.trim()).length})
@@ -3046,6 +3105,20 @@ export default function CoachTrainees({ coachId }: Props) {
                       >
                         <Ionicons name="trash-outline" size={18} color={colors.danger} />
                       </TouchableOpacity>
+                    </View>
+
+                    <View style={styles.lateralityRow}>
+                      {LATERALITY_OPTIONS.map(opt => (
+                        <TouchableOpacity
+                          key={opt.label}
+                          style={[styles.lateralityChip, ex.laterality === opt.value && styles.lateralityChipActive]}
+                          onPress={() => setEditExercises(prev => prev.map(e => e.id === ex.id ? { ...e, laterality: opt.value } : e))}
+                        >
+                          <Text style={[styles.lateralityChipText, ex.laterality === opt.value && styles.lateralityChipTextActive]}>
+                            {opt.label}
+                          </Text>
+                        </TouchableOpacity>
+                      ))}
                     </View>
 
                     {ex.setRows.map((set, setI) => (
@@ -3147,6 +3220,112 @@ export default function CoachTrainees({ coachId }: Props) {
                   </>
                 )}
               </TouchableOpacity>
+            </View>
+          </View>
+        </KeyboardAvoidingView>
+      </Modal>
+
+      {/* ── Exercise Picker — search dropdown over the active category's
+          library items, shared by both "Suggested Exercises" sections
+          above. Mirrors CoachPrograms.tsx's own openNamePicker modal. ── */}
+      <Modal
+        visible={showExercisePicker}
+        transparent
+        animationType="slide"
+        onRequestClose={closeExercisePicker}
+        onShow={() => exercisePickerInputRef.current?.focus()}
+      >
+        <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={{ flex: 1 }}>
+          <View style={styles.overlay}>
+            <View style={styles.sheet}>
+              <View style={styles.modalHeader}>
+                <Text style={styles.modalTitle}>Select Exercise</Text>
+                <TouchableOpacity style={styles.closeBtn} onPress={closeExercisePicker}>
+                  <Ionicons name="close" size={22} color={colors.textSecondary} />
+                </TouchableOpacity>
+              </View>
+              {/* Category now lives inside the picker — replaces the old
+                  always-visible horizontal chip row on the main screen,
+                  which didn't scale once categories got this many. A
+                  dropdown (tap to expand an inline list, not a second
+                  nested Modal — see Robustness Pitfalls #7) reads better
+                  than a horizontal chip scroll once there are ~20 of them.
+                  Picking one here filters the list below, same as search does. */}
+              <TouchableOpacity
+                style={styles.categoryDropdownField}
+                onPress={() => setShowExercisePickerCategoryList(v => !v)}
+              >
+                <Ionicons
+                  name={(CATEGORY_ICONS[exercisePickerCategory] ?? 'ellipse') as any}
+                  size={16}
+                  color={colors.textSecondary}
+                />
+                <Text style={styles.categoryDropdownFieldText}>{exercisePickerCategory}</Text>
+                <Ionicons
+                  name={showExercisePickerCategoryList ? 'chevron-up' : 'chevron-down'}
+                  size={16}
+                  color={colors.textSecondary}
+                />
+              </TouchableOpacity>
+              {showExercisePickerCategoryList && (
+                <ScrollView style={styles.categoryDropdownList} keyboardShouldPersistTaps="handled">
+                  {categories.map(cat => (
+                    <TouchableOpacity
+                      key={cat}
+                      style={[styles.categoryDropdownRow, exercisePickerCategory === cat && styles.categoryDropdownRowActive]}
+                      onPress={() => handleExercisePickerCategoryChange(cat)}
+                    >
+                      <Ionicons
+                        name={(CATEGORY_ICONS[cat] ?? 'ellipse') as any}
+                        size={15}
+                        color={exercisePickerCategory === cat ? colors.xpBar : colors.textSecondary}
+                      />
+                      <Text style={[styles.categoryDropdownRowText, exercisePickerCategory === cat && styles.categoryDropdownRowTextActive]}>
+                        {cat}
+                      </Text>
+                      {exercisePickerCategory === cat && <Ionicons name="checkmark" size={16} color={colors.xpBar} />}
+                    </TouchableOpacity>
+                  ))}
+                </ScrollView>
+              )}
+              <TextInput
+                ref={exercisePickerInputRef}
+                style={styles.textInput}
+                placeholder={`Search ${exercisePickerCategory} exercises...`}
+                placeholderTextColor={colors.textSecondary}
+                value={exercisePickerQuery}
+                onChangeText={setExercisePickerQuery}
+              />
+              <ScrollView keyboardShouldPersistTaps="handled" style={{ maxHeight: 400 }}>
+                {filteredExercisePickerItems.map(item => {
+                  const alreadyAdded = exercisePickerIsAddedRef.current?.(item) ?? false;
+                  return (
+                    <TouchableOpacity
+                      key={item.id}
+                      style={styles.exercisePickerRow}
+                      onPress={() => handlePickExercise(item)}
+                      disabled={alreadyAdded}
+                      activeOpacity={alreadyAdded ? 1 : 0.7}
+                    >
+                      <Ionicons
+                        name={alreadyAdded ? 'checkmark-circle' : 'barbell-outline'}
+                        size={16}
+                        color={alreadyAdded ? colors.xpBar : colors.textSecondary}
+                      />
+                      <Text style={[styles.exercisePickerRowText, alreadyAdded && { color: colors.xpBar }]}>
+                        {item.name}
+                      </Text>
+                    </TouchableOpacity>
+                  );
+                })}
+                {filteredExercisePickerItems.length === 0 && (
+                  <Text style={{ color: colors.textSecondary, textAlign: 'center', paddingVertical: 20 }}>
+                    {exercisePickerQuery.trim()
+                      ? 'No matching exercises.'
+                      : `No ${exercisePickerCategory} exercises in the library yet.`}
+                  </Text>
+                )}
+              </ScrollView>
             </View>
           </View>
         </KeyboardAvoidingView>
@@ -3331,16 +3510,27 @@ const styles = StyleSheet.create({
   programOptionMeta: { fontSize: 12, color: colors.textSecondary, marginTop: 2 },
 
   // Exercise builder
-  categoryRow: { marginBottom: 12 },
-  categoryChip: {
-    flexDirection: 'row', alignItems: 'center', gap: 6,
-    paddingHorizontal: 14, paddingVertical: 8, borderRadius: 20,
-    backgroundColor: colors.secondary, marginRight: 8,
+  // Category dropdown inside the exercise picker modal — replaced the old
+  // horizontal chip-scroll row (see openExercisePicker).
+  categoryDropdownField: {
+    flexDirection: 'row', alignItems: 'center', gap: 10,
+    backgroundColor: colors.secondary, borderRadius: 10,
     borderWidth: 1, borderColor: colors.border,
+    paddingHorizontal: 12, paddingVertical: 12, marginBottom: 8,
   },
-  categoryChipActive: { backgroundColor: colors.primary, borderColor: colors.primary },
-  categoryChipText: { fontSize: 13, fontWeight: '600', color: colors.textSecondary },
-  categoryChipTextActive: { color: colors.text },
+  categoryDropdownFieldText: { flex: 1, fontSize: 14, fontWeight: '600', color: colors.text },
+  categoryDropdownList: {
+    maxHeight: 220, marginBottom: 8, borderRadius: 10,
+    borderWidth: 1, borderColor: colors.border, backgroundColor: colors.secondary,
+  },
+  categoryDropdownRow: {
+    flexDirection: 'row', alignItems: 'center', gap: 10,
+    paddingHorizontal: 12, paddingVertical: 11,
+    borderBottomWidth: 1, borderBottomColor: colors.border,
+  },
+  categoryDropdownRowActive: { backgroundColor: colors.xpBar + '14' },
+  categoryDropdownRowText: { flex: 1, fontSize: 14, color: colors.text },
+  categoryDropdownRowTextActive: { color: colors.xpBar, fontWeight: '700' },
   dayRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 5, marginBottom: 6 },
   dayChip: {
     width: 40, paddingVertical: 9, borderRadius: 10, alignItems: 'center',
@@ -3349,15 +3539,21 @@ const styles = StyleSheet.create({
   dayChipActive: { backgroundColor: colors.primary, borderColor: colors.primary },
   dayChipText: { fontSize: 11, fontWeight: '700', color: colors.textSecondary },
   dayChipTextActive: { color: colors.text },
-  suggestedGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginBottom: 8 },
-  suggestedChip: {
-    flexDirection: 'row', alignItems: 'center', gap: 4,
-    paddingHorizontal: 12, paddingVertical: 8, borderRadius: 10,
-    backgroundColor: colors.secondary, borderWidth: 1, borderColor: colors.border,
+  // Replaces the old always-expanded chip grid — a single tappable field
+  // that opens the searchable Exercise Picker modal instead (see its own
+  // comment above the state declarations near `library`).
+  suggestedPickerField: {
+    flexDirection: 'row', alignItems: 'center', gap: 10,
+    backgroundColor: colors.secondary, borderRadius: 10,
+    borderWidth: 1, borderColor: colors.border,
+    paddingHorizontal: 12, paddingVertical: 12, marginBottom: 8,
   },
-  suggestedChipAdded: { borderColor: colors.xpBar, backgroundColor: colors.xpBar + '22' },
-  suggestedChipText: { fontSize: 12, color: colors.textSecondary, fontWeight: '500' },
-  suggestedChipTextAdded: { color: colors.xpBar },
+  suggestedPickerFieldText: { flex: 1, fontSize: 13, color: colors.textSecondary, fontWeight: '500' },
+  exercisePickerRow: {
+    flexDirection: 'row', alignItems: 'center', gap: 10,
+    paddingVertical: 12, borderBottomWidth: 1, borderBottomColor: colors.border,
+  },
+  exercisePickerRowText: { fontSize: 14, color: colors.text },
   exerciseRow: { flexDirection: 'row', gap: 6, marginBottom: 14 },
   exSideCol: { alignItems: 'center', width: 28, marginTop: 10, gap: 4 },
   exNumBadge: {
@@ -3375,6 +3571,18 @@ const styles = StyleSheet.create({
   readOnlyHint: { fontSize: 11, color: colors.textSecondary, marginBottom: 4 },
   exFields: { flex: 1 },
   exNameRow: { flexDirection: 'row', alignItems: 'center', gap: 4, marginBottom: 10 },
+  // Single Arm / Single Leg — a 3-way exclusive toggle for the whole
+  // exercise (not per-set, unlike the REPS/WEIGHT/TIME/REST fields below).
+  // Same visual language as CoachPrograms.tsx's version of this toggle.
+  lateralityRow: { flexDirection: 'row', gap: 6, marginBottom: 10 },
+  lateralityChip: {
+    flex: 1, paddingVertical: 7, borderRadius: 8,
+    backgroundColor: colors.secondary, alignItems: 'center',
+    borderWidth: 1, borderColor: colors.border,
+  },
+  lateralityChipActive: { borderColor: colors.xpBar, backgroundColor: colors.xpBar + '22' },
+  lateralityChipText: { fontSize: 11, fontWeight: '600', color: colors.textSecondary },
+  lateralityChipTextActive: { color: colors.xpBar },
   setRowWrap: {
     marginBottom: 10, paddingLeft: 10, borderLeftWidth: 2, borderLeftColor: colors.border,
   },

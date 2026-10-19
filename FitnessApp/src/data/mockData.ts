@@ -15,6 +15,9 @@ export interface Exercise {
   // reps/weight/time/rest instead of sharing the exercise-level values
   // above uniformly. See scripts/exercises_set_details.sql.
   setDetails?: ExerciseSetTarget[] | null;
+  // Which side this is done on — null/undefined = both sides together
+  // (the default, e.g. a barbell bench press). See scripts/exercise_laterality.sql.
+  laterality?: 'single_arm' | 'single_leg' | null;
 }
 
 export interface Workout {

@@ -72,6 +72,23 @@ export default function ExerciseLibraryManager({ visible, coachId, onClose, onCh
     return groups;
   }, [library]);
 
+  // Categories collapse by default — with ~650 exercises now in the
+  // library (see scripts/exercise_library_full_catalog.sql) across 26
+  // categories, rendering every exercise in every category flat and
+  // always-expanded made the list impractical to scroll/find anything in.
+  // Tapping a category header toggles it; the count shown alongside the
+  // name lets a coach gauge how many exercises are in there before opening
+  // it. A separate "+" button (not the header tap itself) still opens the
+  // add-exercise form pre-filled with that category.
+  const [expandedCategories, setExpandedCategories] = useState<Set<string>>(new Set());
+  const toggleCategory = useCallback((category: string) => {
+    setExpandedCategories(prev => {
+      const next = new Set(prev);
+      if (next.has(category)) next.delete(category); else next.add(category);
+      return next;
+    });
+  }, []);
+
   const openAddForm = (category?: string) => {
     setEditingId(null);
     setFormName('');
@@ -161,35 +178,53 @@ export default function ExerciseLibraryManager({ visible, coachId, onClose, onCh
                 </View>
               ) : (
                 <ScrollView showsVerticalScrollIndicator={false}>
-                  {categories.map(category => (
-                    <View key={category} style={{ marginBottom: 18 }}>
-                      <TouchableOpacity style={styles.categoryHeaderRow} onPress={() => openAddForm(category)} activeOpacity={0.7}>
-                        <Ionicons name={(CATEGORY_ICONS[category] ?? 'ellipse') as any} size={16} color={colors.xpBar} />
-                        <Text style={styles.categoryHeaderText}>{category}</Text>
-                        <Ionicons name="add-circle-outline" size={16} color={colors.xpBar} style={{ marginLeft: 'auto' }} />
-                      </TouchableOpacity>
-                      {(grouped[category] ?? []).length === 0 ? (
-                        <Text style={styles.emptyCategoryText}>No exercises yet</Text>
-                      ) : (
-                        grouped[category].map(ex => (
-                          <View key={ex.id} style={styles.exRow}>
-                            <View style={{ flex: 1 }}>
-                              <Text style={styles.exName}>{ex.name}</Text>
-                              <Text style={styles.exMeta}>
-                                {ex.default_sets} sets × {ex.default_reps}{ex.default_weight ? ` · ${ex.default_weight}` : ''}{ex.default_time && ex.default_time !== '0' ? ` · ${ex.default_time}` : ''}
-                              </Text>
-                            </View>
-                            <TouchableOpacity onPress={() => openEditForm(ex)} style={styles.iconBtn}>
-                              <Ionicons name="create-outline" size={18} color={colors.xpBar} />
-                            </TouchableOpacity>
-                            <TouchableOpacity onPress={() => handleDelete(ex)} style={styles.iconBtn}>
-                              <Ionicons name="trash-outline" size={18} color={colors.danger} />
-                            </TouchableOpacity>
-                          </View>
-                        ))
-                      )}
-                    </View>
-                  ))}
+                  {categories.map(category => {
+                    const items = grouped[category] ?? [];
+                    const isExpanded = expandedCategories.has(category);
+                    return (
+                      <View key={category} style={{ marginBottom: 10 }}>
+                        <TouchableOpacity style={styles.categoryHeaderRow} onPress={() => toggleCategory(category)} activeOpacity={0.7}>
+                          <Ionicons
+                            name={isExpanded ? 'chevron-down' : 'chevron-forward'}
+                            size={16}
+                            color={colors.textSecondary}
+                          />
+                          <Ionicons name={(CATEGORY_ICONS[category] ?? 'ellipse') as any} size={16} color={colors.xpBar} />
+                          <Text style={styles.categoryHeaderText}>{category}</Text>
+                          <Text style={styles.categoryHeaderCount}>({items.length})</Text>
+                          <TouchableOpacity
+                            onPress={() => openAddForm(category)}
+                            style={{ marginLeft: 'auto', padding: 4 }}
+                            hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                          >
+                            <Ionicons name="add-circle-outline" size={18} color={colors.xpBar} />
+                          </TouchableOpacity>
+                        </TouchableOpacity>
+                        {isExpanded && (
+                          items.length === 0 ? (
+                            <Text style={styles.emptyCategoryText}>No exercises yet</Text>
+                          ) : (
+                            items.map(ex => (
+                              <View key={ex.id} style={styles.exRow}>
+                                <View style={{ flex: 1 }}>
+                                  <Text style={styles.exName}>{ex.name}</Text>
+                                  <Text style={styles.exMeta}>
+                                    {ex.default_sets} sets × {ex.default_reps}{ex.default_weight ? ` · ${ex.default_weight}` : ''}{ex.default_time && ex.default_time !== '0' ? ` · ${ex.default_time}` : ''}
+                                  </Text>
+                                </View>
+                                <TouchableOpacity onPress={() => openEditForm(ex)} style={styles.iconBtn}>
+                                  <Ionicons name="create-outline" size={18} color={colors.xpBar} />
+                                </TouchableOpacity>
+                                <TouchableOpacity onPress={() => handleDelete(ex)} style={styles.iconBtn}>
+                                  <Ionicons name="trash-outline" size={18} color={colors.danger} />
+                                </TouchableOpacity>
+                              </View>
+                            ))
+                          )
+                        )}
+                      </View>
+                    );
+                  })}
                 </ScrollView>
               )}
             </>
@@ -314,8 +349,12 @@ const styles = StyleSheet.create({
   },
   addBtnText: { fontSize: 14, fontWeight: '700', color: colors.text },
 
-  categoryHeaderRow: { flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 8 },
+  categoryHeaderRow: {
+    flexDirection: 'row', alignItems: 'center', gap: 8,
+    paddingVertical: 10, paddingHorizontal: 4,
+  },
   categoryHeaderText: { fontSize: 13, fontWeight: '700', color: colors.xpBar, letterSpacing: 1, textTransform: 'uppercase' },
+  categoryHeaderCount: { fontSize: 12, fontWeight: '600', color: colors.textSecondary },
   exRow: {
     flexDirection: 'row', alignItems: 'center', gap: 8,
     backgroundColor: colors.secondary, borderRadius: 12, padding: 12,

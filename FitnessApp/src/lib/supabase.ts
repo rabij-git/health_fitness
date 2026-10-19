@@ -106,6 +106,8 @@ export interface DBExercise {
   // updated to read this yet. Null/absent = not using per-set detail (every
   // set shares the scalar columns above), not "no exercise."
   set_details?: ExerciseSetTarget[] | null;
+  // Which side this is done on — null/absent = both sides together.
+  laterality?: 'single_arm' | 'single_leg' | null;
 }
 
 export interface DBProgramExercise {
@@ -118,6 +120,7 @@ export interface DBProgramExercise {
   time: string; // duration like "30s" or "5m"; plain number or "0" = not timed
   rest_seconds?: number | null; // rest period between sets; null/0 = no rest timer
   sort_order: number;
+  laterality?: 'single_arm' | 'single_leg' | null;
 }
 
 export interface DBWeightLog {

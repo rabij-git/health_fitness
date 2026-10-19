@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { View, ActivityIndicator } from 'react-native';
-import { NavigationContainer } from '@react-navigation/native';
+import { NavigationContainer, useNavigationContainerRef } from '@react-navigation/native';
 import { UserRole } from '../data/mockData';
 import { supabase } from '../lib/supabase';
 import { getProfile } from '../lib/db';
@@ -19,6 +19,11 @@ export default function RootNavigator() {
   // session underneath is untouched; "Logout" from that view just exits
   // back to Admin instead of signing out for real.
   const [viewAsCoachId, setViewAsCoachId] = useState<string | null>(null);
+  // Lets the global rest-timer banner (rendered above TrainerTabs' own
+  // Tab.Navigator — see TrainerTabs.tsx/RestTimerBanner.tsx) jump back to
+  // the Workout tab on tap, without that banner needing to be a Tab.Screen
+  // itself to call useNavigation().
+  const navigationRef = useNavigationContainerRef();
 
   // Marks this session's own user as online (real Supabase Presence, not a
   // DB flag) for as long as anyone is logged in, regardless of role/tab —
@@ -103,8 +108,8 @@ export default function RootNavigator() {
   }
 
   return (
-    <NavigationContainer>
-      <TrainerTabs onLogout={handleLogout} userId={userId} />
+    <NavigationContainer ref={navigationRef}>
+      <TrainerTabs onLogout={handleLogout} userId={userId} navigationRef={navigationRef} />
     </NavigationContainer>
   );
 }
