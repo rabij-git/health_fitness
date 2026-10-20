@@ -41,7 +41,7 @@ function buildEmptyExercise(): ExerciseEntry {
 
 const LATERALITY_OPTIONS: { value: 'single_arm' | 'single_leg' | null; label: string }[] = [
   { value: null, label: 'Both' },
-  { value: 'single_arm', label: 'Single Arm' },
+  { value: 'single_arm', label: 'Each Arm' },
   { value: 'single_leg', label: 'Each Leg' },
 ];
 
