@@ -22,6 +22,7 @@ import {
   getRestNotificationPermissionStatus,
   requestRestNotificationPermission,
   RestNotificationPermissionStatus,
+  openExactAlarmSettings,
 } from '../../lib/restNotifications';
 import {
   getProfile,
@@ -668,6 +669,31 @@ export default function ProfileScreen({ onLogout, userId }: Props) {
                 <Text style={styles.notifAlertBtnText}>
                   {notifPermStatus === 'denied' ? 'Open Settings' : 'Enable'}
                 </Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        )}
+
+        {/* Android-only: a separate permission from notifications entirely —
+            "Alarms & reminders" (SCHEDULE_EXACT_ALARM), needed for the rest
+            timer to fire reliably once the phone is actually locked, not just
+            backgrounded. Reported exactly that split: alerts arrived fine
+            while the trainee had merely switched apps, but never once the
+            phone was locked. Android 14 doesn't auto-grant this from the
+            manifest declaration alone for most apps anymore — the user has
+            to flip it on once via Settings. Shown unconditionally (not
+            gated on a status check) since there's no JS-readable way to
+            tell whether it's already granted — see openExactAlarmSettings. */}
+        {Platform.OS === 'android' && notifPermStatus && notifPermStatus !== 'unavailable' && (
+          <View style={styles.notifAlertCard}>
+            <Ionicons name="alarm-outline" size={20} color={colors.warning} />
+            <View style={{ flex: 1 }}>
+              <Text style={styles.notifAlertTitle}>Reliable Alerts While Locked</Text>
+              <Text style={styles.notifAlertSub}>
+                If rest-timer alerts don't arrive while your phone is locked (but do while you're just using another app), Android needs a separate "Alarms & reminders" permission for this app. Tap below, find Athera in the list, and turn it on.
+              </Text>
+              <TouchableOpacity style={styles.notifAlertBtn} onPress={() => openExactAlarmSettings()}>
+                <Text style={styles.notifAlertBtnText}>Check Alarm Permission</Text>
               </TouchableOpacity>
             </View>
           </View>

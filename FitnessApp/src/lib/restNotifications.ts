@@ -1,5 +1,5 @@
 import type * as NotificationsType from 'expo-notifications';
-import { Platform, AppState } from 'react-native';
+import { Platform, AppState, Linking } from 'react-native';
 import Constants, { ExecutionEnvironment } from 'expo-constants';
 
 // Lets a trainee know their rest period is over even if they've left the app
@@ -134,6 +134,35 @@ export async function requestRestNotificationPermission(): Promise<RestNotificat
   if (status !== 'granted') permissionDeniedThisSession = true;
   else permissionDeniedThisSession = false;
   return status;
+}
+
+// Reported: the rest-timer alert fires fine while the trainee has merely
+// switched to a different app (screen still on), but never arrives once the
+// phone is actually locked — even with notification permission granted and
+// android.permission.SCHEDULE_EXACT_ALARM declared in app.json. Root cause:
+// Android 14 (API 34) tightened this specific permission so that declaring
+// it in the manifest is no longer enough to auto-grant it for most apps
+// (a deliberate policy change aimed at apps overusing exact alarms) — the
+// user now has to explicitly flip "Alarms & reminders" on for this app via
+// Settings, the same one-time grant a real alarm-clock app would need.
+// There's no JS-readable status for this specific permission (expo-notifications'
+// own `getPermissionsAsync()` android fields only cover importance/interruption
+// filter, nothing about exact alarms), so unlike the notification-permission
+// card above, this can't be conditionally hidden once already granted — it's
+// shown unconditionally on Android as a "if alerts don't arrive while locked,
+// check this" action rather than a status readout.
+export async function openExactAlarmSettings(): Promise<void> {
+  if (Platform.OS !== 'android') return;
+  try {
+    // No data URI support via Linking.sendIntent (RN's Android bridge only
+    // forwards action + extras, not an Intent's `data`), so this may land on
+    // a general "Alarms & reminders" list of every app requesting it rather
+    // than jumping straight to this app's own toggle — still gets the
+    // trainee to the right screen, just possibly one tap further.
+    await Linking.sendIntent('android.settings.REQUEST_SCHEDULE_EXACT_ALARM');
+  } catch (e) {
+    console.warn('openExactAlarmSettings failed', e);
+  }
 }
 
 let androidChannelReady = false;
