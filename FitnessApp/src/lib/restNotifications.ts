@@ -91,6 +91,51 @@ async function ensurePermission(Notifications: typeof NotificationsType): Promis
   return status === 'granted';
 }
 
+// Reported bug: rest-timer alerts don't fire once the trainee leaves the app
+// or locks the phone. Two real, separate causes found — see CLAUDE.md for
+// the Android-side fix (`android.permission.SCHEDULE_EXACT_ALARM` in
+// app.json — confirmed by reading expo-notifications' own native scheduler,
+// which silently falls back to an inexact, Doze-delayable alarm without it;
+// a manifest/native-build change this module can't do anything about at
+// runtime). The other cause this module CAN help recover from: once a
+// trainee denies the permission prompt
+// (or it carried over denied from an earlier install — Android does not
+// reset a previously-denied permission just because the app was updated,
+// only a full uninstall/reinstall resets it), `ensurePermission` above
+// stops re-prompting for the rest of that session, same as before, but
+// there was previously no way for the trainee to ever revisit that
+// decision from inside the app. These two exports back a small "Rest Timer
+// Alerts" status row (ProfileScreen.tsx) so a denied/never-asked state is
+// visible and fixable, instead of silently never alerting again.
+export type RestNotificationPermissionStatus = 'granted' | 'denied' | 'undetermined' | 'unavailable';
+
+export async function getRestNotificationPermissionStatus(): Promise<RestNotificationPermissionStatus> {
+  const Notifications = getNotifications();
+  if (!Notifications) return 'unavailable';
+  try {
+    const { status } = await Notifications.getPermissionsAsync();
+    return status;
+  } catch (e) {
+    return 'unavailable';
+  }
+}
+
+// Only actually shows a system prompt the first time (iOS/Android both
+// refuse to re-prompt after a denial) — calling this again once already
+// denied just immediately resolves to the same denied status with no UI;
+// the caller should fall back to opening Settings instead in that case
+// (see openNotificationSettings below).
+export async function requestRestNotificationPermission(): Promise<RestNotificationPermissionStatus> {
+  const Notifications = getNotifications();
+  if (!Notifications) return 'unavailable';
+  const { status } = await Notifications.requestPermissionsAsync({
+    ios: { allowAlert: true, allowBadge: true, allowSound: true },
+  });
+  if (status !== 'granted') permissionDeniedThisSession = true;
+  else permissionDeniedThisSession = false;
+  return status;
+}
+
 let androidChannelReady = false;
 
 async function ensureAndroidChannel(Notifications: typeof NotificationsType) {

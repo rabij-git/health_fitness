@@ -9,6 +9,7 @@ import {
   getProfile,
   startWorkoutSession,
   completeWorkoutSession,
+  reorderWorkoutExercises,
   sendMessage,
   logExerciseWeight,
   todayDateString,
@@ -467,8 +468,23 @@ export function ActiveWorkoutProvider({ userId, children }: { userId: string; ch
     });
   }, []);
 
+  // Mirrors `exercises` so the debounced reorder-sync below (fired from a
+  // setTimeout, well after the triggering render) always reads the final
+  // order rather than whatever was captured in reorderExercise's own
+  // closure at the moment of the last tap.
+  const exercisesRef = useRef<ExerciseLog[]>(exercises);
+  useEffect(() => { exercisesRef.current = exercises; }, [exercises]);
+
+  // Debounced so tapping the reorder arrows repeatedly (moving an exercise
+  // several spots) persists and notifies once after the trainee settles,
+  // not once per tap.
+  const reorderSyncTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
   // Lets a trainee reorder upcoming exercises (not yet-completed ones are
   // locked by the in-order rule above, and can't be reordered either).
+  // Per feedback: the new order should stick (not just last for this one
+  // session) and the coach should know it happened, since they're the one
+  // who originally set the order.
   const reorderExercise = useCallback((exerciseId: string, direction: 'up' | 'down') => {
     setExercises(prev => {
       const idx = prev.findIndex(e => e.id === exerciseId);
@@ -484,6 +500,32 @@ export function ActiveWorkoutProvider({ userId, children }: { userId: string; ch
       [next[idx], next[target]] = [next[target], next[idx]];
       return next;
     });
+
+    const workoutId = selectedWorkoutId;
+    const workoutName = dbWorkout?.name;
+    if (!workoutId) return;
+    if (reorderSyncTimeoutRef.current) clearTimeout(reorderSyncTimeoutRef.current);
+    reorderSyncTimeoutRef.current = setTimeout(() => {
+      reorderSyncTimeoutRef.current = null;
+      const finalOrder = exercisesRef.current.map(e => e.id);
+      reorderWorkoutExercises(workoutId, finalOrder).catch(e => console.warn('reorderWorkoutExercises failed', e));
+      getProfile(userId)
+        .then(profile => {
+          if (!profile?.coach_id) return;
+          return sendMessage(
+            userId,
+            profile.coach_id,
+            `🔀 ${profile.name} changed the exercise order for "${workoutName ?? 'their workout'}"`
+          );
+        })
+        .catch(e => console.warn('reorder coach notification failed', e));
+    }, 2500);
+  }, [selectedWorkoutId, dbWorkout, userId]);
+
+  // A pending reorder-sync timer must not fire for a stale workout/profile
+  // after the Provider itself unmounts (logout) — nothing else clears it.
+  useEffect(() => () => {
+    if (reorderSyncTimeoutRef.current) clearTimeout(reorderSyncTimeoutRef.current);
   }, []);
 
   const handleSubmit = useCallback(async () => {

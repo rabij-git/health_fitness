@@ -24,7 +24,8 @@
       },
       "permissions": [
         "android.permission.VIBRATE",
-        "android.permission.MODIFY_AUDIO_SETTINGS"
+        "android.permission.MODIFY_AUDIO_SETTINGS",
+        "android.permission.SCHEDULE_EXACT_ALARM"
       ]
     },
     "web": {

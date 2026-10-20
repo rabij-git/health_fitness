@@ -17,7 +17,12 @@ import { Ionicons } from '@expo/vector-icons';
 import { colors } from '../../theme/colors';
 import { useLiveRefresh } from '../../lib/useLiveRefresh';
 import { getXpForNextLevel, getCurrentLevelXp, getLevelTitle, mockMedals } from '../../data/mockData';
-import { notifyMedalsEarned } from '../../lib/restNotifications';
+import {
+  notifyMedalsEarned,
+  getRestNotificationPermissionStatus,
+  requestRestNotificationPermission,
+  RestNotificationPermissionStatus,
+} from '../../lib/restNotifications';
 import {
   getProfile,
   getWeightLogs,
@@ -234,6 +239,34 @@ export default function ProfileScreen({ onLogout, userId }: Props) {
   const [savingSettings, setSavingSettings] = useState(false);
   const birthYearValid = isValidBirthYear(birthYear);
   const heightValid = isValidHeight(heightCm);
+
+  // Rest Timer Alerts status row — reported bug: rest-timer alerts (sound +
+  // vibration + notification) silently stop working once the trainee
+  // leaves the app or locks the phone. One real cause of that is simply a
+  // denied/never-granted notification permission — the in-workout prompt
+  // (fired the first time a rest timer ever starts, see restNotifications.ts)
+  // only ever shows once per OS-level decision, and Android specifically
+  // does NOT reset a previously-denied permission just because the app was
+  // updated (only an uninstall/reinstall does), so a trainee who dismissed
+  // it on an earlier build had no way to revisit that from inside the app.
+  // Re-checked via useLiveRefresh (below) so coming back from Settings
+  // after changing it updates this without needing a manual refresh.
+  const [notifPermStatus, setNotifPermStatus] = useState<RestNotificationPermissionStatus | null>(null);
+  const checkNotifPermission = useCallback(() => {
+    getRestNotificationPermissionStatus().then(setNotifPermStatus);
+  }, []);
+  useLiveRefresh(checkNotifPermission);
+
+  const handleEnableRestAlerts = useCallback(async () => {
+    if (notifPermStatus === 'denied') {
+      // Re-requesting after a denial shows no UI at all on either platform —
+      // only the OS's own Settings screen lets the trainee change their mind.
+      Linking.openSettings();
+      return;
+    }
+    const status = await requestRestNotificationPermission();
+    setNotifPermStatus(status);
+  }, [notifPermStatus]);
 
   const openSettings = useCallback(() => {
     setBirthYear(profile?.birth_year ? String(profile.birth_year) : '');
@@ -615,6 +648,30 @@ export default function ProfileScreen({ onLogout, userId }: Props) {
             </>
           ) : null}
         </View>
+
+        {/* Rest Timer Alerts status — see the handleEnableRestAlerts/
+            checkNotifPermission comment above for why this exists. Only
+            shown once we've actually checked (null = still loading), and
+            not at all if notifications aren't available in this
+            environment at all (Expo Go on Android). */}
+        {notifPermStatus && notifPermStatus !== 'unavailable' && notifPermStatus !== 'granted' && (
+          <View style={styles.notifAlertCard}>
+            <Ionicons name="notifications-off-outline" size={20} color={colors.warning} />
+            <View style={{ flex: 1 }}>
+              <Text style={styles.notifAlertTitle}>Rest Timer Alerts Off</Text>
+              <Text style={styles.notifAlertSub}>
+                {notifPermStatus === 'denied'
+                  ? "You won't be alerted when a rest period ends if you leave the app or lock your phone. Enable notifications in Settings to fix this."
+                  : "Turn on notifications so you're still alerted when a rest period ends, even if you leave the app or lock your phone."}
+              </Text>
+              <TouchableOpacity style={styles.notifAlertBtn} onPress={handleEnableRestAlerts}>
+                <Text style={styles.notifAlertBtnText}>
+                  {notifPermStatus === 'denied' ? 'Open Settings' : 'Enable'}
+                </Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        )}
 
         {/* Settings Quick Links */}
         <View style={styles.menuCard}>
@@ -1095,6 +1152,18 @@ const styles = StyleSheet.create({
     overflow: 'hidden',
     marginBottom: 16,
   },
+  notifAlertCard: {
+    flexDirection: 'row', gap: 12, backgroundColor: colors.warning + '14',
+    borderRadius: 16, borderWidth: 1, borderColor: colors.warning + '44',
+    padding: 14, marginBottom: 16,
+  },
+  notifAlertTitle: { fontSize: 14, fontWeight: '700', color: colors.text },
+  notifAlertSub: { fontSize: 12, color: colors.textSecondary, marginTop: 3, lineHeight: 17 },
+  notifAlertBtn: {
+    alignSelf: 'flex-start', marginTop: 10, backgroundColor: colors.warning,
+    paddingHorizontal: 14, paddingVertical: 7, borderRadius: 8,
+  },
+  notifAlertBtnText: { fontSize: 13, fontWeight: '700', color: '#1a1a1a' },
   menuItem: {
     flexDirection: 'row',
     alignItems: 'center',

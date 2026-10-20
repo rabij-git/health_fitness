@@ -564,6 +564,22 @@ export async function updateWorkoutExercises(workoutId: string, exercises: Exerc
   ]);
 }
 
+// Lets a trainee's own mid-session exercise reorder (ActiveWorkoutContext's
+// reorderExercise) persist for next time, not just the current in-memory
+// session — writes each row's sort_order to match the given array order.
+// Deliberately doesn't touch exercises_updated_at (unlike updateWorkoutExercises
+// above) — that stamp means "the coach edited this," and showing a
+// trainee-driven reorder as a coach modification would be misleading;
+// the coach is told about this instead via a chat notification (see
+// ActiveWorkoutContext.tsx), not the "Modified in Week X" badge.
+export async function reorderWorkoutExercises(workoutId: string, orderedExerciseIds: string[]) {
+  await Promise.all(
+    orderedExerciseIds.map((id, i) =>
+      supabase.from('exercises').update({ sort_order: i }).eq('id', id).eq('workout_id', workoutId)
+    )
+  );
+}
+
 // ── Workout sessions ──────────────────────────────────────────────────────────
 
 // Called once when a trainee opens a workout to start logging — records a

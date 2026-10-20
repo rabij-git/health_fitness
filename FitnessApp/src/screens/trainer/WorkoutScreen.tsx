@@ -451,7 +451,7 @@ export default function WorkoutScreen({ userId }: Props) {
                 <View style={styles.lateralityBadge}>
                   <Ionicons name="swap-horizontal" size={12} color={colors.primary} />
                   <Text style={styles.lateralityBadgeText}>
-                    {exercise.laterality === 'single_arm' ? 'Single Arm' : 'Single Leg'}
+                    {exercise.laterality === 'single_arm' ? 'Single Arm' : 'Each Leg'}
                   </Text>
                 </View>
               )}

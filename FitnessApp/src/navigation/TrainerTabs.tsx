@@ -31,9 +31,18 @@ export default function TrainerTabs({ onLogout, userId, navigationRef }: Props) 
     <ActiveWorkoutProvider userId={userId}>
       {/* Floats above whichever tab is active, so the rest timer (and its
           double-tap-to-skip) stays visible app-wide, not just on the
-          Workout tab — see RestTimerBanner.tsx / ActiveWorkoutContext.tsx. */}
-      <View style={[styles.bannerWrap, { top: insets.top + 8 }]} pointerEvents="box-none">
-        <RestTimerBanner onPress={() => navigationRef?.current?.navigate('Workout' as never)} />
+          Workout tab — see RestTimerBanner.tsx / ActiveWorkoutContext.tsx.
+          Covers the full screen (not just a thin top strip) since the
+          banner is now draggable anywhere on it — `pointerEvents="box-none"`
+          means this wrapper itself never intercepts touches, only the
+          banner's own small area does, so it doesn't block any tab content
+          underneath it. */}
+      <View style={styles.bannerWrap} pointerEvents="box-none">
+        <RestTimerBanner
+          onPress={() => navigationRef?.current?.navigate('Workout' as never)}
+          topInset={insets.top}
+          bottomInset={insets.bottom}
+        />
       </View>
       <Tab.Navigator
         screenOptions={({ route }) => ({
@@ -100,6 +109,6 @@ export default function TrainerTabs({ onLogout, userId, navigationRef }: Props) 
 
 const styles = StyleSheet.create({
   bannerWrap: {
-    position: 'absolute', left: 16, right: 16, zIndex: 50,
+    position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, zIndex: 50,
   },
 });

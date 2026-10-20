@@ -16,6 +16,7 @@ import { Pedometer } from 'expo-sensors';
 import { colors } from '../../theme/colors';
 import { useKeyboardOffset } from '../../lib/useKeyboardOffset';
 import { useLiveRefresh } from '../../lib/useLiveRefresh';
+import { useActiveWorkout } from '../../contexts/ActiveWorkoutContext';
 import { useIsUserOnline } from '../../lib/presence';
 import { getXpForNextLevel, getCurrentLevelXp, mockMedals } from '../../data/mockData';
 import { notifyMedalsEarned, notifyNewActivity } from '../../lib/restNotifications';
@@ -383,6 +384,13 @@ export default function TrainerDashboard({ onLogout, userId, navigation, scrollR
     [workouts, completedTodayIds]
   );
 
+  // Shared across every tab (ActiveWorkoutContext) — lets this card show
+  // "In Progress" on whichever workout the trainee has actually started
+  // logging, not just that it's doable today. A workout only has one
+  // active session at a time, so comparing against `selectedWorkoutId` is
+  // enough — no need to track per-workout state here.
+  const { sessionActive: activeWorkoutSessionActive, selectedWorkoutId: activeWorkoutId } = useActiveWorkout();
+
   const handleSaveWeight = useCallback(async () => {
     const parsed = parseFloat(weight);
     if (!weight || isNaN(parsed) || parsed <= 0 || parsed > 250) return;
@@ -629,7 +637,15 @@ export default function TrainerDashboard({ onLogout, userId, navigation, scrollR
                   <Ionicons name="barbell" size={18} color={colors.primary} />
                 </View>
                 <View style={{ flex: 1 }}>
-                  <Text style={styles.workoutTodayName}>{w.name}</Text>
+                  <View style={styles.workoutTodayNameRow}>
+                    <Text style={styles.workoutTodayName}>{w.name}</Text>
+                    {activeWorkoutSessionActive && activeWorkoutId === w.id && (
+                      <View style={styles.inProgressTag}>
+                        <View style={styles.inProgressDot} />
+                        <Text style={styles.inProgressTagText}>In Progress</Text>
+                      </View>
+                    )}
+                  </View>
                   <Text style={styles.workoutTodayMeta}>{w.duration} • {w.difficulty}</Text>
                 </View>
                 <Ionicons name="chevron-forward" size={18} color={colors.textSecondary} />
@@ -1054,8 +1070,15 @@ const styles = StyleSheet.create({
     width: 36, height: 36, borderRadius: 10,
     backgroundColor: colors.primary + '22', alignItems: 'center', justifyContent: 'center',
   },
+  workoutTodayNameRow: { flexDirection: 'row', alignItems: 'center', gap: 8, flexWrap: 'wrap' },
   workoutTodayName: { fontSize: 15, fontWeight: '700', color: colors.text },
   workoutTodayMeta: { fontSize: 12, color: colors.textSecondary, marginTop: 2 },
+  inProgressTag: {
+    flexDirection: 'row', alignItems: 'center', gap: 5,
+    backgroundColor: colors.success + '22', paddingHorizontal: 8, paddingVertical: 2, borderRadius: 6,
+  },
+  inProgressDot: { width: 6, height: 6, borderRadius: 3, backgroundColor: colors.success },
+  inProgressTagText: { fontSize: 10, fontWeight: '700', color: colors.success },
 
   // Calorie card
   calorieCard: {
