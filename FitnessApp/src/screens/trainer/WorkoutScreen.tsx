@@ -361,7 +361,15 @@ export default function WorkoutScreen({ userId }: Props) {
 
   return (
     <View style={styles.container}>
-      <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.scrollContent}>
+      {/* `stickyHeaderIndices={[3]}` pins the effort-scale legend (the 4th
+          child below, index 3 — back row/lock banner, header, and progress
+          bar are 0-2) to the top of the viewport once scrolled past it, so
+          it stays visible the whole time the trainee is logging sets
+          instead of needing to scroll back up to check what a number means.
+          Built into ScrollView, no extra library — but it does mean this
+          index is load-bearing: don't insert a new unconditional child
+          before the legend below without bumping it. */}
+      <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.scrollContent} stickyHeaderIndices={[3]}>
         {sessionActive ? (
           <View style={[styles.backRow, styles.backRowLocked]}>
             <Ionicons name="lock-closed" size={14} color={colors.textSecondary} />
@@ -405,10 +413,11 @@ export default function WorkoutScreen({ userId }: Props) {
           </View>
         </View>
 
-        {/* Effort scale key — moved up here (was at the bottom, after every
-            exercise card) so the trainee can see what each effort number
-            means before they start tapping, not just after scrolling past
-            the whole workout. */}
+        {/* Effort scale key — sticky (see stickyHeaderIndices above). Was
+            moved up here from the bottom (after every exercise card) so the
+            trainee could see what each effort number means before they
+            start tapping; reported that it still scrolled out of view once
+            they got further into the workout, hence the sticky pin. */}
         <View style={styles.effortKey}>
           <Text style={styles.effortKeyTitle}>EFFORT SCALE</Text>
           {Object.entries(EFFORT_LABELS).map(([k, v]) => (
@@ -841,7 +850,10 @@ const styles = StyleSheet.create({
   effortDot: { width: 8, height: 8, borderRadius: 4 },
   effortLegendText: { fontSize: 12, color: colors.textSecondary },
 
-  // Effort key card
+  // Effort key card — sticky (see stickyHeaderIndices on its ScrollView), so
+  // it ends up visually layered above the exercise cards scrolling beneath
+  // it once pinned; the shadow is what sells that "floating above" look
+  // rather than it just merging into the scroll.
   effortKey: {
     backgroundColor: colors.card,
     borderRadius: 14,
@@ -849,6 +861,7 @@ const styles = StyleSheet.create({
     marginBottom: 20,
     borderWidth: 1,
     borderColor: colors.border,
+    shadowColor: '#000', shadowOpacity: 0.15, shadowRadius: 6, shadowOffset: { width: 0, height: 3 }, elevation: 4,
   },
   effortKeyTitle: { fontSize: 10, fontWeight: '700', color: colors.textSecondary, letterSpacing: 1.5, marginBottom: 12 },
   effortKeyRow: { flexDirection: 'row', alignItems: 'center', gap: 12, marginBottom: 8 },
