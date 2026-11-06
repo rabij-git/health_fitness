@@ -7,6 +7,7 @@ import {
   Modal,
   KeyboardAvoidingView,
   Platform,
+  type ScrollViewInstance,
 } from 'react-native';
 import { Text, TextInput } from '../../components/AppText';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -71,7 +72,8 @@ export default function CoachDashboard({ onLogout, coachId, navigation }: Props)
   // ── Reply chat thread (opened from a notification) ──
   const [chatTrainee, setChatTrainee] = useState<DBUser | null>(null);
   const [chatMessages, setChatMessages] = useState<DBMessage[]>([]);
-  const chatScrollRef = useRef<ScrollView>(null);
+  // See TrainerTabs.tsx's homeScrollRef comment — SDK 58 ScrollView ref typing change.
+  const chatScrollRef = useRef<ScrollViewInstance>(null);
   // Measured (not guessed) chat area height — see CoachTrainees.tsx's Chat
   // tab, the confirmed-working reference this modal now mirrors exactly.
   const [chatAreaHeight, setChatAreaHeight] = useState(0);

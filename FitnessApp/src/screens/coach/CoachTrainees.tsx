@@ -12,6 +12,7 @@ import {
   Linking,
   Alert,
   Share,
+  type ScrollViewInstance,
 } from 'react-native';
 import { Text, TextInput } from '../../components/AppText';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -262,7 +263,8 @@ export default function CoachTrainees({ coachId }: Props) {
   const navigation = useNavigation<any>();
   const insets = useSafeAreaInsets();
   const keyboardOffset = useKeyboardOffset();
-  const chatScrollRef = useRef<ScrollView>(null);
+  // See TrainerTabs.tsx's homeScrollRef comment — SDK 58 ScrollView ref typing change.
+  const chatScrollRef = useRef<ScrollViewInstance>(null);
   // Measured (not guessed) height of the chat tab's content area, captured
   // via onLayout while nothing is shrinking it — see the note by its use
   // below for why this replaced a margin-based approach.

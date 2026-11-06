@@ -5,6 +5,7 @@ import {
   StyleSheet,
   type TextProps,
   type TextInputProps,
+  type TextInputInstance,
   type TextStyle,
 } from 'react-native';
 
@@ -45,10 +46,20 @@ export function Text({ style, ...props }: TextProps) {
 // TextInput ref from a Modal's onShow — keep working unchanged. The
 // `interface` merge below lets `TextInput` serve both as the JSX component
 // (the const) and as the ref instance type (the interface), the same dual
-// role RN's own class-based TextInput export has natively.
-export interface TextInput extends RNTextInput {}
+// role RN's own class-based TextInput export used to have natively.
+//
+// SDK 58's stricter RN types turned `TextInput` itself from a class (usable
+// directly as a ref/instance type) into a plain function-component type with
+// no instance shape of its own — a real example of the exact "refs now use
+// instance types" change in the SDK 58 changelog. RN now exports the actual
+// instance shape separately as `TextInputInstance`; extending THAT instead
+// of `RNTextInput` here is the one-line fix that keeps every other file's
+// `useRef<TextInput>(null)` + `.focus()` call site in the app compiling
+// unchanged — this file exists specifically to absorb this kind of churn in
+// one place rather than at every call site.
+export interface TextInput extends TextInputInstance {}
 
-export const TextInput = React.forwardRef<RNTextInput, TextInputProps>(function TextInput(
+export const TextInput = React.forwardRef<TextInputInstance, TextInputProps>(function TextInput(
   { style, ...props },
   ref
 ) {

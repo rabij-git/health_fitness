@@ -1,5 +1,5 @@
 import React, { useRef } from 'react';
-import { View, StyleSheet, ScrollView } from 'react-native';
+import { View, StyleSheet, ScrollView, type ScrollViewInstance } from 'react-native';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -26,7 +26,12 @@ export default function TrainerTabs({ onLogout, userId, navigationRef }: Props) 
   const insets = useSafeAreaInsets();
   // Double-tap-to-top: tapping the Home tab while it's already focused
   // scrolls the Home screen back to the top instead of doing nothing.
-  const homeScrollRef = useRef<ScrollView>(null);
+  // SDK 58's stricter RN types made ScrollView a plain function-component
+  // type with no instance shape of its own — the ref needs the separately
+  // exported instance type (`ScrollViewInstance`) now, same change as every
+  // other useRef<ScrollView> in the app (CoachDashboard.tsx,
+  // CoachTrainees.tsx, TrainerDashboard.tsx).
+  const homeScrollRef = useRef<ScrollViewInstance>(null);
   return (
     <ActiveWorkoutProvider userId={userId}>
       {/* Floats above whichever tab is active, so the rest timer (and its

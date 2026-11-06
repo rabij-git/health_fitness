@@ -70,18 +70,39 @@ const asyncNgrokPath = path.join(
 );
 if (fs.existsSync(asyncNgrokPath)) {
   const original = fs.readFileSync(asyncNgrokPath, 'utf8');
-  const unpatchedMarker = `const configPath = _path().join((0, _UserSettings.getSettingsDirectory)(), 'ngrok.yml');
+  // The exact surrounding source changed shape between Expo SDK 57 and 58
+  // (the debug call became a multi-line debugEvent(...) call) even though
+  // the forced-shared-authtoken behavior being patched out is unchanged —
+  // kept both marker generations rather than only the latest, so this
+  // script still no-ops cleanly (hits the "already patched"/next branch)
+  // if a future `npm install` ever reverts to an SDK still shaped the old
+  // way, instead of silently skipping with a warning like this one did
+  // across the 57→58 upgrade.
+  const unpatchedMarkers = [
+    `const configPath = _path().join((0, _UserSettings.getSettingsDirectory)(), 'ngrok.yml');
             debug('Global config path:', configPath);
             const urlProps = await this._getConnectionPropsAsync();
             const url = await instance.connect({
                 ...urlProps,
                 authtoken: NGROK_CONFIG.authToken,
                 configPath,
-                onStatusChange (status) {`;
+                onStatusChange (status) {`,
+    `const configPath = _path().join((0, _UserSettings.getSettingsDirectory)(), 'ngrok.yml');
+            (0, _tunnelEvents.debugEvent)('ngrok_config_path', {
+                path: configPath
+            });
+            const urlProps = await this._getConnectionPropsAsync();
+            const url = await instance.connect({
+                ...urlProps,
+                authtoken: NGROK_CONFIG.authToken,
+                configPath,
+                onStatusChange (status) {`,
+  ];
   const patchedMarker = `const url = await instance.connect({
                 onStatusChange (status) {`;
-  if (original.includes(unpatchedMarker)) {
-    const patched = original.replace(unpatchedMarker, patchedMarker);
+  const matchedUnpatchedMarker = unpatchedMarkers.find(marker => original.includes(marker));
+  if (matchedUnpatchedMarker) {
+    const patched = original.replace(matchedUnpatchedMarker, patchedMarker);
     fs.writeFileSync(asyncNgrokPath, patched);
     console.log('[patch-ngrok] Patched AsyncNgrok.js to use the personal ngrok account instead of Expo\'s shared one.');
   } else if (original.includes(patchedMarker)) {

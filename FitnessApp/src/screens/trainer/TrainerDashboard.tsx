@@ -8,6 +8,7 @@ import {
   KeyboardAvoidingView,
   Platform,
   ActivityIndicator,
+  type ScrollViewInstance,
 } from 'react-native';
 import { Text, TextInput } from '../../components/AppText';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -93,8 +94,9 @@ interface Props {
   userId: string;
   navigation?: any;
   // Lets TrainerTabs scroll this screen to top when the Home tab is
-  // tapped again while already focused (double-tap-to-top).
-  scrollRef?: React.RefObject<ScrollView | null>;
+  // tapped again while already focused (double-tap-to-top). ScrollViewInstance,
+  // not ScrollView — see TrainerTabs.tsx's homeScrollRef comment.
+  scrollRef?: React.RefObject<ScrollViewInstance | null>;
 }
 
 export default function TrainerDashboard({ onLogout, userId, navigation, scrollRef }: Props) {
@@ -127,7 +129,8 @@ export default function TrainerDashboard({ onLogout, userId, navigation, scrollR
   const [showNotifications, setShowNotifications] = useState(false);
   const hasUnreadNotif = !!incomingCoachRequest || coachNotifications.some(m => !m.read);
 
-  const chatScrollRef = useRef<ScrollView>(null);
+  // See TrainerTabs.tsx's homeScrollRef comment — SDK 58 ScrollView ref typing change.
+  const chatScrollRef = useRef<ScrollViewInstance>(null);
   // Measured (not guessed) chat area height — see CoachTrainees.tsx's Chat
   // tab, the confirmed-working reference this modal now mirrors exactly.
   const [chatAreaHeight, setChatAreaHeight] = useState(0);

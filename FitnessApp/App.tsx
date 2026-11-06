@@ -1,6 +1,7 @@
 import 'react-native-gesture-handler';
 import React from 'react';
 import { View } from 'react-native';
+import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { StatusBar } from 'expo-status-bar';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import {
@@ -37,9 +38,20 @@ export default function App() {
   }
 
   return (
-    <SafeAreaProvider>
-      <StatusBar style="light" />
-      <RootNavigator />
-    </SafeAreaProvider>
+    // react-navigation has always recommended wrapping the app root in this
+    // (it's what actually registers the native gesture responder system the
+    // side-effect import above only pulls in) — added explicitly as part of
+    // the SDK 58 upgrade, which bumped react-native-gesture-handler 2.x→3.x.
+    // The app never needed this before (no direct Gesture API usage, no
+    // native-stack navigator — only bottom-tabs, which doesn't gesture-drive
+    // its own tab switching), so it was silently fine without one on v2; a
+    // zero-downside addition to remove any doubt under the new major version
+    // rather than leave it unverified.
+    <GestureHandlerRootView style={{ flex: 1 }}>
+      <SafeAreaProvider>
+        <StatusBar style="light" />
+        <RootNavigator />
+      </SafeAreaProvider>
+    </GestureHandlerRootView>
   );
 }
