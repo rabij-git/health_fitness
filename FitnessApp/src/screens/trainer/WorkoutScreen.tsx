@@ -433,9 +433,7 @@ export default function WorkoutScreen({ userId }: Props) {
         {/* Exercise cards */}
         <Text style={styles.sectionTitle}>EXERCISES</Text>
         {exercises.map((exercise, exIndex) => {
-          const isPastLocked = exIndex < activeExerciseIndex;
           const isFutureLocked = exIndex > activeExerciseIndex;
-          const isLocked = isPastLocked || isFutureLocked;
           // Reordering is only offered among exercises not yet completed —
           // the in-order completion lock already fixes everything before
           // activeExerciseIndex in place, so letting those move too would
@@ -517,13 +515,23 @@ export default function WorkoutScreen({ userId }: Props) {
               <Text style={[styles.colHeader, styles.colEffort]}>EFFORT</Text>
             </View>
 
-            {/* Set rows — must be logged in order too: only the first not-yet-logged
-                set in the active exercise is interactive, same locking pattern as exercises. */}
+            {/* Set rows — logging new sets must still happen in order (only the
+                first not-yet-logged set in the active exercise accepts a NEW
+                rating), but a set that already has a rating stays editable
+                forever after that, on any exercise — not just the active
+                one. Reported bug: a mistake tapped a few sets back used to
+                be permanently stuck once the trainee moved on, with no way
+                to fix it; "deselect by tapping again" only ever helped while
+                a set was still the one active set. Locked out entirely once
+                the whole workout is `submitted` — nothing past that point is
+                sent to the server anymore (see the autosave effect in
+                ActiveWorkoutContext.tsx), so an edit there would be a pure
+                UI no-op that looks live but isn't. */}
             {(() => {
               const firstUnloggedSetIndex = exercise.sets.findIndex(s => s.effort === null);
               const activeSetIndex = firstUnloggedSetIndex === -1 ? exercise.sets.length : firstUnloggedSetIndex;
               return exercise.sets.map((set, setIndex) => {
-                const isSetLocked = isLocked || setIndex !== activeSetIndex;
+                const isSetLocked = submitted || isFutureLocked || (set.effort === null && setIndex !== activeSetIndex);
                 return (
               <View key={setIndex} style={styles.setRow}>
                 {/* Set number */}

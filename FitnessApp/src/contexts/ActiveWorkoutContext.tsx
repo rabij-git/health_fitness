@@ -443,19 +443,26 @@ export function ActiveWorkoutProvider({ userId, children }: { userId: string; ch
   // Toggles a set's effort level and, unless this was the very last set of
   // the very last exercise, starts the rest timer — extracted out of
   // WorkoutScreen's JSX (where it used to be an inline onPress) since it's
-  // now shared state owned here.
+  // now shared state owned here. A set with a rating already on it stays
+  // editable indefinitely (see WorkoutScreen.tsx's isSetLocked comment) so
+  // a trainee can fix a mistake — but only a genuinely NEW rating (the set
+  // had no rating before this tap) starts a rest countdown; correcting an
+  // already-logged set doesn't, since the trainee already rested after it
+  // the first time and isn't about to do another set right now just
+  // because they fixed a typo on an old one.
   const setEffort = useCallback((exerciseId: string, setIndex: number, level: number) => {
     setExercises(prev => {
       const exIndex = prev.findIndex(e => e.id === exerciseId);
       if (exIndex === -1) return prev;
       const exercise = prev[exIndex];
       const currentEffort = exercise.sets[setIndex]?.effort;
+      const wasAlreadyLogged = currentEffort !== null;
       const newValue = currentEffort === level ? null : level;
       const newSets = exercise.sets.map((s, i) => i === setIndex ? { ...s, effort: newValue } : s);
       const next = prev.map((e, i) => i === exIndex ? { ...e, sets: newSets } : e);
 
       const isVeryLastSet = exIndex === prev.length - 1 && setIndex === exercise.sets.length - 1;
-      if (newValue !== null && !isVeryLastSet && exercise.restSeconds && exercise.restSeconds > 0) {
+      if (!wasAlreadyLogged && newValue !== null && !isVeryLastSet && exercise.restSeconds && exercise.restSeconds > 0) {
         setRestTimer({
           exerciseId: exercise.id,
           exerciseName: exercise.name,
