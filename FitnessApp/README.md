@@ -28,7 +28,7 @@ No setup required. The app connects to a shared Supabase instance — the creden
 
 **On your phone (easiest):**
 ```bash
-npx expo start --tunnel --clear
+npx expo start --tunnel ngrok --clear
 ```
 Scan the QR code with the Expo Go app on your phone.
 
@@ -36,17 +36,17 @@ Scan the QR code with the Expo Go app on your phone.
 1. Start the emulator (see [Android Emulator: Start / Stop](#android-emulator-start--stop) below)
 2. Run:
 ```bash
-npx expo start --tunnel --clear
+npx expo start --tunnel ngrok --clear
 ```
 3. Press `a` in the Metro terminal to open on Android.
 
 **On iOS Simulator (requires Xcode):**
 ```bash
-npx expo start --tunnel --clear
+npx expo start --tunnel ngrok --clear
 ```
 Press `i` in the Metro terminal to open on iOS.
 
-> **Note:** Use `--tunnel` mode — it routes traffic via ngrok and avoids local network issues with emulators.
+> **Note:** Use `--tunnel` mode — it routes traffic via ngrok and avoids local network issues with emulators. **Must be `--tunnel ngrok`, not a bare `--tunnel`** — as of Expo SDK 58, a bare `--tunnel` silently defaults to Expo's own newer hosted tunnel service instead of ngrok (confirmed by reading `@expo/cli`'s own source — `resolveTunnelProvider()` in `resolveOptions.js`), which this project hasn't set up/tested and which failed outright in practice (`Error: Unexpected server response: 409`/`403` from the `ws` library, crashing the whole dev server). `scripts/patch-ngrok.js`'s fix (dropping Expo's forced shared ngrok authtoken, which otherwise collides across every Expo developer worldwide) only applies to the ngrok path, so it's silently skipped — and tunnel mode breaks outright — if the provider isn't explicitly forced back to `ngrok` like this.
 
 ### 5. Stopping the dev server
 
@@ -57,7 +57,7 @@ pkill -f "expo start"
 lsof -ti:8081 | xargs kill -9 2>/dev/null
 ```
 
-**Known gotcha:** `pkill -f "expo start"` sometimes leaves an orphaned `ngrok` process running in the background — the parent `expo start` process dies, but its ngrok child doesn't get cleaned up with it. That orphan keeps your tunnel endpoint "online" on ngrok's side, so the *next* `expo start --tunnel` fails with an error like:
+**Known gotcha:** `pkill -f "expo start"` sometimes leaves an orphaned `ngrok` process running in the background — the parent `expo start` process dies, but its ngrok child doesn't get cleaned up with it. That orphan keeps your tunnel endpoint "online" on ngrok's side, so the *next* `expo start --tunnel ngrok` fails with an error like:
 ```
 CommandError: failed to start tunnel
 failed to start tunnel: The endpoint 'https://xxxxx.ngrok-free.dev' is already online...
@@ -68,7 +68,7 @@ If you hit that, find and kill the leftover ngrok process specifically:
 ps aux | grep -i ngrok | grep -v grep
 kill -9 <PID>
 ```
-Then retry `npx expo start --tunnel --clear`.
+Then retry `npx expo start --tunnel ngrok --clear`.
 
 To confirm everything's actually stopped before restarting:
 ```bash
@@ -107,7 +107,7 @@ Or just close the emulator window directly.
 
 For installing Athera as a real app on an Android phone — a proper app icon, no Expo Go, no tunnel/Metro needed to run it day-to-day. This builds in Expo's cloud and hands you back a downloadable `.apk`.
 
-> **Note:** this is a snapshot, not live-reloading — it bundles whatever code is on disk at build time. Any later code change needs a new build + reinstall on the phone (there's no OTA update channel configured). Use Expo Go (`npx expo start --tunnel`) for day-to-day development; use this when you actually want the app installed standalone.
+> **Note:** this is a snapshot, not live-reloading — it bundles whatever code is on disk at build time. Any later code change needs a new build + reinstall on the phone (there's no OTA update channel configured). Use Expo Go (`npx expo start --tunnel ngrok`) for day-to-day development; use this when you actually want the app installed standalone.
 
 ### First time only
 
@@ -186,7 +186,7 @@ Or check the project's [Builds page on expo.dev](https://expo.dev/accounts/rabij
 Load nvm first:
 ```bash
 export NVM_DIR="$HOME/.nvm" && source "$NVM_DIR/nvm.sh" && nvm use
-npx expo start --tunnel --clear
+npx expo start --tunnel ngrok --clear
 ```
 
 **Emulator shows "Something went wrong"**
