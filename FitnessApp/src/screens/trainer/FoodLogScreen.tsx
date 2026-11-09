@@ -5,12 +5,10 @@ import {
   ScrollView,
   TouchableOpacity,
   Modal,
-  KeyboardAvoidingView,
-  Platform,
   Linking,
   ActivityIndicator,
 } from 'react-native';
-import { Text, TextInput } from '../../components/AppText';
+import { Text } from '../../components/AppText';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { colors } from '../../theme/colors';
@@ -18,6 +16,8 @@ import { useLiveRefresh } from '../../lib/useLiveRefresh';
 import { getNutritionPlans, getFoodLogEntries, deleteFoodLogEntry, getMealCompletions, upsertMealCompletion, getTodayMetrics, recalculateStreak } from '../../lib/db';
 import { DBNutritionPlan, DBFoodLogEntry, DBMealCompletion, MealSlot } from '../../lib/supabase';
 import { sumTodayAsPlannedNutrition } from '../../lib/nutritionCalc';
+import { templatesForMealType, scaleTemplateToTarget, MealTemplate, MealType } from '../../data/mealLibrary';
+import { MealTarget } from '../../lib/nutritionCalc';
 
 const STATUS_META: Record<DBMealCompletion['status'], { icon: string; label: string; color: string }> = {
   as_planned: { icon: 'checkmark-circle', label: 'As Planned', color: colors.success },
@@ -68,7 +68,6 @@ function MealRow({
 }) {
   const [expanded, setExpanded] = useState(false);
   const [substituting, setSubstituting] = useState(false);
-  const [note, setNote] = useState('');
   const [saving, setSaving] = useState(false);
   // "Change" reveals the As Planned/Substituted/Skipped choices again for a
   // meal that already has today's status set, so the trainee can pick a
@@ -83,7 +82,6 @@ function MealRow({
       const saved = await upsertMealCompletion(userId, plan.id, meal.slot, todayStr(), status, substituteNote);
       onCompletionSaved(saved);
       setSubstituting(false);
-      setNote('');
       setChanging(false);
       // Tracking a meal (any status) counts as a nutrition-active day for
       // the streak, same as a completed workout — see recalculateStreak.
@@ -95,21 +93,47 @@ function MealRow({
     }
   }, [userId, plan.id, meal.slot, onCompletionSaved]);
 
-  // A prior inline-row version of this input got covered by the keyboard on
-  // Android with no reliable way to scroll it into view (measureLayout and
-  // measureInWindow-based approaches both proved unreliable in practice) —
-  // moved to a modal instead: a modal naturally stays above the keyboard by
-  // construction (KeyboardAvoidingView + flex-end sheet), no scroll-position
-  // math needed.
   const openSubstitute = useCallback(() => {
-    setNote(todayCompletion?.status === 'substituted' ? (todayCompletion.substitute_note ?? '') : '');
     setSubstituting(true);
-  }, [todayCompletion]);
+  }, []);
 
   const handleCancelSubstitute = useCallback(() => {
     setSubstituting(false);
-    setNote('');
   }, []);
+
+  // Same curated meal library + macro-scaling the coach's own calculator
+  // picker uses (CalorieCalculatorModal.tsx) — reported bug: the trainee's
+  // "Substitute" used to open a free-text "what did you have instead?" box
+  // that showed nothing usable to pick from. Scoped to this meal's own slot
+  // type (`meal.label`, e.g. "Breakfast") so a substitute is still the same
+  // kind of meal, same as the coach's picker never crosses meal types either.
+  const substituteOptions = useMemo(
+    () => templatesForMealType(meal.label as MealType, plan.calc_inputs?.diet ?? 'omnivore'),
+    [meal.label, plan.calc_inputs]
+  );
+
+  // This meal's own target, not the template's own base figures — every
+  // option in the list gets scaled to exactly this, so whichever one the
+  // trainee taps keeps the identical calorie/protein/carb/fat values as the
+  // meal it's replacing (per feedback: "the same calorie/protein/carbs/fats
+  // values as the last meal"). Shown per-row below so that's visible before
+  // picking, not just true after the fact.
+  const substituteTarget: MealTarget = useMemo(() => ({
+    slot: meal.slot,
+    target_calories: meal.target_calories,
+    target_protein: meal.target_protein,
+    target_carbs: meal.target_carbs,
+    target_fat: meal.target_fat,
+  }), [meal.slot, meal.target_calories, meal.target_protein, meal.target_carbs, meal.target_fat]);
+
+  const handlePickSubstitute = useCallback((template: MealTemplate) => {
+    // The scaled items themselves aren't persisted anywhere (no schema for
+    // it on meal_completions) — the template's name alone is enough to tell
+    // the coach what was eaten; the matching macros are already shown via
+    // the row the trainee just tapped, so repeating them in the substitute
+    // note would just be redundant.
+    handleSetStatus('substituted', template.name);
+  }, [handleSetStatus]);
 
   return (
     <View>
@@ -169,35 +193,51 @@ function MealRow({
         </View>
       )}
 
-      <Modal visible={substituting} transparent animationType="fade" onRequestClose={handleCancelSubstitute}>
-        <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={{ flex: 1 }}>
-          <View style={styles.overlay}>
-            <View style={styles.sheet}>
-              <Text style={styles.sheetTitle}>What did you have instead?</Text>
-              <TextInput
-                style={styles.input}
-                value={note}
-                onChangeText={setNote}
-                placeholder="e.g. Grilled chicken instead of salmon"
-                placeholderTextColor={colors.textSecondary}
-                autoFocus
-              />
-              <View style={styles.modalFooter}>
-                <TouchableOpacity style={styles.cancelBtn} onPress={handleCancelSubstitute}>
-                  <Text style={styles.cancelText}>Cancel</Text>
-                </TouchableOpacity>
-                <TouchableOpacity
-                  style={styles.saveBtn}
-                  onPress={() => (note.trim() ? handleSetStatus('substituted', note.trim()) : handleCancelSubstitute())}
-                  activeOpacity={0.85}
-                >
-                  <Ionicons name="checkmark" size={18} color={colors.text} />
-                  <Text style={styles.saveText}>Save</Text>
-                </TouchableOpacity>
-              </View>
+      {/* Substitute picker — same curated meal library + scrollable list the
+          coach's own calculator picker uses (CalorieCalculatorModal.tsx),
+          scoped to this meal's own type and scaled to its own target so
+          every option keeps the identical macros. Replaces a free-text
+          "what did you have instead?" box that had nothing to pick from. */}
+      <Modal visible={substituting} transparent animationType="slide" onRequestClose={handleCancelSubstitute}>
+        <View style={styles.overlay}>
+          <View style={styles.sheet}>
+            <View style={styles.modalHeader}>
+              <Text style={styles.sheetTitle}>Choose a {meal.label} Substitute</Text>
+              <TouchableOpacity style={styles.closeBtn} onPress={handleCancelSubstitute}>
+                <Ionicons name="close" size={22} color={colors.textSecondary} />
+              </TouchableOpacity>
             </View>
+            <ScrollView showsVerticalScrollIndicator={false} style={{ maxHeight: 420 }}>
+              {substituteOptions.map(t => {
+                const scaled = scaleTemplateToTarget(t, substituteTarget);
+                const selected = todayCompletion?.status === 'substituted' && todayCompletion.substitute_note === t.name;
+                return (
+                  <TouchableOpacity
+                    key={t.id}
+                    style={styles.substituteOptionRow}
+                    onPress={() => handlePickSubstitute(t)}
+                    activeOpacity={0.7}
+                  >
+                    <View style={{ flex: 1 }}>
+                      <Text style={styles.substituteOptionName}>{t.name}</Text>
+                      <Text style={styles.substituteOptionMacros}>
+                        {scaled.actual_calories} kcal · P {scaled.actual_protein}g · C {scaled.actual_carbs}g · F {scaled.actual_fat}g
+                      </Text>
+                    </View>
+                    {selected ? (
+                      <Ionicons name="checkmark-circle" size={20} color={colors.warning} />
+                    ) : (
+                      <Ionicons name="chevron-forward" size={18} color={colors.textSecondary} />
+                    )}
+                  </TouchableOpacity>
+                );
+              })}
+              {substituteOptions.length === 0 && (
+                <Text style={styles.substituteEmptyText}>No {meal.label} substitutes available for this diet yet.</Text>
+              )}
+            </ScrollView>
           </View>
-        </KeyboardAvoidingView>
+        </View>
       </Modal>
     </View>
   );
@@ -731,18 +771,15 @@ const styles = StyleSheet.create({
 
   // Modal
   overlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.7)', justifyContent: 'flex-end' },
-  sheet: { backgroundColor: colors.card, borderTopLeftRadius: 28, borderTopRightRadius: 28, padding: 24 },
-  sheetTitle: { fontSize: 18, fontWeight: '800', color: colors.text, marginBottom: 20 },
-  input: {
-    backgroundColor: colors.secondary, borderRadius: 12, padding: 14, fontSize: 16, color: colors.text,
-    borderWidth: 1, borderColor: colors.border, marginBottom: 16,
+  sheet: { backgroundColor: colors.card, borderTopLeftRadius: 28, borderTopRightRadius: 28, padding: 24, maxHeight: '85%' },
+  sheetTitle: { fontSize: 18, fontWeight: '800', color: colors.text, flex: 1 },
+  modalHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 16 },
+  closeBtn: { padding: 2 },
+  substituteOptionRow: {
+    flexDirection: 'row', alignItems: 'center', gap: 10,
+    paddingVertical: 14, borderBottomWidth: 1, borderBottomColor: colors.border,
   },
-  modalFooter: { flexDirection: 'row', gap: 12, marginTop: 4 },
-  cancelBtn: { flex: 1, padding: 15, borderRadius: 12, backgroundColor: colors.secondary, alignItems: 'center' },
-  cancelText: { color: colors.textSecondary, fontSize: 15, fontWeight: '600' },
-  saveBtn: {
-    flex: 1, padding: 15, borderRadius: 12, backgroundColor: colors.primary,
-    flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6,
-  },
-  saveText: { color: colors.text, fontSize: 15, fontWeight: '700' },
+  substituteOptionName: { fontSize: 14, fontWeight: '700', color: colors.text },
+  substituteOptionMacros: { fontSize: 12, color: colors.textSecondary, marginTop: 2 },
+  substituteEmptyText: { color: colors.textSecondary, textAlign: 'center', paddingVertical: 20 },
 });
